@@ -71,4 +71,10 @@ QtObject {
     function topic_for(channel) {
         return channel.charAt(0) === "#" ? "kIRC development" : ""
     }
+    function send_raw(line) {
+        console.error("STUB send_raw(" + line + ")")
+    }
+    function clear_buffer(target) {
+        console.error("STUB clear_buffer(" + target + ")")
+    }
 }

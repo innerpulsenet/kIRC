@@ -36,6 +36,10 @@ class KircConfig : public QObject
     Q_PROPERTY(QString nickname READ nickname WRITE setNickname NOTIFY nicknameChanged)
     Q_PROPERTY(QString saslUser READ saslUser WRITE setSaslUser NOTIFY saslUserChanged)
     Q_PROPERTY(bool minimizeToTray READ minimizeToTray WRITE setMinimizeToTray NOTIFY minimizeToTrayChanged)
+    Q_PROPERTY(QString themeId READ themeId WRITE setThemeId NOTIFY themeIdChanged)
+    Q_PROPERTY(QString autojoin READ autojoin WRITE setAutojoin NOTIFY autojoinChanged)
+    Q_PROPERTY(bool reconnect READ reconnect WRITE setReconnect NOTIFY reconnectChanged)
+    Q_PROPERTY(int fontDelta READ fontDelta WRITE setFontDelta NOTIFY fontDeltaChanged)
 
 public:
     explicit KircConfig(QObject *parent = nullptr);
@@ -63,6 +67,18 @@ public:
     bool minimizeToTray() const;
     void setMinimizeToTray(bool minimizeToTray);
 
+    QString themeId() const;
+    void setThemeId(const QString &themeId);
+
+    QString autojoin() const;
+    void setAutojoin(const QString &autojoin);
+
+    bool reconnect() const;
+    void setReconnect(bool reconnect);
+
+    int fontDelta() const;
+    void setFontDelta(int fontDelta);
+
     /// Re-read every value from disk.  Called once at startup, before the QML
     /// engine is created, so the form is prefilled on first paint.
     void load();
@@ -78,6 +94,10 @@ Q_SIGNALS:
     void nicknameChanged();
     void saslUserChanged();
     void minimizeToTrayChanged();
+    void themeIdChanged();
+    void autojoinChanged();
+    void reconnectChanged();
+    void fontDeltaChanged();
 
 private:
     // Defaults mirror the initial values in ConnectPage.qml so a first run
@@ -88,4 +108,8 @@ private:
     QString m_nickname = QStringLiteral("kircuser");
     QString m_saslUser;
     bool m_minimizeToTray = true;
+    QString m_themeId = QStringLiteral("breeze");
+    QString m_autojoin;
+    bool m_reconnect = true;
+    int m_fontDelta = 0;
 };

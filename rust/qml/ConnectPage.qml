@@ -501,6 +501,10 @@ Kirigami.Page {
                     Layout.preferredHeight: Math.round(Kirigami.Units.gridUnit * 2.4)
                     onClicked: {
                         if (page.connecting) {
+                            var win = applicationWindow()
+                            if (win && win.userDisconnect !== undefined) {
+                                win.userDisconnect = true
+                            }
                             if (page.bridge !== null) {
                                 page.bridge.disconnect_server()
                             }

@@ -71,6 +71,7 @@ QtObject {
     // Ids the app can offer in a theme picker (built-ins + anything C++ adds).
     property var availableThemeIds: ThemeLib.BUILTIN_IDS.slice()
     property string configError: ""
+    property int fontDelta: 0
 
     // --- theme application -------------------------------------------------
 
@@ -233,7 +234,8 @@ QtObject {
     // 0 / negative => inherit.
     function resolvePointSize(configured, basePointSize)
     {
-        return (configured > 0) ? configured : basePointSize
+        var base = (configured > 0) ? configured : basePointSize
+        return Math.max(6, base + engine.fontDelta)
     }
 
     // Avatar diameter in pixels: the theme can pin it, otherwise it scales

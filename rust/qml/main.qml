@@ -107,6 +107,24 @@ Kirigami.ApplicationWindow {
     property bool lastTls: true
     property string lastNickname: ""
     property string lastSaslUser: ""
+    property bool userDisconnect: false
+    property int reconnectAttempt: 0
+
+    Timer {
+        id: reconnectTimer
+        interval: 3000
+        repeat: false
+        onTriggered: root.tryReconnect()
+    }
+
+    Component.onCompleted: {
+        if (root.appConfig !== null) {
+            if (root.appConfig.themeId.length > 0) {
+                ThemeEngine.applyBuiltinTheme(root.appConfig.themeId)
+            }
+            ThemeEngine.fontDelta = root.appConfig.fontDelta
+        }
+    }
 
     /// Buffer name for humans. "*server*" is internal; the header glyph
     /// already shows "#" for channels so the title drops the prefix.
@@ -234,16 +252,6 @@ Kirigami.ApplicationWindow {
                 Layout.fillWidth: true
             }
 
-            Controls.ToolButton {
-                icon.name: "window-close"
-                text: qsTr("Close")
-                display: Controls.AbstractButton.IconOnly
-                visible: root.pageStack.depth > 1 && root.chatChannel !== "*server*"
-                onClicked: root.closeCurrentBuffer()
-                Controls.ToolTip.visible: hovered
-                Controls.ToolTip.text: root.currentIsQuery ? qsTr("Close conversation") : qsTr("Leave channel")
-            }
-
             // ---- connection status pill ----
             Rectangle {
                 Layout.alignment: Qt.AlignVCenter
@@ -339,7 +347,11 @@ Kirigami.ApplicationWindow {
                 text: qsTr("Disconnect")
                 display: Controls.AbstractButton.IconOnly
                 visible: root.bridge.connection_state !== 0
-                onClicked: root.bridge.disconnect_server()
+                onClicked: {
+                    root.userDisconnect = true
+                    reconnectTimer.stop()
+                    root.bridge.disconnect_server()
+                }
 
                 Controls.ToolTip.visible: hovered
                 Controls.ToolTip.text: qsTr("Disconnect")
@@ -373,7 +385,13 @@ Kirigami.ApplicationWindow {
                             text: ThemeEngine.themeDisplayName(themeItem.modelData)
                             checkable: true
                             checked: ThemeEngine.themeId === themeItem.modelData
-                            onTriggered: ThemeEngine.applyBuiltinTheme(themeItem.modelData)
+                            onTriggered: {
+                                ThemeEngine.applyBuiltinTheme(themeItem.modelData)
+                                if (root.appConfig !== null) {
+                                    root.appConfig.themeId = themeItem.modelData
+                                    root.appConfig.save()
+                                }
+                            }
                         }
 
                         onObjectAdded: (index, object) => themeMenu.insertItem(index, object)
@@ -410,6 +428,16 @@ Kirigami.ApplicationWindow {
                         onToggled: root.setMinimizeToTray(checked)
                     }
 
+                    Controls.MenuItem {
+                        text: qsTr("Settings")
+                        icon.name: "configure"
+                        onTriggered: {
+                            root.pageStack.push(Qt.resolvedUrl("SettingsPage.qml"), {
+                                "kircConfig": root.appConfig
+                            })
+                        }
+                    }
+
                     Controls.MenuSeparator {}
 
                     Controls.MenuItem {
@@ -440,6 +468,9 @@ Kirigami.ApplicationWindow {
             root.lastTls = tls
             root.lastNickname = nickname
             root.lastSaslUser = saslUser
+            root.userDisconnect = false
+            root.reconnectAttempt = 0
+            reconnectTimer.stop()
 
             root.bridge.connect_server(host, port, tls, nickname, saslUser, saslPass)
             root.openChat()
@@ -454,15 +485,20 @@ Kirigami.ApplicationWindow {
 
         function onState_changed(state) {
             if (state === 2) {
-                // Connected: make sure the chat page is up even if the
-                // connection was started from somewhere else, and persist the
-                // profile that got us here.
+                root.reconnectAttempt = 0
+                reconnectTimer.stop()
                 root.saveProfile()
                 root.openChat()
-            } else if (state === 0 && root.pageStack.depth > 1) {
-                // Dropped: fall back to the connection form so the user can
-                // retry. The bridge keeps the error detail.
-                root.pageStack.pop()
+            } else if (state === 0) {
+                if (!root.userDisconnect && root.wantReconnect() && root.lastHost.length > 0) {
+                    reconnectTimer.interval = Math.min(30000, 3000 * Math.pow(2, root.reconnectAttempt))
+                    root.reconnectAttempt += 1
+                    reconnectTimer.start()
+                    return
+                }
+                if (root.pageStack.depth > 1) {
+                    root.pageStack.pop()
+                }
             }
         }
 
@@ -494,6 +530,20 @@ Kirigami.ApplicationWindow {
             "hostWindow": root,
             "currentChannel": root.chatChannel
         })
+    }
+
+    function tryReconnect()
+    {
+        if (root.userDisconnect || root.lastHost.length === 0) {
+            return
+        }
+        root.bridge.connect_server(root.lastHost, root.lastPort, root.lastTls,
+                                   root.lastNickname, root.lastSaslUser, "")
+    }
+
+    function wantReconnect()
+    {
+        return root.appConfig !== null && root.appConfig.reconnect
     }
 
     function closeCurrentBuffer()

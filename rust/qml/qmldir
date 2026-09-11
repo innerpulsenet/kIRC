@@ -12,3 +12,4 @@ singleton ThemeEngine 1.0 ThemeEngine.qml
 ConnectPage 1.0 ConnectPage.qml
 ChatPage 1.0 ChatPage.qml
 MessageDelegate 1.0 MessageDelegate.qml
+SettingsPage 1.0 SettingsPage.qml

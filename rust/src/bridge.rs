@@ -252,6 +252,14 @@ pub mod qobject {
         #[qinvokable]
         fn send_message(self: Pin<&mut Self>, target: QString, text: QString);
 
+        /// Send a raw IRC line (no CR/LF).
+        #[qinvokable]
+        fn send_raw(self: Pin<&mut Self>, line: QString);
+
+        /// Drop the local history for `target`.
+        #[qinvokable]
+        fn clear_buffer(self: Pin<&mut Self>, target: QString);
+
         /// Join a channel.
         #[qinvokable]
         fn join_channel(self: Pin<&mut Self>, channel: QString);
@@ -858,36 +866,32 @@ impl qobject::IrcBridge {
         }
     }
 
-    /// Send a PRIVMSG and echo it locally.
-    ///
-    /// The QML layer does not echo what the user typed, so the bridge always
-    /// re-emits it through `message_received(.., is_self = true, ..)` — even
-    /// when there is no live session, so the UI is never dead.
-    pub fn send_message(mut self: Pin<&mut Self>, target: QString, text: QString) {
+    /// Send a PRIVMSG. Local echo is the engine's job when the server did not
+    /// ACK `echo-message`; with echo-message we wait for the replay so the
+    /// line is not shown twice (the NickServ "help" duplication).
+    pub fn send_message(self: Pin<&mut Self>, target: QString, text: QString) {
         let target_s = rs(&target);
         let text_s = rs(&text);
-        let nick = rs(self.as_ref().nickname());
-
-        if let Some(tx) = self.as_ref().rust().command_tx.as_ref() {
+        if let Some(tx) = self.rust().command_tx.as_ref() {
             let _ = tx.try_send(ClientCommand::Privmsg {
-                target: target_s.clone(),
-                text: text_s.clone(),
+                target: target_s,
+                text: text_s,
             });
         }
+    }
 
-        {
-            let mut guard = store().lock().unwrap_or_else(|e| e.into_inner());
-            guard.entry(target_s.clone()).or_default().push(StoreMsg {
-                nick: nick.clone(),
-                text: text_s.clone(),
-                timestamp: now_string(),
-                is_self: true,
-                is_highlight: false,
-            });
+    /// Send a raw protocol line.
+    pub fn send_raw(self: Pin<&mut Self>, line: QString) {
+        if let Some(tx) = self.rust().command_tx.as_ref() {
+            let _ = tx.try_send(ClientCommand::Raw(rs(&line)));
         }
+    }
 
-        self.as_mut()
-            .message_received(qs(&target_s), qs(&nick), qs(&text_s), true, false);
+    /// Forget the local transcript of `target`.
+    pub fn clear_buffer(self: Pin<&mut Self>, target: QString) {
+        let target_s = rs(&target);
+        let mut guard = store().lock().unwrap_or_else(|e| e.into_inner());
+        guard.remove(&target_s);
     }
 
     /// Join a channel.

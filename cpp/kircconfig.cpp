@@ -116,6 +116,62 @@ void KircConfig::setMinimizeToTray(bool minimizeToTray)
     Q_EMIT minimizeToTrayChanged();
 }
 
+QString KircConfig::themeId() const
+{
+    return m_themeId;
+}
+
+void KircConfig::setThemeId(const QString &themeId)
+{
+    if (m_themeId == themeId) {
+        return;
+    }
+    m_themeId = themeId;
+    Q_EMIT themeIdChanged();
+}
+
+QString KircConfig::autojoin() const
+{
+    return m_autojoin;
+}
+
+void KircConfig::setAutojoin(const QString &autojoin)
+{
+    if (m_autojoin == autojoin) {
+        return;
+    }
+    m_autojoin = autojoin;
+    Q_EMIT autojoinChanged();
+}
+
+bool KircConfig::reconnect() const
+{
+    return m_reconnect;
+}
+
+void KircConfig::setReconnect(bool reconnect)
+{
+    if (m_reconnect == reconnect) {
+        return;
+    }
+    m_reconnect = reconnect;
+    Q_EMIT reconnectChanged();
+}
+
+int KircConfig::fontDelta() const
+{
+    return m_fontDelta;
+}
+
+void KircConfig::setFontDelta(int fontDelta)
+{
+    if (m_fontDelta == fontDelta) {
+        return;
+    }
+    m_fontDelta = fontDelta;
+    Q_EMIT fontDeltaChanged();
+}
+
 void KircConfig::load()
 {
     const KConfig config(configFilePath(), KConfig::SimpleConfig);
@@ -130,6 +186,10 @@ void KircConfig::load()
 
     const KConfigGroup ui = config.group(QString::fromLatin1(kUiGroup));
     m_minimizeToTray = ui.readEntry(QStringLiteral("MinimizeToTrayOnClose"), m_minimizeToTray);
+    m_themeId = ui.readEntry(QStringLiteral("ThemeId"), m_themeId);
+    m_autojoin = ui.readEntry(QStringLiteral("Autojoin"), m_autojoin);
+    m_reconnect = ui.readEntry(QStringLiteral("Reconnect"), m_reconnect);
+    m_fontDelta = ui.readEntry(QStringLiteral("FontDelta"), m_fontDelta);
 
     Q_EMIT hostChanged();
     Q_EMIT portChanged();
@@ -137,6 +197,10 @@ void KircConfig::load()
     Q_EMIT nicknameChanged();
     Q_EMIT saslUserChanged();
     Q_EMIT minimizeToTrayChanged();
+    Q_EMIT themeIdChanged();
+    Q_EMIT autojoinChanged();
+    Q_EMIT reconnectChanged();
+    Q_EMIT fontDeltaChanged();
 }
 
 void KircConfig::save()
@@ -158,6 +222,10 @@ void KircConfig::save()
 
     KConfigGroup ui = config.group(QString::fromLatin1(kUiGroup));
     ui.writeEntry(QStringLiteral("MinimizeToTrayOnClose"), m_minimizeToTray);
+    ui.writeEntry(QStringLiteral("ThemeId"), m_themeId);
+    ui.writeEntry(QStringLiteral("Autojoin"), m_autojoin);
+    ui.writeEntry(QStringLiteral("Reconnect"), m_reconnect);
+    ui.writeEntry(QStringLiteral("FontDelta"), m_fontDelta);
 
     config.sync();
 }

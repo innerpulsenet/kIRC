@@ -307,6 +307,8 @@ struct Session {
     disconnect_reason: String,
     /// How many 433/432 fallbacks we have already tried this session.
     nick_attempts: u8,
+    /// True after CAP ACK of echo-message — the server will replay our PRIVMSG.
+    echo_message: bool,
 }
 
 impl Session {
@@ -389,11 +391,7 @@ impl Session {
             "AUTHENTICATE" => self.handle_authenticate(&message).await?,
             "BATCH" => self.handle_batch(&message).await,
             "PRIVMSG" => self.handle_privmsg(&message).await,
-            "NOTICE" => {
-                let nick = source_name(&message);
-                let text = message.params.last().cloned().unwrap_or_default();
-                self.emit(IrcEvent::Notice { nick, text }).await;
-            }
+            "NOTICE" => self.handle_notice(&message).await,
             "JOIN" => {
                 let channel = message.params.first().cloned().unwrap_or_default();
                 let nick = source_name(&message);
@@ -509,6 +507,38 @@ impl Session {
                 let nicks = self.names_acc.remove(&channel).unwrap_or_default();
                 self.emit(IrcEvent::Names { channel, nicks }).await;
             }
+            301 | 307 | 311 | 312 | 313 | 317 | 318 | 319 | 330 | 335 | 338 | 378 | 379 | 671 => {
+                // WHOIS family — file under the queried nick so NickServ/whois
+                // replies show in that query window, not as a toast.
+                let nick = message.params.get(1).cloned().unwrap_or_default();
+                if !nick.is_empty() {
+                    self.emit(IrcEvent::Msg {
+                        target: nick,
+                        nick: "*".to_string(),
+                        text: numeric_summary(message),
+                        timestamp: None,
+                        is_self: false,
+                        is_highlight: false,
+                    })
+                    .await;
+                }
+            }
+            401 => {
+                let nick = message.params.get(1).cloned().unwrap_or_default();
+                let text = numeric_summary(message);
+                if !nick.is_empty() {
+                    self.emit(IrcEvent::Msg {
+                        target: nick.clone(),
+                        nick: "*".to_string(),
+                        text: text.clone(),
+                        timestamp: None,
+                        is_self: false,
+                        is_highlight: false,
+                    })
+                    .await;
+                }
+                self.emit(IrcEvent::Error { message: text }).await;
+            }
             432 | 433 | 436 => {
                 self.handle_nick_unavailable(message).await;
             }
@@ -596,6 +626,9 @@ impl Session {
             }
             "ACK" => {
                 self.caps.add_acked(&cap.caps);
+                if self.caps.has("echo-message") {
+                    self.echo_message = true;
+                }
                 if self.sasl_configured
                     && self.caps.has("sasl")
                     && !self.sasl_active
@@ -784,6 +817,39 @@ impl Session {
         .await;
     }
 
+    /// User/service NOTICE (NickServ, ChanServ, queries) lands in that
+    /// conversation. Server-wide NOTICE stays on the console.
+    async fn handle_notice(&mut self, message: &IrcMessage) {
+        let raw_target = message.params.first().cloned().unwrap_or_default();
+        let text = message
+            .params
+            .get(1)
+            .cloned()
+            .unwrap_or_else(|| message.params.last().cloned().unwrap_or_default());
+        let nick = source_name(message);
+        let userish = message.prefix.as_ref().is_some_and(|p| {
+            p.ident.is_some()
+                || p.nick
+                    .as_ref()
+                    .is_some_and(|n| !n.contains('.'))
+        });
+        if !userish {
+            self.emit(IrcEvent::Notice { nick, text }).await;
+            return;
+        }
+        let is_self = !nick.is_empty() && nick.eq_ignore_ascii_case(&self.config.nickname);
+        let target = conversation_target(&self.config.nickname, &nick, &raw_target, is_self);
+        self.emit(IrcEvent::Msg {
+            target,
+            nick,
+            text: display_privmsg(&text),
+            timestamp: message.tags.get("time").cloned().flatten(),
+            is_self,
+            is_highlight: false,
+        })
+        .await;
+    }
+
     async fn handle_command(&mut self, command: ClientCommand) -> io::Result<()> {
         match command {
             ClientCommand::Raw(raw) => {
@@ -796,6 +862,18 @@ impl Session {
             }
             ClientCommand::Privmsg { target, text } => {
                 self.send(&format!("PRIVMSG {target} :{text}")).await?;
+                if !self.echo_message {
+                    let display = display_privmsg(&text);
+                    self.emit(IrcEvent::Msg {
+                        target: target.clone(),
+                        nick: self.config.nickname.clone(),
+                        text: display,
+                        timestamp: None,
+                        is_self: true,
+                        is_highlight: false,
+                    })
+                    .await;
+                }
             }
             ClientCommand::Join(channel) => {
                 self.send(&format!("JOIN {channel}")).await?;
@@ -985,6 +1063,7 @@ pub async fn run_session(
         should_stop: false,
         disconnect_reason: "connection closed".to_string(),
         nick_attempts: 0,
+        echo_message: false,
     };
 
     // Registration handshake.

@@ -109,6 +109,7 @@ Kirigami.Page {
         function onState_changed(state) {
             if (state === 2) {
                 page.refreshHistory()
+                page.applyAutojoin()
             } else if (state === 0) {
                 page.channels = ["*server*"]
                 page.nickList = []
@@ -659,23 +660,27 @@ Kirigami.Page {
                             topPadding: 0
                             bottomPadding: 0
 
-                            enabled: page.connected && page.currentChannel !== "*server*"
+                            enabled: page.connected
                             placeholderText: {
                                 if (!page.connected) {
                                     return qsTr("Connect to a server to send messages")
                                 }
                                 if (page.currentChannel === "*server*") {
-                                    return qsTr("Server console — messages can't be sent here")
+                                    return qsTr("/join #channel   /query nick   /quote …")
                                 }
                                 return qsTr("Message %1").arg(page.currentChannel)
                             }
                             wrapMode: Controls.TextArea.Wrap
                             selectByMouse: true
 
-                            // Enter sends, Shift+Enter inserts a newline. The
-                            // event is left unaccepted for the shifted case so
-                            // the TextArea's own handling adds the break.
+                            // Enter sends, Shift+Enter inserts a newline. Tab
+                            // completes nicks in the current channel.
                             Keys.onPressed: (event) => {
+                                if (event.key === Qt.Key_Tab) {
+                                    event.accepted = true
+                                    page.tabComplete()
+                                    return
+                                }
                                 if (event.key !== Qt.Key_Return && event.key !== Qt.Key_Enter) {
                                     return
                                 }
@@ -933,15 +938,168 @@ Kirigami.Page {
             page.bridge.send_message(page.currentChannel, "\u0001ACTION " + rest + "\u0001")
             return true
         }
+        if (cmd === "/nick") {
+            if (rest.length === 0) {
+                return false
+            }
+            page.bridge.send_raw("NICK " + rest.split(" ")[0])
+            return true
+        }
+        if (cmd === "/whois") {
+            var who = rest.length > 0 ? rest.split(" ")[0] : page.currentChannel
+            if (who.charAt(0) === "#" || who === "*server*") {
+                return false
+            }
+            page.addBuffer(who)
+            page.openChannel(who)
+            page.bridge.send_raw("WHOIS " + who)
+            return true
+        }
+        if (cmd === "/notice") {
+            var nbits = rest.split(" ")
+            if (nbits.length < 2) {
+                return false
+            }
+            page.bridge.send_raw("NOTICE " + nbits[0] + " :" + nbits.slice(1).join(" "))
+            return true
+        }
+        if (cmd === "/away") {
+            page.bridge.send_raw(rest.length > 0 ? ("AWAY :" + rest) : "AWAY")
+            return true
+        }
+        if (cmd === "/back") {
+            page.bridge.send_raw("AWAY")
+            return true
+        }
+        if (cmd === "/topic") {
+            if (page.currentChannel.charAt(0) !== "#") {
+                return false
+            }
+            if (rest.length === 0) {
+                page.bridge.send_raw("TOPIC " + page.currentChannel)
+            } else {
+                page.bridge.send_raw("TOPIC " + page.currentChannel + " :" + rest)
+            }
+            return true
+        }
+        if (cmd === "/invite") {
+            var inv = rest.split(" ")
+            if (inv.length === 0 || inv[0].length === 0) {
+                return false
+            }
+            var ichan = inv.length > 1 ? inv[1] : page.currentChannel
+            page.bridge.send_raw("INVITE " + inv[0] + " " + ichan)
+            return true
+        }
+        if (cmd === "/kick") {
+            var kb = rest.split(" ")
+            if (kb.length === 0 || page.currentChannel.charAt(0) !== "#") {
+                return false
+            }
+            var reason = kb.length > 1 ? kb.slice(1).join(" ") : ""
+            page.bridge.send_raw("KICK " + page.currentChannel + " " + kb[0] + (reason ? (" :" + reason) : ""))
+            return true
+        }
+        if (cmd === "/mode") {
+            if (rest.length === 0) {
+                return false
+            }
+            page.bridge.send_raw("MODE " + rest)
+            return true
+        }
+        if (cmd === "/ctcp") {
+            var cb = rest.split(" ")
+            if (cb.length < 2) {
+                return false
+            }
+            page.bridge.send_message(cb[0], "\u0001" + cb.slice(1).join(" ").toUpperCase() + "\u0001")
+            return true
+        }
+        if (cmd === "/clear") {
+            page.bridge.clear_buffer(page.currentChannel)
+            page.refreshHistory()
+            return true
+        }
         if (cmd === "/quit") {
+            if (page.hostWindow !== null) {
+                page.hostWindow.userDisconnect = true
+            }
             page.bridge.disconnect_server()
             return true
         }
         if (cmd === "/raw" || cmd === "/quote") {
-            // No raw invokable yet — send as PRIVMSG would be wrong.
-            return false
+            if (rest.length === 0) {
+                return false
+            }
+            page.bridge.send_raw(rest)
+            return true
         }
         return false
+    }
+
+    function applyAutojoin()
+    {
+        if (page.hostWindow === null || page.hostWindow.appConfig === null) {
+            return
+        }
+        var raw = page.hostWindow.appConfig.autojoin
+        if (!raw || raw.length === 0) {
+            return
+        }
+        var parts = raw.split(/[\s,]+/)
+        for (var i = 0; i < parts.length; ++i) {
+            var ch = parts[i].trim()
+            if (ch.length === 0) {
+                continue
+            }
+            if (ch.charAt(0) !== "#" && ch.charAt(0) !== "&") {
+                ch = "#" + ch
+            }
+            page.bridge.join_channel(ch)
+        }
+    }
+
+    property string tabPrefix: ""
+    property var tabMatches: []
+    property int tabIndex: 0
+
+    function tabComplete()
+    {
+        var text = messageInput.text
+        var pos = messageInput.cursorPosition
+        var start = pos
+        while (start > 0) {
+            var ch = text.charAt(start - 1)
+            if (ch === " " || ch === "\n") {
+                break
+            }
+            start -= 1
+        }
+        var prefix = text.substring(start, pos)
+        if (prefix.length === 0) {
+            return
+        }
+        if (prefix !== page.tabPrefix) {
+            page.tabPrefix = prefix
+            page.tabIndex = 0
+            var lower = prefix.toLowerCase()
+            var out = []
+            for (var i = 0; i < page.nickList.length; ++i) {
+                var n = String(page.nickList[i]).replace(/^[@+%~&]/, "")
+                if (n.toLowerCase().indexOf(lower) === 0) {
+                    out.push(n)
+                }
+            }
+            page.tabMatches = out
+        }
+        if (page.tabMatches.length === 0) {
+            return
+        }
+        var pick = page.tabMatches[page.tabIndex % page.tabMatches.length]
+        page.tabIndex = (page.tabIndex + 1) % page.tabMatches.length
+        var insert = (start === 0) ? (pick + ": ") : pick
+        messageInput.text = text.substring(0, start) + insert + text.substring(pos)
+        messageInput.cursorPosition = start + insert.length
     }
 
     function tryJoin()
