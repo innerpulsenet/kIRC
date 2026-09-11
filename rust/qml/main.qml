@@ -121,6 +121,11 @@ Kirigami.ApplicationWindow {
         return target
     }
 
+    readonly property bool currentIsQuery: {
+        var t = root.chatChannel
+        return t.length > 0 && t !== "*server*" && t.charAt(0) !== "#" && t.charAt(0) !== "&"
+    }
+
     readonly property string headerTitle: root.pageStack.depth > 1
         ? root.channelLabel(root.chatChannel)
         : qsTr("Connect to IRC")
@@ -214,7 +219,7 @@ Kirigami.ApplicationWindow {
                 Controls.Label {
                     anchors.centerIn: parent
                     visible: root.chatChannel !== "*server*"
-                    text: "#"
+                    text: root.currentIsQuery ? ThemeEngine.initial(root.chatChannel) : "#"
                     color: ThemeEngine.contrastingTextColor(parent.color)
                     font.bold: true
                     font.pointSize: Math.max(1, Kirigami.Theme.defaultFont.pointSize)
@@ -227,6 +232,16 @@ Kirigami.ApplicationWindow {
                 font.pointSize: Kirigami.Theme.defaultFont.pointSize + 1
                 elide: Text.ElideRight
                 Layout.fillWidth: true
+            }
+
+            Controls.ToolButton {
+                icon.name: "window-close"
+                text: qsTr("Close")
+                display: Controls.AbstractButton.IconOnly
+                visible: root.pageStack.depth > 1 && root.chatChannel !== "*server*"
+                onClicked: root.closeCurrentBuffer()
+                Controls.ToolTip.visible: hovered
+                Controls.ToolTip.text: root.currentIsQuery ? qsTr("Close conversation") : qsTr("Leave channel")
             }
 
             // ---- connection status pill ----
@@ -479,6 +494,14 @@ Kirigami.ApplicationWindow {
             "hostWindow": root,
             "currentChannel": root.chatChannel
         })
+    }
+
+    function closeCurrentBuffer()
+    {
+        var page = root.pageStack.currentItem
+        if (page && page.closeBuffer) {
+            page.closeBuffer(root.chatChannel)
+        }
     }
 
     /// Persist the profile that just connected. host/port/tls/nickname and the

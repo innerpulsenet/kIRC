@@ -436,10 +436,11 @@ Item {
                     onLinkActivated: (link) => Qt.openUrlExternally(link)
                 }
 
-                // Timestamp: one fixed place per bubble — the end of the group
-                // (and on hover while the pointer is over the row).
+                // Timestamp only on the last bubble of a group. Never on hover:
+                // toggling visibility changes implicitHeight and makes the
+                // whole log jump when the pointer moves.
                 RowLayout {
-                    visible: !delegate.continuesNext || delegate.hovered
+                    visible: !delegate.continuesNext
                     Layout.fillWidth: true
                     spacing: Kirigami.Units.smallSpacing
 

@@ -331,6 +331,29 @@ Kirigami.Page {
                                     font.bold: bufferDelegate.active
                                     elide: Text.ElideRight
                                 }
+
+                                Controls.ToolButton {
+                                    visible: !bufferDelegate.isServer
+                                    opacity: (bufferDelegate.hovered || bufferDelegate.active) ? 1 : 0
+                                    icon.name: "window-close"
+                                    display: Controls.AbstractButton.IconOnly
+                                    Layout.preferredWidth: Math.round(Kirigami.Units.gridUnit * 1.2)
+                                    Layout.preferredHeight: Math.round(Kirigami.Units.gridUnit * 1.2)
+                                    onClicked: page.closeBuffer(bufferDelegate.target)
+                                    Controls.ToolTip.visible: hovered
+                                    Controls.ToolTip.text: bufferDelegate.isQuery
+                                                          ? qsTr("Close conversation")
+                                                          : qsTr("Leave channel")
+                                }
+                            }
+
+                            TapHandler {
+                                acceptedButtons: Qt.MiddleButton
+                                onTapped: {
+                                    if (!bufferDelegate.isServer) {
+                                        page.closeBuffer(bufferDelegate.target)
+                                    }
+                                }
                             }
                         }
                     }
@@ -552,6 +575,9 @@ Kirigami.Page {
                             if (page.currentChannel === "*server*") {
                                 return qsTr("Server console")
                             }
+                            if (page.currentChannel.charAt(0) !== "#" && page.currentChannel.charAt(0) !== "&") {
+                                return qsTr("No messages yet")
+                            }
                             return qsTr("No messages in %1 yet").arg(page.currentChannel)
                         }
                         color: Kirigami.Theme.textColor
@@ -568,6 +594,9 @@ Kirigami.Page {
                             }
                             if (page.currentChannel === "*server*") {
                                 return qsTr("Server notices, joins and parts show up here.")
+                            }
+                            if (page.currentChannel.charAt(0) !== "#" && page.currentChannel.charAt(0) !== "&") {
+                                return qsTr("Private messages with this nick show up here.")
                             }
                             return qsTr("Say hi!")
                         }
@@ -818,6 +847,22 @@ Kirigami.Page {
         page.channels = list
     }
 
+    function closeBuffer(target)
+    {
+        if (target === undefined || target === null || target === "*server*") {
+            return
+        }
+        var isChan = target.charAt(0) === "#" || target.charAt(0) === "&"
+        if (isChan && page.bridge !== null) {
+            page.bridge.part_channel(target)
+        }
+        var leaving = page.currentChannel === target
+        page.removeBuffer(target)
+        if (leaving) {
+            page.openChannel("*server*")
+        }
+    }
+
     function refreshHistory()
     {
         msgModel.load_channel(page.currentChannel)
@@ -863,11 +908,9 @@ Kirigami.Page {
             page.tryJoin()
             return true
         }
-        if (cmd === "/part") {
+        if (cmd === "/part" || cmd === "/close" || cmd === "/wc") {
             var chan = rest.length > 0 ? rest.split(" ")[0] : page.currentChannel
-            if (page.bridge.part_channel) {
-                page.bridge.part_channel(chan)
-            }
+            page.closeBuffer(chan)
             return true
         }
         if (cmd === "/query" || cmd === "/msg") {
