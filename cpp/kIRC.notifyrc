@@ -1,0 +1,9 @@
+[Global]
+IconName=preferences-system-network
+DesktopEntry=org.kde.kIRC
+Comment=IRC client
+
+[Event/message]
+Name=New message
+Comment=Someone mentioned you or sent you a private message
+Action=Popup

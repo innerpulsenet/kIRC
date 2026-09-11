@@ -1,6 +1,6 @@
 build/
 target/
 **/target/
-Cargo.lock
 .vscode/
 *.user
+rust/vendor/

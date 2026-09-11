@@ -21,11 +21,15 @@ tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 
 mkdir -p "$tmp/org/kde/kirc"
-cp "$root"/qml/*.qml "$root"/qml/Theme.js "$tmp/org/kde/kirc/"
-cp -r "$root"/qml/themes "$tmp/org/kde/kirc/"
+cp "$root"/rust/qml/*.qml "$root"/rust/qml/Theme.js "$tmp/org/kde/kirc/"
+cp -r "$root"/rust/qml/themes "$tmp/org/kde/kirc/"
 cp "$here"/IrcBridge.qml "$here"/MessageListModel.qml "$tmp/org/kde/kirc/"
 
-printf 'module org.kde.kirc\nsingleton ThemeEngine 1.0 ThemeEngine.qml\nIrcBridge 1.0 IrcBridge.qml\nMessageListModel 1.0 MessageListModel.qml\n' \
+# qmldir mirroring the one cxx-qt generates for the real module
+# (build/cxxqt/qml_modules/org/kde/kirc/qmldir): the cxx-qt Rust types plus
+# every QML file in rust/qml/, so main.qml can use ConnectPage/ChatPage as
+# types rather than only via file URLs.
+printf 'module org.kde.kirc\nsingleton ThemeEngine 1.0 ThemeEngine.qml\nIrcBridge 1.0 IrcBridge.qml\nMessageListModel 1.0 MessageListModel.qml\nChatPage 1.0 ChatPage.qml\nConnectPage 1.0 ConnectPage.qml\nMessageDelegate 1.0 MessageDelegate.qml\n' \
     > "$tmp/org/kde/kirc/qmldir"
 
 cp "$here"/tst_smoke.qml "$tmp/"

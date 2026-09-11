@@ -29,6 +29,7 @@ find_package(Qt6 6.6 REQUIRED COMPONENTS
     Core
     Gui
     Widgets
+    DBus
     Qml
     Quick
     QuickControls2
@@ -39,9 +40,13 @@ find_package(Qt6 6.6 REQUIRED COMPONENTS
 # KDE Frameworks 6
 #
 # Fedora does not ship the KF6 umbrella package, so fall back to the
-# per-framework packages (KF6Kirigami, KF6Config, KF6Notifications).
+# per-framework packages (KF6Kirigami, KF6Config, KF6Notifications,
+# KF6StatusNotifierItem).
+#
+# NOTE: in KF6, KStatusNotifierItem is no longer part of KNotifications — it
+# moved into its own framework, so the tray needs KF6StatusNotifierItem.
 # ---------------------------------------------------------------------------
-find_package(KF6 QUIET COMPONENTS Kirigami Config Notifications)
+find_package(KF6 QUIET COMPONENTS Kirigami Config Notifications StatusNotifierItem)
 
 if(NOT TARGET KF6::Kirigami)
     find_package(KF6Kirigami REQUIRED)
@@ -51,6 +56,9 @@ if(NOT TARGET KF6::ConfigCore)
 endif()
 if(NOT TARGET KF6::Notifications)
     find_package(KF6Notifications REQUIRED)
+endif()
+if(NOT TARGET KF6::StatusNotifierItem)
+    find_package(KF6StatusNotifierItem REQUIRED)
 endif()
 
 if(TARGET KF6::ConfigCore)
@@ -102,6 +110,12 @@ cxx_qt_import_qml_module(kirc_qml
 # ---------------------------------------------------------------------------
 qt_add_executable(kIRC
     cpp/main.cpp
+    cpp/kircconfig.cpp
+    cpp/kircconfig.h
+    cpp/kircnotify.cpp
+    cpp/kircnotify.h
+    cpp/kirctray.cpp
+    cpp/kirctray.h
 )
 
 target_link_libraries(kIRC PRIVATE
@@ -109,12 +123,21 @@ target_link_libraries(kIRC PRIVATE
     Qt6::Core
     Qt6::Gui
     Qt6::Widgets
+    Qt6::DBus
     Qt6::Qml
     Qt6::Quick
     Qt6::QuickControls2
     KF6::Kirigami
     KF6::Notifications
+    KF6::StatusNotifierItem
     ${KIRC_KCONFIG_TARGET}
 )
 
 install(TARGETS kIRC RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+
+# KNotify only delivers an event id that is declared for the component, so the
+# `message` event used by cpp/kircnotify.cpp must be installed next to the
+# notifications data.  Without it KircNotifier falls back to the standard
+# Notification event (see cpp/kircnotify.cpp), but the chat-specific event —
+# and with it per-event configuration in System Settings — needs this file.
+install(FILES cpp/kIRC.notifyrc DESTINATION ${CMAKE_INSTALL_DATADIR}/knotifications6)

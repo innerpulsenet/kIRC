@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=kIRC
+GenericName=IRC Client
+Comment=Chat on IRC with a native KDE client
+Exec=kIRC
+Icon=kirc
+Terminal=false
+Categories=Qt;KDE;Network;InstantMessaging;IRCClient;
+StartupWMClass=kIRC
+X-KDE-StartupNotify=true

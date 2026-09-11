@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<!--
+  kIRC application icon.
+
+  SPDX-License-Identifier: GPL-2.0-or-later
+
+  Breeze-style flat glyph: a rounded-square tile in the Breeze blue accent,
+  a white speech bubble and a "#" channel glyph. No gradients other than the
+  subtle Breeze blue vertical shade, no text elements (so it renders
+  identically with rsvg, Inkscape or Qt without needing a font).
+-->
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256"
+     viewBox="0 0 256 256" version="1.1">
+  <defs>
+    <linearGradient id="breezeBlue" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#4dbcf0"/>
+      <stop offset="1" stop-color="#1d99f3"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Rounded-square tile -->
+  <rect x="6" y="6" width="244" height="244" rx="58" ry="58"
+        fill="url(#breezeBlue)"/>
+
+  <!-- Speech bubble with bottom-left tail -->
+  <path fill="#ffffff"
+        d="M 62 56
+           H 194
+           A 30 30 0 0 1 224 86
+           V 150
+           A 30 30 0 0 1 194 180
+           H 116
+           L 78 214
+           L 88 180
+           H 62
+           A 30 30 0 0 1 32 150
+           V 86
+           A 30 30 0 0 1 62 56
+           Z"/>
+
+  <!-- "#" channel glyph, drawn as strokes so no font is required -->
+  <g stroke="#1d99f3" stroke-width="12" stroke-linecap="round">
+    <line x1="115" y1="90" x2="115" y2="146"/>
+    <line x1="141" y1="90" x2="141" y2="146"/>
+    <line x1="100" y1="105" x2="156" y2="105"/>
+    <line x1="100" y1="131" x2="156" y2="131"/>
+  </g>
+</svg>

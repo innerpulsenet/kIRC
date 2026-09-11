@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  AppStream metadata for kIRC.
+
+  SPDX-License-Identifier: CC0-1.0
+
+  Validate with:
+      appstream-util validate-relax org.kde.kirc.metainfo.xml
+-->
+<component type="desktop-application">
+  <id>org.kde.kirc</id>
+
+  <name>kIRC</name>
+  <summary>Chat on IRC with a native KDE client</summary>
+
+  <developer id="org.kde">
+    <name>The kIRC Authors</name>
+  </developer>
+
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-2.0-or-later AND MIT AND Apache-2.0</project_license>
+
+  <description>
+    <p>
+      kIRC is an IRCv3 client for the KDE Plasma desktop. Its interface is
+      built with Kirigami, so it adapts naturally from a desktop window to a
+      narrow panel or a touch device, and follows your Plasma colours and
+      fonts.
+    </p>
+    <p>
+      The protocol engine is a Rust core that speaks IRCv3, including message
+      tags, capability negotiation (CAP) and SASL authentication
+      (PLAIN, SCRAM-SHA-256 and EXTERNAL) over TLS, while the presentation
+      layer stays a native Qt Quick application.
+    </p>
+    <p>
+      Features include multiple server connections, channel and query views,
+      nickname and topic handling, and desktop notifications for highlights
+      through KNotifications.
+    </p>
+  </description>
+
+  <launchable type="desktop-id">kIRC.desktop</launchable>
+
+  <url type="homepage">https://github.com/innerpulsenet/kIRC</url>
+  <url type="bugtracker">https://github.com/innerpulsenet/kIRC/issues</url>
+
+  <categories>
+    <category>Network</category>
+    <category>InstantMessaging</category>
+    <category>IRCClient</category>
+  </categories>
+
+  <releases>
+    <release version="0.1.0" date="2026-09-11">
+      <description>
+        <p>Initial release.</p>
+      </description>
+    </release>
+  </releases>
+
+  <content_rating type="oars-1.1"/>
+</component>
