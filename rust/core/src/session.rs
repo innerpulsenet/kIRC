@@ -123,6 +123,12 @@ pub enum IrcEvent {
     Part { channel: String, nick: String },
     /// A channel topic was set (or sent on join).
     Topic { channel: String, topic: String },
+    /// End of `/NAMES` for a channel (full snapshot, prefixes kept).
+    Names { channel: String, nicks: Vec<String> },
+    /// A `JOIN` was rejected (invite-only, keyed, full, banned, …).
+    JoinFailed { channel: String, reason: String },
+    /// Someone quit the network.
+    Quit { nick: String, reason: String },
     /// A resolved `chathistory` batch.
     HistoryBatch { messages: Vec<HistoryMsg> },
     /// Informational text (MOTD, numerics summary).
@@ -290,6 +296,8 @@ struct Session {
     cap_end_sent: bool,
     registered: bool,
     batches: HashMap<String, BatchBuffer>,
+    /// Accumulated RPL_NAMREPLY (353) nicks, flushed on RPL_ENDOFNAMES (366).
+    names_acc: HashMap<String, Vec<String>>,
     ping_counter: u64,
     outstanding_ping: Option<String>,
     missed_pongs: u32,
@@ -404,6 +412,20 @@ impl Session {
                 let topic = message.params.get(1).cloned().unwrap_or_default();
                 self.emit(IrcEvent::Topic { channel, topic }).await;
             }
+            "QUIT" => {
+                let nick = source_name(&message);
+                let reason = message.params.first().cloned().unwrap_or_default();
+                self.emit(IrcEvent::Quit { nick, reason }).await;
+            }
+            "NICK" => {
+                let old = source_name(&message);
+                let new_nick = message.params.first().cloned().unwrap_or_default();
+                self.emit(IrcEvent::Quit {
+                    nick: old,
+                    reason: format!("is now {new_nick}"),
+                })
+                .await;
+            }
             "ERROR" => {
                 let text = message.params.join(" ");
                 let text = if text.is_empty() {
@@ -450,6 +472,38 @@ impl Session {
                     text: numeric_summary(message),
                 })
                 .await;
+            }
+            332 => {
+                // RPL_TOPIC: <client> <channel> :<topic>
+                let channel = channel_from_numeric(message);
+                let topic = message.params.last().cloned().unwrap_or_default();
+                if !channel.is_empty() {
+                    self.emit(IrcEvent::Topic { channel, topic }).await;
+                }
+            }
+            353 => {
+                // RPL_NAMREPLY: <client> <symbol> <channel> :<names>
+                let channel = channel_from_numeric(message);
+                let names = message.params.last().cloned().unwrap_or_default();
+                if !channel.is_empty() {
+                    let entry = self.names_acc.entry(channel).or_default();
+                    for nick in names.split_whitespace() {
+                        if !nick.is_empty() {
+                            entry.push(nick.to_string());
+                        }
+                    }
+                }
+            }
+            366 => {
+                // RPL_ENDOFNAMES: <client> <channel> :End of /NAMES
+                let channel = channel_from_numeric(message);
+                let nicks = self.names_acc.remove(&channel).unwrap_or_default();
+                self.emit(IrcEvent::Names { channel, nicks }).await;
+            }
+            403 | 405 | 437 | 471 | 473 | 474 | 475 | 476 | 477 | 479 => {
+                let channel = channel_from_numeric(message);
+                let reason = numeric_summary(message);
+                self.emit(IrcEvent::JoinFailed { channel, reason }).await;
             }
             400..=499 => {
                 self.emit(IrcEvent::Error {
@@ -663,12 +717,14 @@ impl Session {
     }
 
     async fn handle_privmsg(&mut self, message: &IrcMessage) {
-        let target = message.params.first().cloned().unwrap_or_default();
+        let raw_target = message.params.first().cloned().unwrap_or_default();
         let text = message.params.get(1).cloned().unwrap_or_default();
         let nick = source_name(message);
         let timestamp = message.tags.get("time").cloned().flatten();
         let is_self = !nick.is_empty() && nick.eq_ignore_ascii_case(&self.config.nickname);
         let is_highlight = !is_self && is_highlight(&text, &self.config.nickname);
+        let target = conversation_target(&self.config.nickname, &nick, &raw_target, is_self);
+        let text = display_privmsg(&text);
         self.emit(IrcEvent::Msg {
             target,
             nick,
@@ -740,6 +796,54 @@ impl Session {
 
 /// Display name of a message's source: the nick when the prefix is a user,
 /// otherwise the server name (so server NOTICEs are attributed, not blank).
+
+/// True when `target` is a channel name (`#`, `&`, `+`, `!` prefixes).
+pub fn is_channel(target: &str) -> bool {
+    matches!(target.as_bytes().first(), Some(b'#' | b'&' | b'+' | b'!'))
+}
+
+/// Buffer key for a PRIVMSG: channels stay as-is; incoming queries are filed
+/// under the sender's nick rather than our own.
+fn conversation_target(our_nick: &str, sender: &str, raw_target: &str, is_self: bool) -> String {
+    if is_channel(raw_target) {
+        return raw_target.to_string();
+    }
+    if is_self || sender.is_empty() {
+        raw_target.to_string()
+    } else if raw_target.eq_ignore_ascii_case(our_nick) {
+        sender.to_string()
+    } else {
+        raw_target.to_string()
+    }
+}
+
+/// Render CTCP ACTION as `/me` text; leave other payloads untouched.
+fn display_privmsg(text: &str) -> String {
+    const START: &str = "\x01ACTION ";
+    // CTCP ACTION is \x01ACTION <body>\x01
+    let bytes = text.as_bytes();
+    if bytes.first() == Some(&0x01) && bytes.last() == Some(&0x01) && text.len() > 9 {
+        let inner = &text[1..text.len() - 1];
+        if let Some(body) = inner.strip_prefix("ACTION ") {
+            return format!("* {body}");
+        }
+    }
+    let _ = START;
+    text.to_string()
+}
+
+/// First channel-like parameter after the client nick, else params[1].
+fn channel_from_numeric(message: &IrcMessage) -> String {
+    message
+        .params
+        .iter()
+        .skip(1)
+        .find(|p| is_channel(p))
+        .cloned()
+        .or_else(|| message.params.get(1).cloned())
+        .unwrap_or_default()
+}
+
 fn source_name(message: &IrcMessage) -> String {
     message
         .prefix
@@ -813,6 +917,7 @@ pub async fn run_session(
         cap_end_sent: false,
         registered: false,
         batches: HashMap::new(),
+        names_acc: HashMap::new(),
         ping_counter: 0,
         outstanding_ping: None,
         missed_pongs: 0,
@@ -933,6 +1038,22 @@ mod tests {
         assert!(!is_highlight("anything", ""));
         assert!(is_highlight("(bob) hi", "bob"));
         assert!(is_highlight("hi, bob.", "bob"));
+    }
+
+    #[test]
+    fn channel_detection_and_query_target() {
+        assert!(is_channel("#kirc"));
+        assert!(is_channel("&local"));
+        assert!(!is_channel("alice"));
+        assert!(!is_channel(""));
+        assert_eq!(conversation_target("me", "alice", "#c", false), "#c");
+        assert_eq!(conversation_target("me", "alice", "me", false), "alice");
+        assert_eq!(conversation_target("me", "me", "alice", true), "alice");
+        assert_eq!(display_privmsg("hello"), "hello");
+        let m = parse_message(":s 473 me #pain :Cannot join channel (+i)").unwrap();
+        assert_eq!(channel_from_numeric(&m), "#pain");
+        let names = parse_message(":s 353 me = #kirc :@op +voice nick").unwrap();
+        assert_eq!(channel_from_numeric(&names), "#kirc");
     }
 
     #[test]

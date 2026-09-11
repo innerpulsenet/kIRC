@@ -51,7 +51,7 @@ Kirigami.ApplicationWindow {
     }
 
     // Updated by ChatPage when the user switches channel.
-    property string chatChannel: "#kirc"
+    property string chatChannel: "*server*"
 
     // One page at a time. PageRow otherwise switches to FixedColumns in
     // wideMode and leaves the connect form sitting beside (or ghosting

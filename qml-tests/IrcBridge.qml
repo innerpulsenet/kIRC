@@ -15,6 +15,12 @@ QtObject {
     signal notification_fired(string title, string body)
     signal info(string text)
     signal error_occurred(string message)
+    signal channel_joined(string channel)
+    signal channel_parted(string channel)
+    signal join_failed(string channel, string reason)
+    signal topic_changed(string channel, string topic)
+    signal names_updated(string channel, string nicks)
+    signal query_opened(string nick)
 
     function connect_server(host, port, tls, nickname, sasl_user, sasl_pass) {
         console.error("STUB connect_server(" + host + ", " + port + ", " + tls + ", " + nickname + ", " + sasl_user + ")")
@@ -26,11 +32,14 @@ QtObject {
             bridge.connection_state = 2
             bridge.connected_server = host + ":" + port + (tls ? " (TLS)" : "")
             bridge.state_changed(2)
+            bridge.channel_joined("#kirc")
             Qt.callLater(function() {
                 bridge.message_received("#kirc", "alice", "hello world https://kde.org and <b>raw html</b>", false, false)
                 bridge.message_received("#kirc", nickname, "my own line", true, false)
                 bridge.message_received("#kirc", "bob", nickname + ": please look at this", false, true)
                 bridge.history_batch_received("#kirc")
+                bridge.names_updated("#kirc", "alice @" + nickname + " bob")
+                bridge.topic_changed("#kirc", "kIRC development")
             })
         })
     }
@@ -43,5 +52,23 @@ QtObject {
     }
     function request_history(target, limit) {
         console.error("STUB request_history(" + target + ", " + limit + ")")
+    }
+    function join_channel(channel) {
+        console.error("STUB join_channel(" + channel + ")")
+        if (channel.indexOf("pain") !== -1) {
+            bridge.join_failed(channel, "473 " + channel + " Cannot join channel (+i)")
+            return
+        }
+        Qt.callLater(function() { bridge.channel_joined(channel) })
+    }
+    function part_channel(channel) {
+        console.error("STUB part_channel(" + channel + ")")
+        bridge.channel_parted(channel)
+    }
+    function nicks_for(channel) {
+        return channel.charAt(0) === "#" ? "alice bob" : ""
+    }
+    function topic_for(channel) {
+        return channel.charAt(0) === "#" ? "kIRC development" : ""
     }
 }

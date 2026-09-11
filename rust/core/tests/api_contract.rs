@@ -156,6 +156,18 @@ fn irc_event_variants() {
             channel: "#c".into(),
             topic: "t".into(),
         },
+        IrcEvent::Names {
+            channel: "#c".into(),
+            nicks: vec!["@op".into(), "nick".into()],
+        },
+        IrcEvent::JoinFailed {
+            channel: "#c".into(),
+            reason: "invite only".into(),
+        },
+        IrcEvent::Quit {
+            nick: "n".into(),
+            reason: "bye".into(),
+        },
         IrcEvent::HistoryBatch {
             messages: vec![HistoryMsg {
                 timestamp: None,
@@ -168,7 +180,7 @@ fn irc_event_variants() {
             message: "e".into(),
         },
     ];
-    assert_eq!(events.len(), 12);
+    assert_eq!(events.len(), 15);
 }
 
 #[test]

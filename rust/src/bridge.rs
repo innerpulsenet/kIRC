@@ -20,7 +20,7 @@ use std::sync::{Mutex, OnceLock};
 use cxx_qt::{CxxQtType, Threading};
 use cxx_qt_lib::{QByteArray, QHash, QHashPair_i32_QByteArray, QModelIndex, QString, QVariant};
 
-use kirc_core::{ClientCommand, ConnectionConfig, IrcEvent, SaslConfig, SaslMechanism};
+use kirc_core::{is_channel, ClientCommand, ConnectionConfig, IrcEvent, SaslConfig, SaslMechanism};
 
 // ---------------------------------------------------------------------------
 // Shared, cross-object message buffer
@@ -44,6 +44,20 @@ pub static STORE: OnceLock<Mutex<BTreeMap<String, Vec<StoreMsg>>>> = OnceLock::n
 
 fn store() -> &'static Mutex<BTreeMap<String, Vec<StoreMsg>>> {
     STORE.get_or_init(|| Mutex::new(BTreeMap::new()))
+}
+
+pub static NICKS: OnceLock<Mutex<BTreeMap<String, Vec<String>>>> = OnceLock::new();
+fn nick_store() -> &'static Mutex<BTreeMap<String, Vec<String>>> {
+    NICKS.get_or_init(|| Mutex::new(BTreeMap::new()))
+}
+
+pub static TOPICS: OnceLock<Mutex<BTreeMap<String, String>>> = OnceLock::new();
+fn topic_store() -> &'static Mutex<BTreeMap<String, String>> {
+    TOPICS.get_or_init(|| Mutex::new(BTreeMap::new()))
+}
+
+fn bare_nick(nick: &str) -> &str {
+    nick.trim_start_matches(|c: char| matches!(c, '@' | '+' | '%' | '~' | '&'))
 }
 
 /// The process-wide tokio runtime that drives every IRC session.
@@ -193,6 +207,31 @@ pub mod qobject {
         #[qsignal]
         fn error_occurred(self: Pin<&mut Self>, message: QString);
 
+        /// We successfully joined `channel` (our own JOIN).
+        #[qsignal]
+        fn channel_joined(self: Pin<&mut Self>, channel: QString);
+
+        /// We left `channel` (our own PART).
+        #[qsignal]
+        fn channel_parted(self: Pin<&mut Self>, channel: QString);
+
+        /// A JOIN was rejected. The channel must not appear as joined.
+        #[qsignal]
+        fn join_failed(self: Pin<&mut Self>, channel: QString, reason: QString);
+
+        /// Topic for `channel` changed (or arrived on join).
+        #[qsignal]
+        fn topic_changed(self: Pin<&mut Self>, channel: QString, topic: QString);
+
+        /// Nick list for `channel` was replaced. `nicks` is space-separated,
+        /// prefixes (`@%+~&`) kept.
+        #[qsignal]
+        fn names_updated(self: Pin<&mut Self>, channel: QString, nicks: QString);
+
+        /// A query buffer should exist for `nick`.
+        #[qsignal]
+        fn query_opened(self: Pin<&mut Self>, nick: QString);
+
         /// Start a new IRC session (replacing any existing one).
         #[qinvokable]
         fn connect_server(
@@ -216,6 +255,18 @@ pub mod qobject {
         /// Join a channel.
         #[qinvokable]
         fn join_channel(self: Pin<&mut Self>, channel: QString);
+
+        /// Leave a channel.
+        #[qinvokable]
+        fn part_channel(self: Pin<&mut Self>, channel: QString);
+
+        /// Space-separated nick list for `channel` (prefixes kept).
+        #[qinvokable]
+        fn nicks_for(self: &Self, channel: QString) -> QString;
+
+        /// Current topic for `channel`.
+        #[qinvokable]
+        fn topic_for(self: &Self, channel: QString) -> QString;
 
         /// Ask the server for scrollback for `target`.
         #[qinvokable]
@@ -432,6 +483,57 @@ fn info_to_store(mut obj: Pin<&mut qobject::IrcBridge>, text: &str) {
     );
 }
 
+fn push_channel_line(mut obj: Pin<&mut qobject::IrcBridge>, channel: &str, text: &str) {
+    {
+        let mut guard = store().lock().unwrap_or_else(|e| e.into_inner());
+        guard
+            .entry(channel.to_owned())
+            .or_default()
+            .push(StoreMsg {
+                nick: "*".to_owned(),
+                text: text.to_owned(),
+                timestamp: now_string(),
+                is_self: false,
+                is_highlight: false,
+            });
+    }
+    obj.as_mut()
+        .message_received(qs(channel), qs("*"), qs(text), false, false);
+}
+
+fn add_nick(channel: &str, nick: &str) {
+    let mut guard = nick_store().lock().unwrap_or_else(|e| e.into_inner());
+    let list = guard.entry(channel.to_owned()).or_default();
+    if !list
+        .iter()
+        .any(|n| bare_nick(n).eq_ignore_ascii_case(bare_nick(nick)))
+    {
+        list.push(nick.to_owned());
+        list.sort_by(|a, b| bare_nick(a).to_lowercase().cmp(&bare_nick(b).to_lowercase()));
+    }
+}
+
+fn remove_nick(channel: &str, nick: &str) -> bool {
+    let mut guard = nick_store().lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(list) = guard.get_mut(channel) {
+        let before = list.len();
+        list.retain(|n| !bare_nick(n).eq_ignore_ascii_case(bare_nick(nick)));
+        return list.len() != before;
+    }
+    false
+}
+
+fn emit_names(obj: Pin<&mut qobject::IrcBridge>, channel: &str) {
+    let joined = {
+        let guard = nick_store().lock().unwrap_or_else(|e| e.into_inner());
+        guard
+            .get(channel)
+            .map(|n| n.join(" "))
+            .unwrap_or_default()
+    };
+    obj.names_updated(qs(channel), qs(&joined));
+}
+
 /// Apply one `IrcEvent` to `IrcBridge`.  Always called on the Qt thread.
 fn handle_event(mut obj: Pin<&mut qobject::IrcBridge>, event: IrcEvent) {
     match event {
@@ -500,6 +602,9 @@ fn handle_event(mut obj: Pin<&mut qobject::IrcBridge>, event: IrcEvent) {
                 obj.as_mut()
                     .notification_fired(qs(&nick), qs(&text));
             }
+            if !is_channel(&target) && target != SERVER_BUFFER {
+                obj.as_mut().query_opened(qs(&target));
+            }
         }
 
         IrcEvent::HistoryBatch { messages } => {
@@ -529,19 +634,88 @@ fn handle_event(mut obj: Pin<&mut qobject::IrcBridge>, event: IrcEvent) {
             nick,
             account,
         } => {
+            let ours = rs(obj.as_ref().nickname());
+            let is_self = nick.eq_ignore_ascii_case(&ours);
             let suffix = account
                 .as_deref()
                 .map(|a| format!(" ({a})"))
                 .unwrap_or_default();
-            info_to_store(obj.as_mut(), &format!("{nick}{suffix} joined {channel}"));
+            let line = if is_self {
+                format!("You joined {channel}")
+            } else {
+                format!("{nick}{suffix} joined {channel}")
+            };
+            push_channel_line(obj.as_mut(), &channel, &line);
+            if is_self {
+                obj.as_mut().channel_joined(qs(&channel));
+            } else {
+                add_nick(&channel, &nick);
+                emit_names(obj.as_mut(), &channel);
+            }
         }
 
         IrcEvent::Part { channel, nick } => {
-            info_to_store(obj.as_mut(), &format!("{nick} left {channel}"));
+            let ours = rs(obj.as_ref().nickname());
+            let is_self = nick.eq_ignore_ascii_case(&ours);
+            let line = if is_self {
+                format!("You left {channel}")
+            } else {
+                format!("{nick} left {channel}")
+            };
+            push_channel_line(obj.as_mut(), &channel, &line);
+            if is_self {
+                {
+                    let mut guard = nick_store().lock().unwrap_or_else(|e| e.into_inner());
+                    guard.remove(&channel);
+                }
+                obj.as_mut().channel_parted(qs(&channel));
+            } else {
+                remove_nick(&channel, &nick);
+                emit_names(obj.as_mut(), &channel);
+            }
         }
 
         IrcEvent::Topic { channel, topic } => {
-            info_to_store(obj.as_mut(), &format!("Topic for {channel}: {topic}"));
+            {
+                let mut guard = topic_store().lock().unwrap_or_else(|e| e.into_inner());
+                guard.insert(channel.clone(), topic.clone());
+            }
+            push_channel_line(
+                obj.as_mut(),
+                &channel,
+                &format!("Topic for {channel}: {topic}"),
+            );
+            obj.as_mut().topic_changed(qs(&channel), qs(&topic));
+        }
+
+        IrcEvent::Names { channel, nicks } => {
+            {
+                let mut guard = nick_store().lock().unwrap_or_else(|e| e.into_inner());
+                guard.insert(channel.clone(), nicks.clone());
+            }
+            emit_names(obj.as_mut(), &channel);
+        }
+
+        IrcEvent::JoinFailed { channel, reason } => {
+            info_to_store(obj.as_mut(), &reason);
+            obj.as_mut().join_failed(qs(&channel), qs(&reason));
+        }
+
+        IrcEvent::Quit { nick, reason } => {
+            let channels = {
+                let guard = nick_store().lock().unwrap_or_else(|e| e.into_inner());
+                guard.keys().cloned().collect::<Vec<_>>()
+            };
+            for channel in channels {
+                if remove_nick(&channel, &nick) {
+                    push_channel_line(
+                        obj.as_mut(),
+                        &channel,
+                        &format!("{nick} quit ({reason})"),
+                    );
+                    emit_names(obj.as_mut(), &channel);
+                }
+            }
         }
 
         IrcEvent::Info { text } => {
@@ -716,6 +890,37 @@ impl qobject::IrcBridge {
         if let Some(tx) = self.rust().command_tx.as_ref() {
             let _ = tx.try_send(ClientCommand::Join(rs(&channel)));
         }
+    }
+
+    /// Leave a channel.
+    pub fn part_channel(self: Pin<&mut Self>, channel: QString) {
+        if let Some(tx) = self.rust().command_tx.as_ref() {
+            let _ = tx.try_send(ClientCommand::Part {
+                channel: rs(&channel),
+                reason: None,
+            });
+        }
+    }
+
+    pub fn nicks_for(self: &Self, channel: QString) -> QString {
+        let channel_s = rs(&channel);
+        let joined = {
+            let guard = nick_store().lock().unwrap_or_else(|e| e.into_inner());
+            guard
+                .get(&channel_s)
+                .map(|n| n.join(" "))
+                .unwrap_or_default()
+        };
+        qs(&joined)
+    }
+
+    pub fn topic_for(self: &Self, channel: QString) -> QString {
+        let channel_s = rs(&channel);
+        let topic = {
+            let guard = topic_store().lock().unwrap_or_else(|e| e.into_inner());
+            guard.get(&channel_s).cloned().unwrap_or_default()
+        };
+        qs(&topic)
     }
 
     /// Ask the server for scrollback.

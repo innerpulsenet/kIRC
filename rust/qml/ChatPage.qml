@@ -52,10 +52,13 @@ Kirigami.Page {
         return cut > 0 ? server.substring(0, cut) : server
     }
 
-    property string currentChannel: "#kirc"
-    // The server console (numerics, MOTD, joins/parts) lives in a dedicated
-    // "*server*" buffer the bridge fills; channels join it in the sidebar.
-    property var channels: ["*server*", "#kirc"]
+    property string currentChannel: "*server*"
+    // Only buffers the server has actually accepted (plus the console and
+    // query windows). #kirc is NOT auto-joined.
+    property var channels: ["*server*"]
+    property string currentTopic: ""
+    property var nickList: []
+    property string joinError: ""
 
     title: page.channelLabel(page.currentChannel)
     padding: 0
@@ -106,7 +109,52 @@ Kirigami.Page {
         function onState_changed(state) {
             if (state === 2) {
                 page.refreshHistory()
+            } else if (state === 0) {
+                page.channels = ["*server*"]
+                page.nickList = []
+                page.currentTopic = ""
+                page.openChannel("*server*")
             }
+        }
+
+        function onChannel_joined(channel) {
+            page.addBuffer(channel)
+            page.openChannel(channel)
+            if (page.bridge !== null) {
+                page.bridge.request_history(channel, 200)
+            }
+            page.joinError = ""
+        }
+
+        function onChannel_parted(channel) {
+            page.removeBuffer(channel)
+            if (page.currentChannel === channel) {
+                page.openChannel("*server*")
+            }
+        }
+
+        function onJoin_failed(channel, reason) {
+            page.removeBuffer(channel)
+            page.joinError = reason
+            if (page.hostWindow !== null && page.hostWindow.showPassiveNotification) {
+                page.hostWindow.showPassiveNotification(reason, 5000)
+            }
+        }
+
+        function onTopic_changed(channel, topic) {
+            if (channel === page.currentChannel) {
+                page.currentTopic = topic
+            }
+        }
+
+        function onNames_updated(channel, nicks) {
+            if (channel === page.currentChannel) {
+                page.nickList = nicks.length === 0 ? [] : nicks.split(" ")
+            }
+        }
+
+        function onQuery_opened(nick) {
+            page.addBuffer(nick)
         }
     }
 
@@ -119,16 +167,21 @@ Kirigami.Page {
     /// readable through a delegate on Qt 6.11.
     readonly property var buffers: {
         var out = []
+        var previousKind = ""
         for (var i = 0; i < page.channels.length; ++i) {
             var target = page.channels[i]
             var isServer = (target === "*server*")
-            var previousIsServer = i > 0 && page.channels[i - 1] === "*server*"
+            var isQuery = !isServer && target.charAt(0) !== "#" && target.charAt(0) !== "&"
+            var kind = isServer ? "server" : (isQuery ? "query" : "channel")
+            var title = isServer ? qsTr("Server") : (isQuery ? qsTr("Messages") : qsTr("Channels"))
             out.push({
                 "target": target,
                 "isServer": isServer,
-                "sectionTitle": isServer ? qsTr("Server") : qsTr("Channels"),
-                "sectionStart": i === 0 || isServer !== previousIsServer
+                "isQuery": isQuery,
+                "sectionTitle": title,
+                "sectionStart": kind !== previousKind
             })
+            previousKind = kind
         }
         return out
     }
@@ -172,6 +225,7 @@ Kirigami.Page {
                         id: bufferDelegate
                         required property string target
                         required property bool isServer
+                        required property bool isQuery
                         required property string sectionTitle
                         required property bool sectionStart
 
@@ -257,7 +311,9 @@ Kirigami.Page {
                                     Controls.Label {
                                         anchors.centerIn: parent
                                         visible: !bufferDelegate.isServer
-                                        text: "#"
+                                        text: bufferDelegate.isQuery
+                                              ? ThemeEngine.initial(bufferDelegate.target)
+                                              : "#"
                                         color: ThemeEngine.contrastingTextColor(bufferDelegate.tileColor)
                                         font.bold: true
                                         font.pointSize: Math.max(1, Kirigami.Theme.defaultFont.pointSize)
@@ -267,8 +323,10 @@ Kirigami.Page {
                                 Controls.Label {
                                     Layout.fillWidth: true
                                     text: bufferDelegate.isServer
-                                        ? page.serverBufferLabel
-                                        : bufferDelegate.target.substring(1)
+                                          ? page.serverBufferLabel
+                                          : (bufferDelegate.isQuery
+                                             ? bufferDelegate.target
+                                             : bufferDelegate.target.substring(1))
                                     color: Kirigami.Theme.textColor
                                     font.bold: bufferDelegate.active
                                     elide: Text.ElideRight
@@ -383,6 +441,42 @@ Kirigami.Page {
             Layout.fillWidth: true
             Layout.fillHeight: true
             spacing: 0
+
+            Kirigami.InlineMessage {
+                Layout.fillWidth: true
+                Layout.margins: Kirigami.Units.smallSpacing
+                visible: page.joinError.length > 0
+                text: page.joinError
+                type: Kirigami.MessageType.Error
+                showCloseButton: true
+                onVisibleChanged: if (!visible) page.joinError = ""
+            }
+
+            Rectangle {
+                visible: page.currentTopic.length > 0 && page.currentChannel.charAt(0) === "#"
+                Layout.fillWidth: true
+                implicitHeight: topicLabel.implicitHeight + Kirigami.Units.smallSpacing * 2
+                color: ThemeEngine.withAlpha(Kirigami.Theme.textColor, 0.04)
+
+                Controls.Label {
+                    id: topicLabel
+                    anchors.fill: parent
+                    anchors.margins: Kirigami.Units.smallSpacing
+                    text: page.currentTopic
+                    elide: Text.ElideRight
+                    wrapMode: Text.NoWrap
+                    color: Kirigami.Theme.disabledTextColor
+                    font.pointSize: Math.max(1, Kirigami.Theme.defaultFont.pointSize - 1)
+                }
+
+                Rectangle {
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.bottom: parent.bottom
+                    height: 1
+                    color: page.hairline
+                }
+            }
 
             ListView {
                 id: messageView
@@ -610,6 +704,72 @@ Kirigami.Page {
                 }
             }
         }
+
+        Rectangle {
+            visible: page.currentChannel.charAt(0) === "#" || page.currentChannel.charAt(0) === "&"
+            Layout.preferredWidth: Kirigami.Units.gridUnit * 9
+            Layout.minimumWidth: Kirigami.Units.gridUnit * 7
+            Layout.fillHeight: true
+            color: Kirigami.Theme.alternateBackgroundColor
+
+            ColumnLayout {
+                anchors.fill: parent
+                spacing: 0
+
+                Controls.Label {
+                    text: qsTr("People (%1)").arg(page.nickList.length)
+                    font.bold: true
+                    color: Kirigami.Theme.disabledTextColor
+                    leftPadding: Kirigami.Units.smallSpacing * 2
+                    topPadding: Kirigami.Units.smallSpacing
+                    bottomPadding: Kirigami.Units.smallSpacing
+                    Layout.fillWidth: true
+                }
+
+                ListView {
+                    Layout.fillWidth: true
+                    Layout.fillHeight: true
+                    clip: true
+                    model: page.nickList
+                    reuseItems: true
+                    delegate: Controls.ItemDelegate {
+                        required property string modelData
+                        width: ListView.view.width
+                        padding: Kirigami.Units.smallSpacing
+                        contentItem: RowLayout {
+                            spacing: Kirigami.Units.smallSpacing
+                            Rectangle {
+                                Layout.preferredWidth: Math.round(Kirigami.Units.gridUnit * 0.9)
+                                Layout.preferredHeight: Layout.preferredWidth
+                                radius: width / 2
+                                color: ThemeEngine.nickColor(modelData, page.darkTheme)
+                                Controls.Label {
+                                    anchors.centerIn: parent
+                                    text: ThemeEngine.initial(modelData.replace(/^[@+%~&]/, ""))
+                                    color: ThemeEngine.contrastingTextColor(parent.color)
+                                    font.bold: true
+                                    font.pointSize: Math.max(1, Kirigami.Theme.defaultFont.pointSize - 3)
+                                }
+                            }
+                            Controls.Label {
+                                Layout.fillWidth: true
+                                text: modelData
+                                elide: Text.ElideRight
+                                color: Kirigami.Theme.textColor
+                            }
+                        }
+                        onClicked: {
+                            var nick = modelData.replace(/^[@+%~&]/, "")
+                            if (nick.length === 0) {
+                                return
+                            }
+                            page.addBuffer(nick)
+                            page.openChannel(nick)
+                        }
+                    }
+                }
+            }
+        }
     }
 
     // ---------------------------------------------------------------------- //
@@ -625,10 +785,37 @@ Kirigami.Page {
         if (page.hostWindow !== null && page.hostWindow !== undefined) {
             page.hostWindow.chatChannel = target
         }
+        page.joinError = ""
         page.refreshHistory()
+        if (page.bridge !== null) {
+            page.currentTopic = page.bridge.topic_for(target)
+            var nicks = page.bridge.nicks_for(target)
+            page.nickList = nicks.length === 0 ? [] : nicks.split(" ")
+        }
         if (switching) {
             contentFade.restart()
         }
+    }
+
+    function addBuffer(target)
+    {
+        if (target === undefined || target === null || target.length === 0) {
+            return
+        }
+        var list = page.channels.slice()
+        if (list.indexOf(target) === -1) {
+            list.push(target)
+            page.channels = list
+        }
+    }
+
+    function removeBuffer(target)
+    {
+        var list = page.channels.filter(function (c) { return c !== target })
+        if (list.length === 0) {
+            list = ["*server*"]
+        }
+        page.channels = list
     }
 
     function refreshHistory()
@@ -645,15 +832,73 @@ Kirigami.Page {
     function sendCurrent()
     {
         var body = messageInput.text.trim()
-        if (body.length === 0 || page.bridge === null || page.currentChannel === "*server*") {
+        if (body.length === 0 || page.bridge === null) {
             return
         }
-        // Local echo is the bridge's job: it republishes what we send through
-        // message_received(..., is_self = true), so nothing is appended here.
+        if (body.charAt(0) === "/") {
+            if (page.runSlash(body)) {
+                messageInput.text = ""
+                messageInput.forceActiveFocus()
+            }
+            return
+        }
+        if (page.currentChannel === "*server*") {
+            return
+        }
         page.bridge.send_message(page.currentChannel, body)
         messageInput.text = ""
-        // Keep focus so the user can keep typing.
         messageInput.forceActiveFocus()
+    }
+
+    function runSlash(body)
+    {
+        var space = body.indexOf(" ")
+        var cmd = (space < 0 ? body : body.substring(0, space)).toLowerCase()
+        var rest = space < 0 ? "" : body.substring(space + 1).trim()
+        if (cmd === "/join") {
+            if (rest.length === 0) {
+                return false
+            }
+            joinField.text = rest
+            page.tryJoin()
+            return true
+        }
+        if (cmd === "/part") {
+            var chan = rest.length > 0 ? rest.split(" ")[0] : page.currentChannel
+            if (page.bridge.part_channel) {
+                page.bridge.part_channel(chan)
+            }
+            return true
+        }
+        if (cmd === "/query" || cmd === "/msg") {
+            var bits = rest.split(" ")
+            var nick = bits[0]
+            if (!nick) {
+                return false
+            }
+            page.addBuffer(nick)
+            page.openChannel(nick)
+            if (cmd === "/msg" && bits.length > 1) {
+                page.bridge.send_message(nick, bits.slice(1).join(" "))
+            }
+            return true
+        }
+        if (cmd === "/me") {
+            if (page.currentChannel === "*server*" || rest.length === 0) {
+                return false
+            }
+            page.bridge.send_message(page.currentChannel, "\u0001ACTION " + rest + "\u0001")
+            return true
+        }
+        if (cmd === "/quit") {
+            page.bridge.disconnect_server()
+            return true
+        }
+        if (cmd === "/raw" || cmd === "/quote") {
+            // No raw invokable yet — send as PRIVMSG would be wrong.
+            return false
+        }
+        return false
     }
 
     function tryJoin()
@@ -662,22 +907,19 @@ Kirigami.Page {
         if (target.length === 0) {
             return
         }
-        if (target.charAt(0) !== "#" && target.charAt(0) !== "&") {
-            target = "#" + target
-        }
         joinField.text = ""
-        var list = page.channels.slice()
-        if (list.indexOf(target) === -1) {
-            list.push(target)
-            page.channels = list
+        page.joinError = ""
+        var isChan = target.charAt(0) === "#" || target.charAt(0) === "&"
+        if (!isChan) {
+            // A nick → query window. A bare word → treat as a channel.
+            // Users type "pain" meaning "#pain"; they type a nick via /query.
+            target = "#" + target
+            isChan = true
         }
-        // TODO: the C++ bridge has no join_channel() in the current contract.
-        // Guarded call so this keeps working once it is added.
-        if (page.bridge !== null && typeof page.bridge.join_channel === "function") {
+        if (page.bridge !== null) {
             page.bridge.join_channel(target)
         }
-        page.openChannel(target)
-        page.bridge.request_history(target, 200)
+        // Do not add the channel or switch to it until JOIN is accepted.
     }
 
     // ---------------------------------------------------------------------- //
