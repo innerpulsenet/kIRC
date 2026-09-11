@@ -402,8 +402,13 @@ Item {
 
     // ---------------------------------------------------------------------- //
     // Event row (BOTH modes): muted compact line for nick "*" (joins, parts,
-    // quits, modes, topics, server notices). Small glyph, no bubble, no
-    // avatar — this is the biggest single visual win over the old log.
+    // quits, modes, topics, server notices). No bubble, no avatar.
+    //
+    // It shares the log's left column with the message rows: the row starts at
+    // the same left inset as every message row and the stamp sits in the same
+    // time gutter as the dense rows' — no stamp floating at the far right, no
+    // bullet, so the muted text starts at the log's text column. Fixed
+    // geometry only: hovering never reflows the row.
     // ---------------------------------------------------------------------- //
     RowLayout {
         id: eventRow
@@ -411,16 +416,19 @@ Item {
         anchors.left: parent.left
         anchors.right: parent.right
         anchors.top: dayPill.bottom
-        anchors.leftMargin: delegate.hMargin + delegate.avatarGutter
+        anchors.leftMargin: delegate.hMargin
         anchors.rightMargin: delegate.hMargin
         spacing: Kirigami.Units.smallSpacing
 
         Controls.Label {
-            text: "●"
-            color: delegate.accentFill
-            font.pointSize: Math.max(6, delegate.eventPointSize - 2)
-            opacity: 0.7
-            Layout.alignment: Qt.AlignVCenter
+            text: delegate.timestamp
+            color: ThemeEngine.mutedTextColor(Kirigami.Theme.disabledTextColor)
+            font.pointSize: delegate.timestampPointSize
+            opacity: 0.8
+            Layout.alignment: Qt.AlignTop
+            // Same gutter trick as the dense row: the stamp's width is always
+            // reserved, so the text column never shifts between rows.
+            Layout.preferredWidth: implicitWidth
         }
 
         Kirigami.SelectableLabel {
@@ -431,16 +439,11 @@ Item {
             font.italic: true
             wrapMode: Text.WrapAtWordBoundaryOrAnywhere
             Layout.fillWidth: true
+            // The stamp tops the row: text stays on the first baseline even
+            // when the line wraps.
+            Layout.alignment: Qt.AlignTop
             padding: 0
             onLinkActivated: (link) => Qt.openUrlExternally(link)
-        }
-
-        Controls.Label {
-            text: delegate.timestamp
-            color: ThemeEngine.mutedTextColor(Kirigami.Theme.disabledTextColor)
-            font.pointSize: delegate.timestampPointSize
-            opacity: 0.8
-            Layout.alignment: Qt.AlignVCenter
         }
     }
 

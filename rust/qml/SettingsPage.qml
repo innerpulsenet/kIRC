@@ -12,6 +12,11 @@ import QtQuick.Layouts
 import org.kde.kirigami as Kirigami
 import org.kde.kirc
 
+// Delegates (autojoin list, theme picker) reference the page's functions and
+// properties; bound component behaviour resolves those statically instead of
+// through the dynamic context, and keeps qmllint clean.
+pragma ComponentBehavior: Bound
+
 Kirigami.ScrollablePage {
     id: page
 
@@ -26,6 +31,17 @@ Kirigami.ScrollablePage {
 
     // About anchors at the bottom; showAbout() scrolls there.
     property var aboutCard: null
+
+    // A small round colour dot for the theme picker's preview strip.  An
+    // inline component keeps the three dots identical without a Repeater
+    // (see the contentItem note in the Appearance card).
+    component ThemeSwatch: Rectangle {
+        width: Math.round(Kirigami.Units.gridUnit * 0.75)
+        height: width
+        radius: width / 2
+        border.width: 1
+        border.color: ThemeEngine.withAlpha(Kirigami.Theme.textColor, 0.35)
+    }
 
     function sectionVisible(matches)
     {
@@ -87,6 +103,18 @@ Kirigami.ScrollablePage {
             c.showTimestamps = timestampsSwitch.checked
         }
         c.save()
+    }
+
+    /// Apply a built-in theme and persist the pick.  ThemeEngine is a
+    /// singleton every surface binds to, so the switch is live; the picker's
+    /// selection markers and the density radios follow automatically.  An
+    /// unknown id leaves the active theme untouched (never persist a dead id).
+    function selectTheme(id)
+    {
+        if (ThemeEngine.applyBuiltinTheme(id) !== "") {
+            return
+        }
+        page.persist()
     }
 
     // --- SASL mechanism mapping (combo index <-> bridge/config id) ---------
@@ -203,12 +231,9 @@ Kirigami.ScrollablePage {
             reconnectSwitch.checked = c.reconnect
             traySwitch.checked = c.minimizeToTray
             fontSlider.value = c.fontDelta
-            nickBox.currentIndex = Math.max(0, ThemeEngine.availableThemeIds.indexOf(ThemeEngine.themeId))
             identifySwitch.checked = c.identifyOnConnect
             nickservNickField.text = c.nickservNick
             nickservPassField.text = c.nickservPassword
-            densityBubbles.checked = ThemeEngine.mode !== "dense"
-            densityCompact.checked = ThemeEngine.mode === "dense"
             if (page.hasPref("saslMechanism")) {
                 saslMechBox.currentIndex = page.saslMechanismIndex(c.saslMechanism)
             }
@@ -228,8 +253,6 @@ Kirigami.ScrollablePage {
             }
         } else {
             page.autojoinModel = []
-            densityBubbles.checked = ThemeEngine.mode !== "dense"
-            densityCompact.checked = ThemeEngine.mode === "dense"
         }
     }
 
@@ -562,7 +585,8 @@ Kirigami.ScrollablePage {
             id: appearanceCard
             Layout.fillWidth: true
             visible: page.sectionVisible(["appearance", "theme", "density", "bubble",
-                                          "compact", "font", "timestamp"])
+                                          "compact", "font", "timestamp", "fluent",
+                                          "light", "breeze", "classic", "oxygen", "neon"])
             implicitHeight: appearanceLayout.implicitHeight + page.cardPad() * 2
             radius: page.cardRadius()
             color: page.cardColor()
@@ -583,57 +607,175 @@ Kirigami.ScrollablePage {
                     font.pointSize: Kirigami.Theme.defaultFont.pointSize + 1
                 }
 
-                Kirigami.FormLayout {
+                // ---- theme picker ------------------------------------------
+                // Six friendly options (C++ may append more), each with a
+                // three-dot preview of the theme's accent / surface / bubble
+                // colours and a radio marker on the active one.  Picking an
+                // option applies it immediately — ThemeEngine is a singleton,
+                // so every binding in the window repaints — and persists it.
+                ColumnLayout {
                     Layout.fillWidth: true
+                    visible: page.rowVisible(qsTr("Theme"))
+                    spacing: Kirigami.Units.smallSpacing
 
-                    Controls.ComboBox {
-                        id: nickBox
-                        Kirigami.FormData.label: qsTr("Theme:")
-                        visible: page.rowVisible(qsTr("Theme"))
-                        model: ThemeEngine.availableThemeIds
-                        textRole: ""
-                        displayText: ThemeEngine.themeDisplayName(currentText)
-                        onActivated: {
-                            ThemeEngine.applyBuiltinTheme(currentText)
-                            page.persist()
-                        }
-                        delegate: Controls.ItemDelegate {
-                            required property var modelData
-                            width: nickBox.width
-                            text: ThemeEngine.themeDisplayName(modelData)
-                            highlighted: nickBox.currentText === modelData
+                    Controls.Label {
+                        Layout.fillWidth: true
+                        text: qsTr("Theme")
+                        color: Kirigami.Theme.textColor
+                        opacity: 0.75
+                        font.bold: true
+                        font.pointSize: Math.max(1, Kirigami.Theme.defaultFont.pointSize - 1)
+                    }
+
+                    GridLayout {
+                        id: themeGrid
+                        Layout.fillWidth: true
+                        // Two columns while the card is wide enough for legible
+                        // names; one otherwise.
+                        columns: themeGrid.width >= Kirigami.Units.gridUnit * 24 ? 2 : 1
+                        columnSpacing: Kirigami.Units.smallSpacing
+                        rowSpacing: Kirigami.Units.smallSpacing
+
+                        Repeater {
+                            model: ThemeEngine.availableThemeIds
+
+                            delegate: Controls.RadioButton {
+                                id: themeOption
+
+                                required property string modelData
+                                readonly property bool active: ThemeEngine.themeId === ThemeEngine.canonicalId(themeOption.modelData)
+                                readonly property var preview: ThemeEngine.themePreview(
+                                    themeOption.modelData,
+                                    Kirigami.Theme.highlightColor,
+                                    Kirigami.Theme.alternateBackgroundColor,
+                                    Kirigami.Theme.disabledTextColor)
+
+                                Layout.fillWidth: true
+                                Layout.minimumWidth: Kirigami.Units.gridUnit * 11
+                                Layout.preferredHeight: Math.round(Kirigami.Units.gridUnit * 2.4)
+                                // Bound to the engine so the marker follows a
+                                // theme change from anywhere (settings, toolbar
+                                // menu, config restore).  RadioButton's own
+                                // auto-exclusive group keeps one selection.
+                                checked: themeOption.active
+                                spacing: Kirigami.Units.smallSpacing
+                                onClicked: page.selectTheme(themeOption.modelData)
+
+                                Accessible.name: ThemeEngine.themeDisplayName(themeOption.modelData)
+                                Accessible.description: themeOption.preview.mode === "dense"
+                                    ? qsTr("Compact list layout") : qsTr("Bubble chat layout")
+
+                                Controls.ToolTip.visible: hovered
+                                Controls.ToolTip.text: qsTr("Apply the %1 theme — %2")
+                                    .arg(ThemeEngine.themeDisplayName(themeOption.modelData))
+                                    .arg(themeOption.preview.mode === "dense"
+                                         ? qsTr("compact one-line list") : qsTr("bubble chat"))
+
+                                background: Rectangle {
+                                    radius: page.cardRadius()
+                                    color: themeOption.active
+                                        ? ThemeEngine.withAlpha(Kirigami.Theme.highlightColor, 0.10)
+                                        : (themeOption.hovered
+                                           ? ThemeEngine.withAlpha(Kirigami.Theme.textColor, 0.05)
+                                           : page.cardColor())
+                                    border.width: themeOption.active ? 2 : 1
+                                    border.color: themeOption.active
+                                        ? Kirigami.Theme.highlightColor
+                                        : page.cardBorderColor()
+                                    Behavior on color {
+                                        ColorAnimation { duration: ThemeEngine.motionDuration }
+                                    }
+                                }
+
+                                contentItem: RowLayout {
+                                    spacing: Kirigami.Units.smallSpacing
+
+                                    // Accent / surface / bubble preview dots.
+                                    // Plain items on purpose: a nested Repeater
+                                    // here rebuilds its delegates while the
+                                    // platform palette updates during the page
+                                    // transition, which crashed Qt 6.11 (SIGSEGV
+                                    // in QQuickItem layout re-entrancy).
+                                    Row {
+                                        Layout.alignment: Qt.AlignVCenter
+                                        spacing: Math.max(1, Math.round(Kirigami.Units.smallSpacing / 2))
+
+                                        ThemeSwatch {
+                                            color: themeOption.preview.accent
+                                        }
+                                        ThemeSwatch {
+                                            color: themeOption.preview.surface
+                                        }
+                                        ThemeSwatch {
+                                            color: themeOption.preview.bubble
+                                        }
+                                    }
+
+                                    ColumnLayout {
+                                        Layout.fillWidth: true
+                                        spacing: 0
+
+                                        Controls.Label {
+                                            Layout.fillWidth: true
+                                            text: ThemeEngine.themeDisplayName(themeOption.modelData)
+                                            font.bold: themeOption.active
+                                            elide: Text.ElideRight
+                                        }
+
+                                        Controls.Label {
+                                            Layout.fillWidth: true
+                                            text: themeOption.preview.mode === "dense"
+                                                ? qsTr("Compact one-line list") : qsTr("Bubble layout")
+                                            color: Kirigami.Theme.disabledTextColor
+                                            font.pointSize: Math.max(1, Kirigami.Theme.defaultFont.pointSize - 1)
+                                            elide: Text.ElideRight
+                                        }
+                                    }
+
+                                    Kirigami.Icon {
+                                        Layout.alignment: Qt.AlignVCenter
+                                        visible: themeOption.active
+                                        source: "checkmark"
+                                        color: Kirigami.Theme.highlightColor
+                                        implicitWidth: Kirigami.Units.iconSizes.small
+                                        implicitHeight: Kirigami.Units.iconSizes.small
+                                    }
+                                }
+                            }
                         }
                     }
+                }
+
+                Kirigami.FormLayout {
+                    Layout.fillWidth: true
 
                     RowLayout {
                         Kirigami.FormData.label: qsTr("Density:")
                         visible: page.rowVisible(qsTr("Density"))
                         spacing: Kirigami.Units.smallSpacing
 
+                        // Density is the theme's layout mode.  The radios track
+                        // the active theme (a lighter theme is bubble, a
+                        // classic/oxygen one is compact) and, when used, pick
+                        // the canonical theme of that mode.
                         Controls.RadioButton {
                             id: densityBubbles
                             text: qsTr("Bubbles")
-                            onClicked: {
-                                ThemeEngine.applyBuiltinTheme("breeze")
-                                nickBox.currentIndex = ThemeEngine.availableThemeIds.indexOf("breeze")
-                                page.persist()
-                            }
+                            checked: ThemeEngine.mode !== "dense"
+                            onClicked: page.selectTheme("breeze")
 
                             Controls.ToolTip.visible: hovered
-                            Controls.ToolTip.text: qsTr("Modern bubble layout")
+                            Controls.ToolTip.text: qsTr("Bubble chat layout (switches to the Breeze theme)")
                         }
 
                         Controls.RadioButton {
                             id: densityCompact
                             text: qsTr("Compact")
-                            onClicked: {
-                                ThemeEngine.applyBuiltinTheme("breeze-classic")
-                                nickBox.currentIndex = ThemeEngine.availableThemeIds.indexOf("breeze-classic")
-                                page.persist()
-                            }
+                            checked: ThemeEngine.mode === "dense"
+                            onClicked: page.selectTheme("breeze-classic")
 
                             Controls.ToolTip.visible: hovered
-                            Controls.ToolTip.text: qsTr("Classic one-line-per-message layout")
+                            Controls.ToolTip.text: qsTr("Classic one-line-per-message layout (switches to the Breeze Classic theme)")
                         }
                     }
 

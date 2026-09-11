@@ -10,7 +10,9 @@ QtObject {
     property string nickname: ""
     property string connected_server: ""
 
-    signal message_received(string target, string nick, string text, bool is_self, bool is_highlight)
+    // timestamp is the preformatted "HH:MM" string ("" when unknown); the
+    // cxx-qt bridge passes the very string its STORE row carries.
+    signal message_received(string target, string nick, string text, string timestamp, bool is_self, bool is_highlight)
     signal history_batch_received(string target)
     signal state_changed(int state)
     signal notification_fired(string title, string body)
@@ -43,9 +45,9 @@ QtObject {
             bridge.state_changed(2)
             bridge.channel_joined("#kirc")
             Qt.callLater(function() {
-                bridge.message_received("#kirc", "alice", "hello world https://kde.org and <b>raw html</b>", false, false)
-                bridge.message_received("#kirc", nickname, "my own line", true, false)
-                bridge.message_received("#kirc", "bob", nickname + ": please look at this", false, true)
+                bridge.message_received("#kirc", "alice", "hello world https://kde.org and <b>raw html</b>", "12:04", false, false)
+                bridge.message_received("#kirc", nickname, "my own line", "12:05", true, false)
+                bridge.message_received("#kirc", "bob", nickname + ": please look at this", "12:06", false, true)
                 bridge.history_batch_received("#kirc")
                 bridge.names_updated("#kirc", "alice @" + nickname + " bob")
                 bridge.topic_changed("#kirc", "kIRC development")

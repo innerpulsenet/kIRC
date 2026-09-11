@@ -4,14 +4,20 @@
 //
 // Bridge contract used here (cxx-qt keeps snake_case ids in QML):
 //   IrcBridge:        connection_state, unread_count, nickname, connected_server
-//                     signals: message_received(target, nick, text, is_self, is_highlight),
+//                     signals: message_received(target, nick, text, timestamp,
+//                                                is_self, is_highlight),
 //                              history_batch_received(target), state_changed(state),
 //                              notification_fired(title, body), info(text),
 //                              error_occurred(message)
 //                     invokables: connect_server(...), disconnect_server(),
 //                                 send_message(target, text), request_history(target, limit)
 //   MessageListModel: roles nick, text, timestamp, isSelf, isHighlight
-//                     invokable load_channel(target)
+//                     invokables: load_channel(target) — full reload; used for
+//                                 buffer switches and history batches only
+//                                 append_message(target, nick, text, timestamp,
+//                                                isSelf, isHighlight) — incremental
+//                                 insert for the live path; no-op unless
+//                                 `target` is the loaded buffer
 //
 // Layout (left to right): sidebar (header actions + Server / Messages /
 // Channels sections), hairline, message column (topic bar, log with a
@@ -62,13 +68,13 @@ Kirigami.Page {
     property string joinError: ""
     property var pendingJoins: []
     property bool autojoinDone: false
-    // Set when the pending reload carries our own echo: always scroll, even
-    // if the user had scrolled up (their own line must be visible).
-    property bool reloadSelf: false
     // Guards the post-identify GHOST+NICK reclaim: once per connection.
     property bool ghostDone: false
     // People panel visibility + live filter, and the topic bar's expand state.
     property bool peopleVisible: true
+    /// Space (right of the sidebar) the people panel needs before it is worth
+    /// showing: its own ~198px plus a log column that is still readable.
+    readonly property real peoplePanelMinSpace: 560
     property string peopleFilter: ""
     property bool topicExpanded: false
     // The user scrolled up and traffic arrived below: offer a way back down.
@@ -118,9 +124,8 @@ Kirigami.Page {
         id: msgModel
     }
 
-    // New messages land in the model (rowsInserted) AND are announced through
-    // message_received. Reloading the channel on every single message would be
-    // O(history) per line, so the reload is coalesced through this timer.
+    // NickServ IDENTIFY grace period: if no confirmation arrives, retry the
+    // joins anyway (the handle-identify join flow below).
     Timer {
         id: identifyTimer
         interval: 4000
@@ -128,36 +133,25 @@ Kirigami.Page {
         onTriggered: page.applyAutojoin()
     }
 
-    Timer {
-        id: reloadTimer
-        interval: 50
-        repeat: false
-        // Coalesced refresh for the open channel.  Autoscroll is conditional:
-        // only pin to the bottom when the view is already there or the new
-        // line is our own echo — never yank a user who scrolled up to read.
-        onTriggered: {
-            var stick = page.reloadSelf || messageView.atYEnd
-            page.reloadSelf = false
-            msgModel.load_channel(page.currentChannel)
-            if (stick) {
-                page.hasUnseenBelow = false
-                page.scrollToEnd()
-            }
-        }
-    }
-
     Connections {
         target: page.bridge
 
-        function onMessage_received(target, nick, text, is_self, is_highlight) {
+        function onMessage_received(target, nick, text, timestamp, is_self, is_highlight) {
             if (page.sameTarget(target, page.currentChannel)) {
-                if (is_self) {
-                    page.reloadSelf = true
-                } else if (!messageView.atYEnd) {
+                // Incremental append: the bridge already stored the row, so
+                // this is one begin/endInsertRows instead of a whole-buffer
+                // model reset per line.  A line for any other buffer is a
+                // no-op inside the model and shows up when it is opened.
+                // Autoscroll stays conditional: pin to the bottom only when
+                // the view is already there or the line is our own echo —
+                // never yank a user who scrolled up to read.
+                var stick = is_self || messageView.atYEnd
+                msgModel.append_message(target, nick, text, timestamp, is_self, is_highlight)
+                if (stick) {
+                    page.hasUnseenBelow = false
+                    page.scrollToEnd()
+                } else {
                     page.hasUnseenBelow = true
-                }
-                if (!reloadTimer.running) {
-                    reloadTimer.start()
                 }
             }
             if (!is_self && page.isNickServ(nick) && page.isIdentifySuccess(text)) {
@@ -690,13 +684,17 @@ Kirigami.Page {
                 onVisibleChanged: if (!visible) page.joinError = ""
             }
 
-            // Topic bar: channel name + one-line topic (click to expand),
-            // plus the people-panel toggle.
+            // Topic bar: a real surface (not bare text floating over the log)
+            // carrying the channel tile + name + one-line topic (click to
+            // expand), with the people-panel toggle docked into its right end
+            // so it reads as part of the bar, not an unanchored square on the
+            // panel boundary.
             Rectangle {
+                id: topicBar
                 visible: page.isChannel(page.currentChannel)
                 Layout.fillWidth: true
-                implicitHeight: topicRow.implicitHeight + Kirigami.Units.smallSpacing * 2
-                color: ThemeEngine.withAlpha(Kirigami.Theme.textColor, 0.04)
+                implicitHeight: topicLayout.implicitHeight + Kirigami.Units.smallSpacing * 2
+                color: page.panelBg
 
                 HoverHandler {
                     id: topicHover
@@ -705,56 +703,115 @@ Kirigami.Page {
                 Controls.ToolTip.visible: topicHover.hovered && !page.topicExpanded && page.currentTopic.length > 0
                 Controls.ToolTip.text: page.currentTopic
 
-                // Click anywhere except the toggle to expand/collapse a long
-                // topic. Declared before the row so the toggle stays on top.
+                Rectangle {
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.top: parent.top
+                    height: 1
+                    color: page.hairline
+                }
+
+                // Click-to-expand for the text zone. Declared before the row
+                // so the toggle stays on top and keeps its own clicks.
                 MouseArea {
                     anchors.fill: parent
                     cursorShape: Qt.PointingHandCursor
                     onClicked: page.topicExpanded = !page.topicExpanded
                 }
 
-                Item {
-                    id: topicRow
+                RowLayout {
+                    id: topicLayout
                     anchors.fill: parent
                     anchors.margins: Kirigami.Units.smallSpacing
-                    implicitHeight: Math.max(topicLabel.implicitHeight, peopleToggle.implicitHeight)
+                    spacing: Kirigami.Units.smallSpacing
 
-                    // Channel + topic share one wrapping label with a
-                    // reserved right margin for the toggle, so a long topic
-                    // can never slide under the button.
+                    // Channel tile: the channel's own hash colour, same as its
+                    // sidebar row and the window header glyph.
+                    Rectangle {
+                        Layout.alignment: Qt.AlignVCenter
+                        implicitWidth: Math.round(Kirigami.Units.gridUnit * 1.1)
+                        implicitHeight: implicitWidth
+                        radius: page.rowRad
+                        color: ThemeEngine.nickColor(page.currentChannel, page.darkTheme)
+
+                        Controls.Label {
+                            anchors.centerIn: parent
+                            text: "#"
+                            color: ThemeEngine.contrastingTextColor(parent.color)
+                            font.bold: true
+                            font.pointSize: Math.max(1, Kirigami.Theme.defaultFont.pointSize)
+                        }
+                    }
+
+                    Controls.Label {
+                        id: topicName
+                        Layout.alignment: Qt.AlignVCenter
+                        Layout.maximumWidth: Math.round(topicBar.width * 0.45)
+                        text: page.currentChannel
+                        color: Kirigami.Theme.textColor
+                        font.bold: true
+                        elide: Text.ElideRight
+                    }
+
+                    // Topic: one elided line by default; word-wrapped while
+                    // expanded, capped at a few lines so a pathological topic
+                    // can never squeeze the log/composer out of the window.
                     Controls.Label {
                         id: topicLabel
-                        anchors.left: parent.left
-                        anchors.right: parent.right
-                        anchors.rightMargin: peopleToggle.implicitWidth + Kirigami.Units.smallSpacing
-                        anchors.verticalCenter: parent.verticalCenter
+                        Layout.fillWidth: true
+                        Layout.alignment: Qt.AlignVCenter
                         textFormat: Text.PlainText
-                        text: {
-                            var head = page.currentChannel + "  "
-                            return page.currentTopic.length > 0
-                                ? head + page.currentTopic
-                                : head + qsTr("No topic set")
-                        }
+                        text: page.currentTopic.length > 0 ? page.currentTopic : qsTr("No topic set")
                         font.italic: page.currentTopic.length === 0
-                        maximumLineCount: page.topicExpanded ? -1 : 1
+                        maximumLineCount: page.topicExpanded ? 6 : 1
                         elide: Text.ElideRight
                         wrapMode: page.topicExpanded ? Text.WordWrap : Text.NoWrap
                         color: page.currentTopic.length > 0 ? Kirigami.Theme.textColor : page.mutedTxt
                         font.pointSize: page.eventSz
                     }
 
+                    // People-panel toggle, docked in the bar's right end with
+                    // a resting surface of its own (checked = the panel is
+                    // shown).  The glyph is drawn with Kirigami.Icon so it
+                    // follows the theme colours like the rest of the page.
                     Controls.ToolButton {
                         id: peopleToggle
-                        anchors.right: parent.right
-                        anchors.verticalCenter: parent.verticalCenter
-                        icon.name: "system-users"
+                        Layout.alignment: Qt.AlignVCenter
                         display: Controls.AbstractButton.IconOnly
                         checkable: true
                         checked: page.peopleVisible
                         onToggled: page.peopleVisible = checked
+                        implicitWidth: Math.round(Kirigami.Units.gridUnit * 1.35)
+                        implicitHeight: Math.round(Kirigami.Units.gridUnit * 1.35)
 
                         Controls.ToolTip.visible: hovered
-                        Controls.ToolTip.text: qsTr("Toggle people panel")
+                        Controls.ToolTip.text: checked ? qsTr("Hide people panel") : qsTr("Show people panel")
+
+                        background: Rectangle {
+                            radius: page.rowRad
+                            color: peopleToggle.checked
+                                ? page.rowSel
+                                : (peopleToggle.hovered || peopleToggle.activeFocus
+                                   ? page.rowHv
+                                   : ThemeEngine.withAlpha(Kirigami.Theme.textColor, 0.06))
+                            border.width: 1
+                            border.color: peopleToggle.checked
+                                ? page.accentC
+                                : ThemeEngine.withAlpha(Kirigami.Theme.textColor, 0.12)
+                            Behavior on color {
+                                ColorAnimation { duration: ThemeEngine.motionDuration }
+                            }
+                        }
+
+                        contentItem: Item {
+                            Kirigami.Icon {
+                                anchors.centerIn: parent
+                                source: "system-users"
+                                color: Kirigami.Theme.textColor
+                                width: Math.round(Kirigami.Units.gridUnit * 0.9)
+                                height: width
+                            }
+                        }
                     }
                 }
 
@@ -930,9 +987,15 @@ Kirigami.Page {
             }
 
             // ---------------- input ---------------- //
+            // The composer is the last row of the message column: the log
+            // above it is Layout.fillHeight, so the list absorbs every resize
+            // and this bar keeps its implicit height (the "New messages" pill
+            // lives inside the log, so it can never push anything out either).
+            // The extra bottom inset keeps the input frame visibly clear of
+            // the window's bottom edge instead of running into it.
             Rectangle {
                 Layout.fillWidth: true
-                implicitHeight: inputColumn.implicitHeight + Kirigami.Units.smallSpacing * 2
+                implicitHeight: inputColumn.implicitHeight + Kirigami.Units.smallSpacing * 3
                 color: Kirigami.Theme.backgroundColor
 
                 Rectangle {
@@ -952,6 +1015,7 @@ Kirigami.Page {
                     id: inputColumn
                     anchors.fill: parent
                     anchors.margins: Kirigami.Units.smallSpacing
+                    anchors.bottomMargin: Kirigami.Units.smallSpacing * 2
                     spacing: Kirigami.Units.smallSpacing / 2
 
                     // The server console only takes slash commands — say so
@@ -1081,7 +1145,12 @@ Kirigami.Page {
 
         // ---------------- people panel ---------------- //
         Rectangle {
+            // Auto-hide on a narrow window: with a 250px sidebar plus this
+            // panel there is not enough room left for the log to stay
+            // readable, and squeezing it pushed the panel past the window
+            // edge.  The topic-bar toggle still works whenever it is shown.
             visible: page.isChannel(page.currentChannel) && page.peopleVisible
+                     && (page.width - page.sideWidth) >= page.peoplePanelMinSpace
             Layout.preferredWidth: Kirigami.Units.gridUnit * 11
             Layout.minimumWidth: Kirigami.Units.gridUnit * 8
             Layout.fillHeight: true
@@ -1227,23 +1296,34 @@ Kirigami.Page {
                                 color: Kirigami.Theme.textColor
                             }
 
-                            // Rank badge (@ / +), hidden for regular nicks.
-                            Rectangle {
+                            // Rank badge column: every row reserves the same
+                            // fixed-width slot, so the badges line up in one
+                            // right-hand column (and nicks truncate at the
+                            // same edge whether or not the row has a badge).
+                            // The glyph is a styled Label showing the ASCII
+                            // mode prefix (@ / + / % / ~ / &) — text, so it
+                            // always renders, never a missing icon.
+                            Item {
                                 Layout.alignment: Qt.AlignVCenter
                                 Layout.rightMargin: Kirigami.Units.smallSpacing
-                                visible: personDelegate.prefix.length > 0
-                                implicitWidth: prefixLabel.implicitWidth + Kirigami.Units.smallSpacing
-                                implicitHeight: prefixLabel.implicitHeight + 2
-                                radius: height / 3
-                                color: ThemeEngine.withAlpha(Kirigami.Theme.textColor, 0.10)
+                                Layout.preferredWidth: Math.round(Kirigami.Units.gridUnit * 1.15)
+                                Layout.preferredHeight: page.rowHt
 
-                                Controls.Label {
-                                    id: prefixLabel
+                                Rectangle {
                                     anchors.centerIn: parent
-                                    text: personDelegate.prefix
-                                    color: page.mutedTxt
-                                    font.bold: true
-                                    font.pointSize: Math.max(1, Kirigami.Theme.defaultFont.pointSize - 2)
+                                    visible: personDelegate.prefix.length > 0
+                                    implicitWidth: Math.round(Kirigami.Units.gridUnit)
+                                    implicitHeight: implicitWidth
+                                    radius: height / 3
+                                    color: ThemeEngine.withAlpha(Kirigami.Theme.textColor, 0.10)
+
+                                    Controls.Label {
+                                        anchors.centerIn: parent
+                                        text: personDelegate.prefix
+                                        color: page.mutedTxt
+                                        font.bold: true
+                                        font.pointSize: Math.max(1, Kirigami.Theme.defaultFont.pointSize - 2)
+                                    }
                                 }
                             }
                         }

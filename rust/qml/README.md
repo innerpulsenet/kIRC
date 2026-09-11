@@ -37,7 +37,9 @@ IrcBridge {
     property string nickname
     property string connected_server
 
-    signal message_received(string target, string nick, string text, bool is_self, bool is_highlight)
+    // timestamp is the preformatted "HH:MM" string the log shows verbatim
+    // (the same string the model's row carries).
+    signal message_received(string target, string nick, string text, string timestamp, bool is_self, bool is_highlight)
     signal history_batch_received(string target)
     signal state_changed(int state)
     signal notification_fired(string title, string body)
@@ -52,7 +54,9 @@ IrcBridge {
 
 MessageListModel {          // QAbstractListModel
     // roleNames() MUST be exactly: nick, text, timestamp, isSelf, isHighlight
-    function load_channel(target)
+    function load_channel(target)                     // full reload (buffer switch / history batch)
+    function append_message(target, nick, text, timestamp, is_self, is_highlight)
+                                                      // one rowsInserted, only for the loaded buffer
 }
 ```
 

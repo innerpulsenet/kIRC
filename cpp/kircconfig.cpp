@@ -21,6 +21,13 @@ constexpr auto kServicesGroup = "Services";
 constexpr auto kWalletFolder = "kIRC";
 constexpr auto kWalletKey = "nickserv-password";
 
+// Version of the [UI] theme-selection schema (see the header for the policy).
+// Version 1 is what every config written before the Fluent pass implies; the
+// current version is written back by load()'s one-time migration and by every
+// save(), so a later theme pick always sticks.
+constexpr int kThemeSchemaVersion = 2;
+constexpr int kThemeSchemaVersionLegacy = 1;
+
 } // namespace
 
 /// Best-effort KWallet helpers.  A null return means the wallet is locked or
@@ -421,7 +428,7 @@ void KircConfig::setSessionSaslPassword(const QString &sessionSaslPassword)
 
 void KircConfig::load()
 {
-    const KConfig config(configFilePath(), KConfig::SimpleConfig);
+    KConfig config(configFilePath(), KConfig::SimpleConfig);
 
     const KConfigGroup connection = config.group(QString::fromLatin1(kConnectionGroup));
     m_host = connection.readEntry(QStringLiteral("Host"), m_host);
@@ -452,6 +459,35 @@ void KircConfig::load()
     m_reconnectAfterAuthFailure =
         ui.readEntry(QStringLiteral("ReconnectAfterAuthFailure"), m_reconnectAfterAuthFailure);
     m_showTimestamps = ui.readEntry(QStringLiteral("ShowTimestamps"), m_showTimestamps);
+
+    // ---- one-time theme-schema migration (v1 -> v2; policy in the header) --
+    // A config file that predates the key is version 1 by definition; a fresh
+    // install (no file at all) is born at the current version and has nothing
+    // to migrate.  QFileInfo::exists() is checked *before* reading, because
+    // KConfig would happily report the default for a file that is not there.
+    const int storedThemeSchema = QFileInfo::exists(configFilePath())
+        ? ui.readEntry(QStringLiteral("ThemeSchemaVersion"), kThemeSchemaVersionLegacy)
+        : kThemeSchemaVersion;
+    if (storedThemeSchema < kThemeSchemaVersion) {
+        // Only the legacy *defaults* migrate: a stored `breeze`,
+        // `breeze-classic` or `oxygen` is indistinguishable from "never chose"
+        // (all three are pre-polish stock ids, and two of them are the dense
+        // layout the redesign replaced), so they follow the new default.  Any
+        // other id (neon/fluent/fluent-light, or a custom one from
+        // ~/.config/kIRC/themes/) is a deliberate choice and is left
+        // untouched.  The version is persisted either way, so this runs
+        // exactly once — a later pick writes the version too and therefore
+        // sticks, including switching back to Oxygen.
+        KConfigGroup uiWrite = config.group(QString::fromLatin1(kUiGroup));
+        if (m_themeId.compare(QStringLiteral("breeze"), Qt::CaseInsensitive) == 0
+            || m_themeId.compare(QStringLiteral("breeze-classic"), Qt::CaseInsensitive) == 0
+            || m_themeId.compare(QStringLiteral("oxygen"), Qt::CaseInsensitive) == 0) {
+            m_themeId = QStringLiteral("fluent");
+            uiWrite.writeEntry(QStringLiteral("ThemeId"), m_themeId);
+        }
+        uiWrite.writeEntry(QStringLiteral("ThemeSchemaVersion"), kThemeSchemaVersion);
+        config.sync();
+    }
 
     const KConfigGroup services = config.group(QString::fromLatin1(kServicesGroup));
     m_identifyOnConnect = services.readEntry(QStringLiteral("IdentifyOnConnect"), m_identifyOnConnect);
@@ -517,6 +553,9 @@ void KircConfig::save()
     KConfigGroup ui = config.group(QString::fromLatin1(kUiGroup));
     ui.writeEntry(QStringLiteral("MinimizeToTrayOnClose"), m_minimizeToTray);
     ui.writeEntry(QStringLiteral("ThemeId"), m_themeId);
+    // A theme picked (or migrated) by this build is a v2 choice; writing the
+    // version here is what makes a later pick stick across restarts.
+    ui.writeEntry(QStringLiteral("ThemeSchemaVersion"), kThemeSchemaVersion);
     ui.writeEntry(QStringLiteral("Autojoin"), m_autojoin);
     ui.writeEntry(QStringLiteral("Reconnect"), m_reconnect);
     ui.writeEntry(QStringLiteral("FontDelta"), m_fontDelta);

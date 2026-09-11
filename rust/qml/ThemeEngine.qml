@@ -160,6 +160,38 @@ QtObject {
         return id
     }
 
+    // Resolve a legacy/aliased id to the id `themeId` reports after applying it.
+    // (The settings picker compares against `themeId`, which is canonical.)
+    function canonicalId(id)
+    {
+        return ThemeLib.canonicalId(id)
+    }
+
+    // Preview colours for a theme id — the settings picker's swatches.  Colour
+    // tokens that are empty in the theme ("use the desktop palette") fall back
+    // to the caller's palette values, so palette-driven themes still show a
+    // usable preview.  Unknown ids (C++ may append custom themes) preview with
+    // the fallbacks and an empty mode.
+    function themePreview(id, fallbackAccent, fallbackSurface, fallbackText)
+    {
+        var key = ThemeLib.canonicalId(id)
+        if (!ThemeLib.builtins.hasOwnProperty(key)) {
+            return {"accent": fallbackAccent, "surface": fallbackSurface,
+                    "bubble": fallbackSurface, "mode": ""}
+        }
+        var t = ThemeLib.builtins[key]
+        var s = t.surfaces
+        function pick(v, fb) {
+            return (typeof v === "string" && v.length > 0) ? v : fb
+        }
+        return {
+            "accent": pick(s.accent, fallbackAccent),
+            "surface": pick(s.surface, fallbackSurface),
+            "bubble": pick(t.bubble.selfColor, pick(s.surfaceAlt, fallbackSurface)),
+            "mode": t.mode
+        }
+    }
+
     function reset()
     {
         engine.configError = ""

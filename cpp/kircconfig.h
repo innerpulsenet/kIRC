@@ -9,6 +9,20 @@
 // connection form can be prefilled on startup and the profile saved once a
 // connection actually succeeds.
 //
+// THEME SCHEMA MIGRATION — the [UI] group carries an integer
+// `ThemeSchemaVersion`:
+//   * version 1 (the implicit value when the key is absent, i.e. every config
+//     written before the Fluent pass) may hold a legacy *default* theme id.
+//   * version 2 means the user's theme choice was made — or was migrated —
+//     under the Fluent pass, and the stored id is authoritative.
+//   load() upgrades an existing version-1 file exactly once: the legacy
+//   default ids (`breeze`, `breeze-classic`) become `fluent`, every other id
+//   (`oxygen`, `neon`, `fluent`, `fluent-light`, custom) is kept verbatim, and
+//   the new version is persisted.  The version is bumped for non-legacy ids
+//   too, so a deliberately chosen theme is never rewritten on a later start.
+//   A fresh install (no kirc.conf at all) starts at the current version and
+//   nothing is written.
+//
 // SECURITY — no password is ever persisted to kirc.conf:
 //   kirc.conf is an ordinary world-readable plaintext INI file, so neither
 //   the SASL password nor the NickServ password may be written there.

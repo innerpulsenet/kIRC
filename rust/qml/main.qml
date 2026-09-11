@@ -45,13 +45,7 @@ Kirigami.ApplicationWindow {
         } catch (e) {
         }
         if (root.appConfig !== null) {
-            var w = root.appConfig.windowWidth
-            var h = root.appConfig.windowHeight
-            if (w !== undefined && h !== undefined
-                    && w >= root.minimumWidth && h >= root.minimumHeight) {
-                root.width = w
-                root.height = h
-            }
+            root.restoreGeometry()
             root.syncSaslMechanismFromConfig()
             if (root.appConfig.themeId.length > 0) {
                 ThemeEngine.applyBuiltinTheme(root.appConfig.themeId)
@@ -190,9 +184,20 @@ Kirigami.ApplicationWindow {
         return c === "#" || c === "&" || c === "+" || c === "!"
     }
 
-    readonly property string headerTitle: root.pageStack.depth > 1
-        ? root.channelLabel(root.chatChannel)
-        : qsTr("Connect to IRC")
+    // Header/window title.  The settings pane is not a chat buffer, so it
+    // names itself instead of borrowing the channel label.
+    readonly property string headerTitle: root.pageStack.depth <= 1
+        ? qsTr("Connect to IRC")
+        : (root.currentPageIsSettings() ? qsTr("Settings")
+                                        : root.channelLabel(root.chatChannel))
+
+    function currentPageIsSettings()
+    {
+        var page = root.pageStack.currentItem
+        // qmllint disable missing-property
+        return page !== null && page !== undefined && page["isKircSettingsPage"] === true
+        // qmllint enable missing-property
+    }
 
     readonly property string statusText: {
         switch (root.bridge.connection_state) {
@@ -205,9 +210,9 @@ Kirigami.ApplicationWindow {
 
     // Secondary header line: nick @ server, plus the channel topic when one
     // is known.  Derived from live bridge state + the chat page below; empty
-    // when there is nothing useful to say (connection form).
+    // when there is nothing useful to say (connection form, settings pane).
     readonly property string headerSubtitle: {
-        if (root.pageStack.depth <= 1) {
+        if (root.pageStack.depth <= 1 || root.currentPageIsSettings()) {
             return ""
         }
         var bits = []
@@ -295,6 +300,69 @@ Kirigami.ApplicationWindow {
     }
 
     // ---------------------------------------------------------------------- //
+    // Restored geometry.  The persisted size is a *hint*: a stale entry may
+    // predate the current minimums, or come from a larger display.  Clamping
+    // it to [minimum, available screen] is what keeps the composer and the
+    // header from being clipped by a window the layout cannot fit into.
+    // ---------------------------------------------------------------------- //
+
+    /// Work area of the window's screen in logical pixels; {0, 0} when the
+    /// platform reports no screen (offscreen harnesses).
+    function maximumWindowSize()
+    {
+        var result = {"width": 0, "height": 0}
+        var screen = root.screen
+        if (screen === undefined || screen === null) {
+            return result
+        }
+        // Qt 6 exposes the work area (panels excluded) as desktopAvailable*.
+        // Those are device pixels, while the window is laid out in logical
+        // pixels, so scale by the device pixel ratio.
+        var w = (screen.desktopAvailableWidth !== undefined && screen.desktopAvailableWidth > 0)
+            ? screen.desktopAvailableWidth : screen.width
+        var h = (screen.desktopAvailableHeight !== undefined && screen.desktopAvailableHeight > 0)
+            ? screen.desktopAvailableHeight : screen.height
+        var dpr = (screen.devicePixelRatio > 0) ? screen.devicePixelRatio : 1
+        if (w > 0 && h > 0) {
+            result.width = Math.round(w / dpr)
+            result.height = Math.round(h / dpr)
+        }
+        return result
+    }
+
+    /// Clamp one window dimension to [minimum, maximum]; -1 means "no usable
+    /// stored value", which leaves the current size alone.
+    function clampWindowDimension(value, minimum, maximum)
+    {
+        if (value === undefined || value === null || isNaN(value) || value <= 0) {
+            return -1
+        }
+        var v = Math.round(value)
+        if (maximum > 0 && v > maximum) {
+            v = maximum
+        }
+        // The minimum wins even on a screen smaller than it: a window whose
+        // own layout clips is worse than one the window manager must move.
+        return Math.max(minimum, v)
+    }
+
+    function restoreGeometry()
+    {
+        if (root.appConfig === null || root.appConfig.windowWidth === undefined) {
+            return
+        }
+        var screenMax = root.maximumWindowSize()
+        var w = root.clampWindowDimension(root.appConfig.windowWidth, root.minimumWidth, screenMax.width)
+        var h = root.clampWindowDimension(root.appConfig.windowHeight, root.minimumHeight, screenMax.height)
+        if (w > 0) {
+            root.width = w
+        }
+        if (h > 0) {
+            root.height = h
+        }
+    }
+
+    // ---------------------------------------------------------------------- //
     // Header: current context + connection status pill + nick chip + flat menu
     // buttons. Replaces the default global toolbar, so the page title and a
     // back button are re-created here.
@@ -372,9 +440,12 @@ Kirigami.ApplicationWindow {
 
             // Secondary line (nick @ server · topic), truncating gracefully.
             // A fixed width cap keeps long topics from squeezing the pills
-            // and toolbar off the header at narrow window sizes.
+            // and toolbar off the header; below a comfortable width the line
+            // yields entirely so the channel title stays readable at the
+            // minimum window size.
             Controls.Label {
                 visible: root.headerSubtitle.length > 0
+                         && root.width >= Kirigami.Units.gridUnit * 40
                 text: root.headerSubtitle
                 color: Kirigami.Theme.disabledTextColor
                 font.pointSize: Math.max(1, Kirigami.Theme.defaultFont.pointSize - 1)

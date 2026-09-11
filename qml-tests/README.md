@@ -50,3 +50,15 @@ Caveats:
 * The doubles are intentionally *not* the screenshot-harness doubles: these rows
   are the minimal set the assertions need. The richer visual harness lives
   outside the repository (it never ships).
+
+## Perf harness
+
+`qml-tests/perf.sh` runs `tst_perf.qml` through the same stub module and measures
+the incremental message path: it loads a synthetic 2000-row transcript, then
+compares N full `load_channel` reloads (what a live message used to trigger)
+against N `append_message` inserts, counting the model's real
+`rowsInserted` / `rowsRemoved` / `modelReset` emissions and the wall-clock cost
+of each path. It also pins down `append_message`'s contract (no-op for a
+non-loaded buffer, case-insensitive target match, correct insert into an empty
+model and after a reload). Exit code 0 = all checks passed. The numbers it
+produced are recorded in `.hermes/implementation/p2-perf.md`.

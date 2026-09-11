@@ -212,12 +212,19 @@ pub mod qobject {
         type IrcBridge = super::IrcBridgeRust;
 
         /// A chat line arrived (or was locally echoed).
+        ///
+        /// `timestamp` is the preformatted "HH:MM" string the log renders
+        /// verbatim ("" when unknown) — the very string the [`STORE`] row for
+        /// this line carries, so the incremental
+        /// `MessageListModel::append_message` path and a later
+        /// `load_channel(..)` reload show the identical stamp.
         #[qsignal]
         fn message_received(
             self: Pin<&mut Self>,
             target: QString,
             nick: QString,
             text: QString,
+            timestamp: QString,
             is_self: bool,
             is_highlight: bool,
         );
@@ -527,6 +534,10 @@ pub const SERVER_BUFFER: &str = "*server*";
 /// UI through the regular `message_received` path (a page showing the buffer
 /// reloads; no popup, no unread badge inflation).
 fn info_to_store(mut obj: Pin<&mut qobject::IrcBridge>, text: &str) {
+    // One clock read: the buffered row and the announced line must carry the
+    // same stamp, or a later `load_channel` reload would show a different time
+    // than the live insert did.
+    let stamp = now_string();
     {
         let mut guard = store().lock().unwrap_or_else(|e| e.into_inner());
         guard
@@ -535,7 +546,7 @@ fn info_to_store(mut obj: Pin<&mut qobject::IrcBridge>, text: &str) {
             .push(StoreMsg {
                 nick: "*".to_owned(),
                 text: text.to_owned(),
-                timestamp: now_string(),
+                timestamp: stamp.clone(),
                 is_self: false,
                 is_highlight: false,
             });
@@ -544,31 +555,40 @@ fn info_to_store(mut obj: Pin<&mut qobject::IrcBridge>, text: &str) {
         qs(SERVER_BUFFER),
         qs("*"),
         qs(text),
+        qs(&stamp),
         false,
         false,
     );
 }
 
 fn push_channel_line(mut obj: Pin<&mut qobject::IrcBridge>, channel: &str, text: &str) {
+    // One lock and one fold for both the append and the signal (this used to
+    // take the store lock twice and scan the keys twice per line), and one
+    // clock read so the store row and the announced line agree.
+    let stamp = now_string();
     let key = {
-        let guard = store().lock().unwrap_or_else(|e| e.into_inner());
-        canon_map_key(&guard, channel)
-    };
-    {
         let mut guard = store().lock().unwrap_or_else(|e| e.into_inner());
+        let key = canon_map_key(&guard, channel);
         guard
             .entry(key.clone())
             .or_default()
             .push(StoreMsg {
                 nick: "*".to_owned(),
                 text: text.to_owned(),
-                timestamp: now_string(),
+                timestamp: stamp.clone(),
                 is_self: false,
                 is_highlight: false,
             });
-    }
-    obj.as_mut()
-        .message_received(qs(&key), qs("*"), qs(text), false, false);
+        key
+    };
+    obj.as_mut().message_received(
+        qs(&key),
+        qs("*"),
+        qs(text),
+        qs(&stamp),
+        false,
+        false,
+    );
 }
 
 /// True when the user is already looking at `target` (case-insensitive).
@@ -675,23 +695,23 @@ fn handle_event(mut obj: Pin<&mut qobject::IrcBridge>, event: IrcEvent) {
             if text.trim().is_empty() {
                 return;
             }
+            // Format the stamp once — the STORE row and the QML row must show
+            // the identical string (a second `now_string()` could tick over).
+            let stamp = fmt_timestamp(timestamp);
+            // One lock, one fold: append to the buffer and keep the folded key
+            // for the signal (this used to take the store lock twice per line).
             let target = {
-                let guard = store().lock().unwrap_or_else(|e| e.into_inner());
-                canon_key(&guard, &target)
-            };
-            {
                 let mut guard = store().lock().unwrap_or_else(|e| e.into_inner());
-                guard
-                    .entry(target.clone())
-                    .or_default()
-                    .push(StoreMsg {
-                        nick: nick.clone(),
-                        text: text.clone(),
-                        timestamp: fmt_timestamp(timestamp),
-                        is_self,
-                        is_highlight,
-                    });
-            }
+                let key = canon_key(&guard, &target);
+                guard.entry(key.clone()).or_default().push(StoreMsg {
+                    nick: nick.clone(),
+                    text: text.clone(),
+                    timestamp: stamp.clone(),
+                    is_self,
+                    is_highlight,
+                });
+                key
+            };
 
             bump_unread_for(obj.as_mut(), &target, is_self);
 
@@ -699,6 +719,7 @@ fn handle_event(mut obj: Pin<&mut qobject::IrcBridge>, event: IrcEvent) {
                 qs(&target),
                 qs(&nick),
                 qs(&text),
+                qs(&stamp),
                 is_self,
                 is_highlight,
             );
@@ -1227,6 +1248,12 @@ impl qobject::MessageListModel {
     }
 
     /// Append a row if `target` is the channel currently loaded.
+    ///
+    /// This is the fast path for live traffic: exactly one `rowsInserted` per
+    /// message, never a model reset — a busy channel must not rebuild its
+    /// whole log (and every delegate) per line.  A `target` that does not
+    /// match the loaded buffer (ASCII case-insensitive), including any call
+    /// before the first `load_channel`, is a silent no-op.
     pub fn append_message(
         mut self: Pin<&mut Self>,
         target: QString,
@@ -1238,8 +1265,14 @@ impl qobject::MessageListModel {
     ) {
         let target_s = rs(&target);
         // Case-insensitive match: the store key (`#Kirc`) and the announced
-        // target (`#kirc`) may differ only by case.
-        if !target_s.eq_ignore_ascii_case(&self.as_ref().rust().target) {
+        // target (`#kirc`) may differ only by case.  Nothing is loaded while
+        // `target` is empty, so an empty-loaded model takes no rows either.
+        let matches_loaded = {
+            let this = self.as_ref();
+            let loaded = &this.rust().target;
+            !loaded.is_empty() && target_s.eq_ignore_ascii_case(loaded)
+        };
+        if !matches_loaded {
             return;
         }
 
@@ -1251,6 +1284,8 @@ impl qobject::MessageListModel {
             is_highlight,
         };
 
+        // Insert at the end.  When the model is empty (or was just reset by a
+        // `load_channel`) this is row 0 and still a plain insert — no reset.
         let first = self.as_ref().rust().rows.len() as i32;
         unsafe {
             self.as_mut()
