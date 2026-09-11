@@ -156,6 +156,7 @@ Kirigami.Page {
 
         function onQuery_opened(nick) {
             page.addBuffer(nick)
+            page.foldDuplicateBuffers()
         }
     }
 
@@ -846,6 +847,27 @@ Kirigami.Page {
         return target
     }
 
+    function foldDuplicateBuffers()
+    {
+        var seen = {}
+        var out = []
+        for (var i = 0; i < page.channels.length; ++i) {
+            var key = String(page.channels[i]).toLowerCase()
+            if (seen[key]) {
+                continue
+            }
+            seen[key] = true
+            out.push(page.channels[i])
+        }
+        if (out.length !== page.channels.length) {
+            page.channels = out
+            page.currentChannel = page.existingTarget(page.currentChannel)
+            if (page.hostWindow !== null) {
+                page.hostWindow.chatChannel = page.currentChannel
+            }
+        }
+    }
+
     function addBuffer(target)
     {
         if (target === undefined || target === null || target.length === 0) {
@@ -853,6 +875,7 @@ Kirigami.Page {
         }
         var have = page.existingTarget(target)
         if (page.channels.indexOf(have) !== -1) {
+            page.foldDuplicateBuffers()
             return
         }
         var list = page.channels.slice()

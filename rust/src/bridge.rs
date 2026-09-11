@@ -62,11 +62,15 @@ fn bare_nick(nick: &str) -> &str {
 
 /// Reuse an existing buffer key when the only difference is ASCII case
 /// (`nickserv` vs `NickServ`). Channels are folded the same way.
-fn canon_key(map: &BTreeMap<String, Vec<StoreMsg>>, target: &str) -> String {
+fn canon_map_key<V>(map: &BTreeMap<String, V>, target: &str) -> String {
     map.keys()
         .find(|k| k.eq_ignore_ascii_case(target))
         .cloned()
         .unwrap_or_else(|| target.to_string())
+}
+
+fn canon_key(map: &BTreeMap<String, Vec<StoreMsg>>, target: &str) -> String {
+    canon_map_key(map, target)
 }
 
 /// The process-wide tokio runtime that drives every IRC session.
@@ -911,7 +915,8 @@ impl qobject::IrcBridge {
     pub fn clear_buffer(self: Pin<&mut Self>, target: QString) {
         let target_s = rs(&target);
         let mut guard = store().lock().unwrap_or_else(|e| e.into_inner());
-        guard.remove(&target_s);
+        let key = canon_map_key(&guard, &target_s);
+        guard.remove(&key);
     }
 
     /// Join a channel.
@@ -935,8 +940,9 @@ impl qobject::IrcBridge {
         let channel_s = rs(&channel);
         let joined = {
             let guard = nick_store().lock().unwrap_or_else(|e| e.into_inner());
+            let key = canon_map_key(&guard, &channel_s);
             guard
-                .get(&channel_s)
+                .get(&key)
                 .map(|n| n.join(" "))
                 .unwrap_or_default()
         };
@@ -947,7 +953,8 @@ impl qobject::IrcBridge {
         let channel_s = rs(&channel);
         let topic = {
             let guard = topic_store().lock().unwrap_or_else(|e| e.into_inner());
-            guard.get(&channel_s).cloned().unwrap_or_default()
+            let key = canon_map_key(&guard, &channel_s);
+            guard.get(&key).cloned().unwrap_or_default()
         };
         qs(&topic)
     }
@@ -976,7 +983,8 @@ impl qobject::MessageListModel {
         let target_s = rs(&target);
         let rows = {
             let guard = store().lock().unwrap_or_else(|e| e.into_inner());
-            guard.get(&target_s).cloned().unwrap_or_default()
+            let key = canon_key(&guard, &target_s);
+            guard.get(&key).cloned().unwrap_or_default()
         };
 
         unsafe {

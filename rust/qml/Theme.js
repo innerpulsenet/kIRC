@@ -295,9 +295,23 @@ function rowsAreGrouped(prev, row, windowMinutes)
 // turn already-received plain text into anchors. Always escape first so that a
 // message containing "<b>" is displayed literally instead of being interpreted.
 // ---------------------------------------------------------------------------
+function stripIrcFormatting(s)
+{
+    var t = String(s === undefined || s === null ? "" : s)
+    // mIRC: bold, italic, underline, strikethrough, mono, reverse, reset
+    t = t.replace(/[\x02\x0f\x11\x16\x1d\x1e\x1f]/g, "")
+    // colour: \x03 optionally fg[,bg]
+    t = t.replace(/\x03(?:\d{1,2}(?:,\d{1,2})?)?/g, "")
+    // hex colour
+    t = t.replace(/\x04[0-9a-fA-F]{0,6}/g, "")
+    // other C0 except tab/newline
+    t = t.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]/g, "")
+    return t
+}
+
 function escapeHtml(s)
 {
-    return String(s === undefined || s === null ? "" : s)
+    return stripIrcFormatting(s)
         .replace(/&/g, "&amp;")
         .replace(/</g, "&lt;")
         .replace(/>/g, "&gt;")
