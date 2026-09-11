@@ -725,6 +725,10 @@ fn handle_event(mut obj: Pin<&mut qobject::IrcBridge>, event: IrcEvent) {
         IrcEvent::Error { message } => {
             obj.as_mut().error_occurred(qs(&message));
         }
+
+        IrcEvent::NickChanged { nick } => {
+            obj.as_mut().set_nickname(qs(&nick));
+        }
     }
 }
 
@@ -838,19 +842,20 @@ impl qobject::IrcBridge {
             .state_changed(qobject::ConnectionStatus::Disconnected.repr);
     }
 
-    /// Internal: ask the session to quit, then drop the command channel.
+    /// Internal: ask the session to quit, then kill it.
     ///
-    /// Dropping the sender is what actually lets the `run_session` task wind
-    /// down, so the connection is closed gracefully instead of aborted.
+    /// A graceful QUIT is attempted first so a live server connection drops the
+    /// nick. The JoinHandle is then aborted so a handshake stuck in `connect()`
+    /// (or an unregistered 433 wait) cannot pin the UI in Connecting.
     fn shutdown_session(mut self: Pin<&mut Self>) {
         let mut rust = self.as_mut().rust_mut();
         if let Some(tx) = rust.command_tx.as_ref() {
             let _ = tx.try_send(ClientCommand::Quit);
         }
         rust.command_tx = None;
-        // Keep the JoinHandle around (but do not abort) so the task gets the
-        // chance to send its final QUIT and `Disconnected` event.
-        let _previous = rust.session.take();
+        if let Some(handle) = rust.session.take() {
+            handle.abort();
+        }
     }
 
     /// Send a PRIVMSG and echo it locally.

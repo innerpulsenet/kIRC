@@ -129,6 +129,8 @@ pub enum IrcEvent {
     JoinFailed { channel: String, reason: String },
     /// Someone quit the network.
     Quit { nick: String, reason: String },
+    /// Our nick changed (433 fallback, or the nick the server accepted in 001).
+    NickChanged { nick: String },
     /// A resolved `chathistory` batch.
     HistoryBatch { messages: Vec<HistoryMsg> },
     /// Informational text (MOTD, numerics summary).
@@ -303,6 +305,8 @@ struct Session {
     missed_pongs: u32,
     should_stop: bool,
     disconnect_reason: String,
+    /// How many 433/432 fallbacks we have already tried this session.
+    nick_attempts: u8,
 }
 
 impl Session {
@@ -452,12 +456,17 @@ impl Session {
         match numeric {
             1 => {
                 self.registered = true;
+                if let Some(nick) = message.params.first().cloned() {
+                    if !nick.is_empty() {
+                        self.config.nickname = nick.clone();
+                        self.emit(IrcEvent::NickChanged { nick }).await;
+                    }
+                }
                 let server_name = message
                     .prefix
                     .as_ref()
                     .and_then(|p| p.host.clone().or_else(|| p.nick.clone()))
-                    .or_else(|| message.params.first().cloned())
-                    .unwrap_or_default();
+                    .unwrap_or_else(|| self.config.host.clone());
                 info!("registered with {server_name}");
                 self.emit(IrcEvent::Registered { server_name }).await;
             }
@@ -500,6 +509,13 @@ impl Session {
                 let nicks = self.names_acc.remove(&channel).unwrap_or_default();
                 self.emit(IrcEvent::Names { channel, nicks }).await;
             }
+            432 | 433 | 436 => {
+                self.handle_nick_unavailable(message).await;
+            }
+            437 if !self.registered => {
+                // ERR_UNAVAILRESOURCE is also used for nicks during split/reg.
+                self.handle_nick_unavailable(message).await;
+            }
             403 | 405 | 437 | 471 | 473 | 474 | 475 | 476 | 477 | 479 => {
                 let channel = channel_from_numeric(message);
                 let reason = numeric_summary(message);
@@ -528,6 +544,38 @@ impl Session {
                 debug!("unhandled numeric {numeric}");
             }
         }
+    }
+
+    /// 432/433/436 during registration: try an alternate nick a few times,
+    /// then abort so the UI cannot sit in Connecting forever.
+    async fn handle_nick_unavailable(&mut self, message: &IrcMessage) {
+        let summary = numeric_summary(message);
+        if self.registered {
+            self.emit(IrcEvent::Error { message: summary }).await;
+            return;
+        }
+        self.nick_attempts = self.nick_attempts.saturating_add(1);
+        const MAX_ATTEMPTS: u8 = 4;
+        if self.nick_attempts >= MAX_ATTEMPTS {
+            let _ = self
+                .abort(&format!("nickname is already in use ({summary})"))
+                .await;
+            return;
+        }
+        let taken = message
+            .params
+            .get(1)
+            .cloned()
+            .unwrap_or_else(|| self.config.nickname.clone());
+        let next = alternate_nick(&taken, self.nick_attempts);
+        self.config.nickname = next.clone();
+        self.emit(IrcEvent::Info {
+            text: format!("{taken} is in use, trying {next}"),
+        })
+        .await;
+        self.emit(IrcEvent::NickChanged { nick: next.clone() })
+            .await;
+        let _ = self.send(&format!("NICK {next}")).await;
     }
 
     async fn handle_cap(&mut self, message: &IrcMessage) -> io::Result<()> {
@@ -844,6 +892,19 @@ fn channel_from_numeric(message: &IrcMessage) -> String {
         .unwrap_or_default()
 }
 
+/// Fallback nick when `base` is taken. Attempt 1 → `base_`, 2 → `base__`,
+/// then numeric suffixes. Capped at 16 chars (common NICKLEN).
+fn alternate_nick(base: &str, attempt: u8) -> String {
+    let suffix = match attempt {
+        1 => "_".to_string(),
+        2 => "__".to_string(),
+        n => n.to_string(),
+    };
+    let budget = 16usize.saturating_sub(suffix.len()).max(1);
+    let stem: String = base.chars().take(budget).collect();
+    format!("{stem}{suffix}")
+}
+
 fn source_name(message: &IrcMessage) -> String {
     message
         .prefix
@@ -923,6 +984,7 @@ pub async fn run_session(
         missed_pongs: 0,
         should_stop: false,
         disconnect_reason: "connection closed".to_string(),
+        nick_attempts: 0,
     };
 
     // Registration handshake.
@@ -1054,6 +1116,16 @@ mod tests {
         assert_eq!(channel_from_numeric(&m), "#pain");
         let names = parse_message(":s 353 me = #kirc :@op +voice nick").unwrap();
         assert_eq!(channel_from_numeric(&names), "#kirc");
+    }
+
+    #[test]
+    fn alternate_nick_stays_short_and_distinct() {
+        assert_eq!(alternate_nick("bob", 1), "bob_");
+        assert_eq!(alternate_nick("bob", 2), "bob__");
+        assert_eq!(alternate_nick("bob", 3), "bob3");
+        let long = "abcdefghijklmnop";
+        assert!(alternate_nick(long, 1).len() <= 16);
+        assert_ne!(alternate_nick(long, 1), long);
     }
 
     #[test]

@@ -494,12 +494,20 @@ Kirigami.Page {
                 // ---------------- primary action ---------------- //
                 Controls.Button {
                     id: connectButton
-                    text: page.connecting ? qsTr("Connecting…") : qsTr("Connect")
-                    enabled: page.formValid && !page.connecting
+                    text: page.connecting ? qsTr("Cancel") : qsTr("Connect")
+                    enabled: page.connecting || page.formValid
                     Layout.fillWidth: true
                     Layout.topMargin: Kirigami.Units.smallSpacing
                     Layout.preferredHeight: Math.round(Kirigami.Units.gridUnit * 2.4)
-                    onClicked: page.tryConnect()
+                    onClicked: {
+                        if (page.connecting) {
+                            if (page.bridge !== null) {
+                                page.bridge.disconnect_server()
+                            }
+                            return
+                        }
+                        page.tryConnect()
+                    }
 
                     background: Rectangle {
                         radius: Kirigami.Units.cornerRadius + 4

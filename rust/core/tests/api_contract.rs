@@ -168,6 +168,9 @@ fn irc_event_variants() {
             nick: "n".into(),
             reason: "bye".into(),
         },
+        IrcEvent::NickChanged {
+            nick: "n_".into(),
+        },
         IrcEvent::HistoryBatch {
             messages: vec![HistoryMsg {
                 timestamp: None,
@@ -180,7 +183,7 @@ fn irc_event_variants() {
             message: "e".into(),
         },
     ];
-    assert_eq!(events.len(), 15);
+    assert_eq!(events.len(), 16);
 }
 
 #[test]

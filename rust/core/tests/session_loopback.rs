@@ -535,3 +535,225 @@ async fn cap_nak_of_sasl_aborts_with_quit_and_error() {
         "CAP END must not be sent when aborting: {sent:?}"
     );
 }
+
+/// First NICK is rejected with 433; the fallback nick is accepted.
+async fn server_nick_in_use_then_ok(stream: TcpStream, lines: Lines) {
+    let (r, mut w) = stream.into_split();
+    let mut reader = BufReader::new(r).lines();
+    let mut nicks = 0u8;
+    let mut accepted = String::from("kircuser_");
+    while let Ok(Some(line)) = reader.next_line().await {
+        record(&lines, &line);
+        if line.starts_with("CAP LS") {
+            send(&mut w, &format!(":irc.test CAP * LS :{LS_CAPS}")).await;
+        } else if apply_req(&line).is_some() {
+            let req = apply_req(&line).unwrap_or_default();
+            send(&mut w, &format!(":irc.test CAP * ACK :{req}")).await;
+        } else if let Some(nick) = line.strip_prefix("NICK ") {
+            nicks += 1;
+            if nicks == 1 {
+                send(
+                    &mut w,
+                    &format!(":irc.test 433 * {nick} :Nickname is already in use"),
+                )
+                .await;
+            } else {
+                accepted = nick.to_string();
+            }
+        } else if line == "CAP END" {
+            send(
+                &mut w,
+                &format!(":irc.test 001 {accepted} :Welcome"),
+            )
+            .await;
+        } else if line.starts_with("QUIT") {
+            break;
+        }
+    }
+}
+
+/// Every NICK is 433 — the client must abort rather than spin.
+async fn server_nick_always_taken(stream: TcpStream, lines: Lines) {
+    let (r, mut w) = stream.into_split();
+    let mut reader = BufReader::new(r).lines();
+    while let Ok(Some(line)) = reader.next_line().await {
+        record(&lines, &line);
+        if line.starts_with("CAP LS") {
+            send(&mut w, ":irc.test CAP * LS :server-time").await;
+        } else if apply_req(&line).is_some() {
+            let req = apply_req(&line).unwrap_or_default();
+            send(&mut w, &format!(":irc.test CAP * ACK :{req}")).await;
+        } else if let Some(nick) = line.strip_prefix("NICK ") {
+            send(
+                &mut w,
+                &format!(":irc.test 433 * {nick} :Nickname is already in use"),
+            )
+            .await;
+        } else if line.starts_with("QUIT") {
+            break;
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn nick_in_use_retries_alternate_and_registers() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let lines: Lines = Arc::new(Mutex::new(Vec::new()));
+    {
+        let lines = lines.clone();
+        tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            server_nick_in_use_then_ok(stream, lines).await;
+        });
+    }
+    let (etx, mut erx) = mpsc::channel::<IrcEvent>(64);
+    let (ctx, crx) = mpsc::channel::<ClientCommand>(16);
+    let handle = tokio::spawn(run_session(base_config(port, None), etx, crx));
+    let events = collect_events(&mut erx, Duration::from_secs(10), |evs| {
+        evs.iter()
+            .any(|e| matches!(e, IrcEvent::Registered { .. }))
+    })
+    .await;
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, IrcEvent::NickChanged { nick } if nick == "kircuser_")),
+        "expected NickChanged to kircuser_, got {events:?}"
+    );
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, IrcEvent::Registered { .. })),
+        "expected registration after nick fallback, got {events:?}"
+    );
+    ctx.send(ClientCommand::Quit).await.ok();
+    let _ = tokio::time::timeout(Duration::from_secs(5), handle).await;
+    let sent = lines.lock().unwrap().clone();
+    assert!(
+        sent.iter().any(|l| l == "NICK kircuser_"),
+        "expected fallback NICK, got {sent:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn nick_in_use_exhausted_aborts_and_disconnects() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let lines: Lines = Arc::new(Mutex::new(Vec::new()));
+    {
+        let lines = lines.clone();
+        tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            server_nick_always_taken(stream, lines).await;
+        });
+    }
+    let (etx, mut erx) = mpsc::channel::<IrcEvent>(64);
+    let (_ctx, crx) = mpsc::channel::<ClientCommand>(16);
+    let handle = tokio::spawn(run_session(base_config(port, None), etx, crx));
+    let events = collect_events(&mut erx, Duration::from_secs(10), |evs| {
+        evs.iter()
+            .any(|e| matches!(e, IrcEvent::Disconnected { .. }))
+    })
+    .await;
+    assert!(
+        events.iter().any(|e| matches!(e, IrcEvent::Error { message } if message.contains("already in use"))),
+        "expected abort error, got {events:?}"
+    );
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, IrcEvent::Disconnected { .. })),
+        "must leave Connecting: {events:?}"
+    );
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, IrcEvent::Registered { .. })),
+        "must not register: {events:?}"
+    );
+    let returned = tokio::time::timeout(Duration::from_secs(5), handle).await;
+    assert!(returned.is_ok(), "session did not stop after 433 exhaustion");
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let sent = lines.lock().unwrap().clone();
+    let nick_sends = sent.iter().filter(|l| l.starts_with("NICK ")).count();
+    assert!(
+        nick_sends >= 2 && nick_sends <= 5,
+        "expected a few NICK retries then QUIT, got {sent:?}"
+    );
+    assert!(
+        sent.iter().any(|l| l.starts_with("QUIT")),
+        "expected QUIT after giving up, got {sent:?}"
+    );
+}
+
+/// Cancel-during-connect: the session task must never pin the UI in
+/// Connecting.
+///
+/// `run_session` blocks in `TcpStream::connect()` with no cancellation
+/// point, so the bridge (`shutdown_session` in rust/src/bridge.rs) aborts
+/// the JoinHandle. This test proves both cancel paths finish:
+///
+/// 1. Silent server (connect succeeds, server never speaks): dropping the
+///    command channel — the graceful Quit/teardown path — ends the task
+///    and emits Disconnected.
+/// 2. Same silent server, but cancelled via `handle.abort()` (exactly what
+///    the bridge does): finishes within 2s.
+/// 3. Unreachable host where `connect()` itself hangs until TCP timeout:
+///    only `handle.abort()` can end it. (If the sandbox fails fast with
+///    ENETUNREACH instead of hanging, the abort is a no-op and the join
+///    still succeeds — the assertion holds either way.)
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cancel_during_connect_abort_always_finishes() {
+    // Phase 1: graceful teardown via the command channel.
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.unwrap();
+        // Hold the connection open but never speak: the client sits in the
+        // pre-registration read loop.
+        tokio::time::sleep(Duration::from_secs(30)).await;
+        drop(stream);
+    });
+
+    let (etx, mut erx) = mpsc::channel::<IrcEvent>(64);
+    let (ctx, crx) = mpsc::channel::<ClientCommand>(16);
+    let handle = tokio::spawn(run_session(base_config(port, None), etx, crx));
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    drop(ctx);
+    let finished = tokio::time::timeout(Duration::from_secs(5), handle).await;
+    assert!(finished.is_ok(), "session hung after command channel dropped");
+    let events = collect_events(&mut erx, Duration::from_millis(500), |_| false).await;
+    assert!(
+        events.iter().any(|e| matches!(e, IrcEvent::Disconnected { .. })),
+        "silent-server cancel must emit Disconnected, got {events:?}"
+    );
+
+    // Phase 2: bridge-style abort of a task stuck mid-handshake.
+    let listener2 = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port2 = listener2.local_addr().unwrap().port();
+    tokio::spawn(async move {
+        let (stream, _) = listener2.accept().await.unwrap();
+        tokio::time::sleep(Duration::from_secs(30)).await;
+        drop(stream);
+    });
+    let (etx2, _erx2) = mpsc::channel::<IrcEvent>(64);
+    let (_ctx2, crx2) = mpsc::channel::<ClientCommand>(16);
+    let handle2 = tokio::spawn(run_session(base_config(port2, None), etx2, crx2));
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    handle2.abort();
+    let finished2 = tokio::time::timeout(Duration::from_secs(2), handle2).await;
+    assert!(finished2.is_ok(), "aborted handshake task did not finish in 2s");
+
+    // Phase 3: connect() itself hanging (blackhole host) — abort is the
+    // only way out, which is why shutdown_session aborts the JoinHandle.
+    let (etx3, _erx3) = mpsc::channel::<IrcEvent>(64);
+    let (_ctx3, crx3) = mpsc::channel::<ClientCommand>(16);
+    let mut blackhole = base_config(6667, None);
+    blackhole.host = "10.255.255.1".to_string();
+    let handle3 = tokio::spawn(run_session(blackhole, etx3, crx3));
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    handle3.abort();
+    let finished3 = tokio::time::timeout(Duration::from_secs(2), handle3).await;
+    assert!(finished3.is_ok(), "aborted connect() task did not finish in 2s");
+}
