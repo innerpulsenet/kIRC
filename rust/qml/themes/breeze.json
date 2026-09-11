@@ -1,0 +1,26 @@
+{
+    "id": "breeze-dark-default",
+    "name": "Breeze Dark",
+    "mode": "dense",
+    "bubble": {
+        "radius": 8,
+        "spacing": 4,
+        "selfColor": "",
+        "otherColor": ""
+    },
+    "dense": {
+        "lineSpacing": 2
+    },
+    "fonts": {
+        "messageSize": 0,
+        "timestampSize": 0
+    },
+    "colors": {
+        "nickSatMin": 0.55,
+        "nickSatMax": 0.70,
+        "nickLightnessDark": 0.62,
+        "nickLightnessLight": 0.35,
+        "linkify": true,
+        "highlightIsBold": true
+    }
+}

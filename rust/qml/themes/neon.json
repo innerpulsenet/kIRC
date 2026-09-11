@@ -1,0 +1,26 @@
+{
+    "id": "neon",
+    "name": "Neon",
+    "mode": "bubble",
+    "bubble": {
+        "radius": 12,
+        "spacing": 8,
+        "selfColor": "#2b0f4d",
+        "otherColor": "#101820"
+    },
+    "dense": {
+        "lineSpacing": 2
+    },
+    "fonts": {
+        "messageSize": 0,
+        "timestampSize": 0
+    },
+    "colors": {
+        "nickSatMin": 0.70,
+        "nickSatMax": 0.95,
+        "nickLightnessDark": 0.70,
+        "nickLightnessLight": 0.40,
+        "linkify": true,
+        "highlightIsBold": true
+    }
+}

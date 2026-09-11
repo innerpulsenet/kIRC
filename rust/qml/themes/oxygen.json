@@ -1,0 +1,26 @@
+{
+    "id": "oxygen",
+    "name": "Oxygen",
+    "mode": "dense",
+    "bubble": {
+        "radius": 10,
+        "spacing": 6,
+        "selfColor": "",
+        "otherColor": ""
+    },
+    "dense": {
+        "lineSpacing": 3
+    },
+    "fonts": {
+        "messageSize": 0,
+        "timestampSize": 0
+    },
+    "colors": {
+        "nickSatMin": 0.55,
+        "nickSatMax": 0.65,
+        "nickLightnessDark": 0.68,
+        "nickLightnessLight": 0.32,
+        "linkify": true,
+        "highlightIsBold": true
+    }
+}

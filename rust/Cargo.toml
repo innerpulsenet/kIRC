@@ -1,0 +1,34 @@
+[package]
+name = "kirc"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "CXX-Qt bridge between the kIRC Kirigami frontend and the kirc-core IRC engine"
+
+# CMake links this crate as a static library via cxx_qt_import_crate.
+[lib]
+crate-type = ["staticlib"]
+
+[dependencies]
+cxx = "1.0"
+cxx-qt = "0.10"
+cxx-qt-lib = { version = "0.10", features = ["qt_full"] }
+kirc-core = { path = "core" }
+tokio = { version = "1", features = [
+    "rt-multi-thread",
+    "sync",
+    "macros",
+    "time",
+    "net",
+    "io-util",
+] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+
+[build-dependencies]
+# `link_qt_object_files` is required so the QML module's object files get linked
+# correctly when the crate is consumed by CMake.
+cxx-qt-build = { version = "0.10", features = ["link_qt_object_files"] }
+# Needed to attach an explicit resource alias to non-QML module resources
+# (the `.pragma library` JS file imported by ThemeEngine.qml).
+qt-build-utils = "0.10"
