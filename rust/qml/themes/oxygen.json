@@ -5,15 +5,34 @@
     "bubble": {
         "radius": 10,
         "spacing": 6,
+        "groupSpacing": 2,
+        "tailRadius": 4,
+        "maxWidthFraction": 0.78,
         "selfColor": "",
         "otherColor": ""
     },
     "dense": {
         "lineSpacing": 3
     },
+    "avatar": {
+        "enabled": false,
+        "size": 0
+    },
+    "grouping": {
+        "enabled": true,
+        "windowMinutes": 5
+    },
+    "motion": {
+        "enabled": true,
+        "duration": 120
+    },
+    "sidebar": {
+        "width": 0
+    },
     "fonts": {
         "messageSize": 0,
-        "timestampSize": 0
+        "timestampSize": 0,
+        "nickSize": 0
     },
     "colors": {
         "nickSatMin": 0.55,
@@ -21,6 +40,7 @@
         "nickLightnessDark": 0.68,
         "nickLightnessLight": 0.32,
         "linkify": true,
-        "highlightIsBold": true
+        "highlightIsBold": true,
+        "linkColor": ""
     }
 }

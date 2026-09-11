@@ -1,21 +1,21 @@
 {
-    "id": "neon",
-    "name": "Neon",
-    "mode": "bubble",
+    "id": "breeze-classic",
+    "name": "Breeze Classic",
+    "mode": "dense",
     "bubble": {
-        "radius": 14,
-        "spacing": 8,
-        "groupSpacing": 3,
-        "tailRadius": 5,
+        "radius": 8,
+        "spacing": 4,
+        "groupSpacing": 2,
+        "tailRadius": 4,
         "maxWidthFraction": 0.78,
-        "selfColor": "#2b0f4d",
-        "otherColor": "#101820"
+        "selfColor": "",
+        "otherColor": ""
     },
     "dense": {
         "lineSpacing": 2
     },
     "avatar": {
-        "enabled": true,
+        "enabled": false,
         "size": 0
     },
     "grouping": {
@@ -24,7 +24,7 @@
     },
     "motion": {
         "enabled": true,
-        "duration": 160
+        "duration": 120
     },
     "sidebar": {
         "width": 0
@@ -35,10 +35,10 @@
         "nickSize": 0
     },
     "colors": {
-        "nickSatMin": 0.70,
-        "nickSatMax": 0.95,
-        "nickLightnessDark": 0.70,
-        "nickLightnessLight": 0.40,
+        "nickSatMin": 0.55,
+        "nickSatMax": 0.70,
+        "nickLightnessDark": 0.62,
+        "nickLightnessLight": 0.35,
         "linkify": true,
         "highlightIsBold": true,
         "linkColor": ""

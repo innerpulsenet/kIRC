@@ -1,19 +1,38 @@
 {
-    "id": "breeze-dark-default",
-    "name": "Breeze Dark",
-    "mode": "dense",
+    "id": "breeze",
+    "name": "Breeze",
+    "mode": "bubble",
     "bubble": {
-        "radius": 8,
-        "spacing": 4,
+        "radius": 12,
+        "spacing": 6,
+        "groupSpacing": 2,
+        "tailRadius": 5,
+        "maxWidthFraction": 0.78,
         "selfColor": "",
         "otherColor": ""
     },
     "dense": {
-        "lineSpacing": 2
+        "lineSpacing": 3
+    },
+    "avatar": {
+        "enabled": true,
+        "size": 0
+    },
+    "grouping": {
+        "enabled": true,
+        "windowMinutes": 5
+    },
+    "motion": {
+        "enabled": true,
+        "duration": 140
+    },
+    "sidebar": {
+        "width": 0
     },
     "fonts": {
         "messageSize": 0,
-        "timestampSize": 0
+        "timestampSize": 0,
+        "nickSize": 0
     },
     "colors": {
         "nickSatMin": 0.55,
@@ -21,6 +40,7 @@
         "nickLightnessDark": 0.62,
         "nickLightnessLight": 0.35,
         "linkify": true,
-        "highlightIsBold": true
+        "highlightIsBold": true,
+        "linkColor": ""
     }
 }

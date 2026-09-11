@@ -14,12 +14,17 @@
 //   * `kircTray`   — a KircTray/KStatusNotifierItem (cpp/kirctray.cpp).
 // Neither exists when this file is loaded by the standalone QML harness, so
 // every use is null-guarded and the window keeps working without them.
+//
+// The page stack is forced into single-column mode (`defaultColumnWidth`): a
+// chat client should show one page at a time — PageRow's side-by-side desktop
+// layout used to leave the connection form visible next to the chat log.
 
 import QtQuick
 import QtQuick.Controls as Controls
 import QtQuick.Layouts
 
 import org.kde.kirigami as Kirigami
+import org.kde.kirigami.layouts as KirigamiLayouts
 import org.kde.kirc
 
 Kirigami.ApplicationWindow {
@@ -48,10 +53,29 @@ Kirigami.ApplicationWindow {
     // Updated by ChatPage when the user switches channel.
     property string chatChannel: "#kirc"
 
+    // One page at a time. PageRow otherwise switches to FixedColumns in
+    // wideMode and leaves the connect form sitting beside (or ghosting
+    // through) the chat log.
+    pageStack.defaultColumnWidth: root.width
+    pageStack.columnView.columnResizeMode: KirigamiLayouts.ColumnView.SingleColumn
+
+    // The window provides its own header below; without this the PageRow draws
+    // a second toolbar (breadcrumb + navigation) underneath it.
+    pageStack.globalToolBar.style: Kirigami.ApplicationHeaderStyle.None
+
+    readonly property bool darkTheme: ThemeEngine.isDark(Kirigami.Theme.backgroundColor)
+    readonly property color hairline: ThemeEngine.withAlpha(Kirigami.Theme.textColor, 0.12)
+
     // ---------------------------------------------------------------------- //
     // Persisted profile (KircConfig). `appConfig` is null in harnesses that do
     // not provide the context property.
+    //
+    // `kircConfig` / `kircTray` are C++ context properties (cpp/kircconfig.cpp,
+    // cpp/kirctray.cpp); the existence checks are what let this file also load
+    // in the standalone QML harnesses, which is why the unqualified-access lint
+    // category is disabled around them.
     // ---------------------------------------------------------------------- //
+    // qmllint disable unqualified
     readonly property var appConfig: {
         try {
             return (typeof kircConfig !== "undefined" && kircConfig !== null) ? kircConfig : null
@@ -73,6 +97,7 @@ Kirigami.ApplicationWindow {
             return false
         }
     }
+    // qmllint enable unqualified
 
     // Last connection attempt, captured so a *successful* connect can be
     // persisted (the bridge owns the real state; this is just what the user
@@ -83,12 +108,22 @@ Kirigami.ApplicationWindow {
     property string lastNickname: ""
     property string lastSaslUser: ""
 
-    readonly property string headerTitle: {
-        if (root.pageStack.depth > 1) {
-            return qsTr("Chat — %1").arg(root.chatChannel)
+    /// Buffer name for humans. "*server*" is internal; the header glyph
+    /// already shows "#" for channels so the title drops the prefix.
+    function channelLabel(target)
+    {
+        if (target === "*server*") {
+            return qsTr("Server")
         }
-        return qsTr("Connect to IRC")
+        if (target.length > 1 && target.charAt(0) === "#") {
+            return target.substring(1)
+        }
+        return target
     }
+
+    readonly property string headerTitle: root.pageStack.depth > 1
+        ? root.channelLabel(root.chatChannel)
+        : qsTr("Connect to IRC")
 
     readonly property string statusText: {
         switch (root.bridge.connection_state) {
@@ -119,15 +154,29 @@ Kirigami.ApplicationWindow {
     }
 
     // ---------------------------------------------------------------------- //
-    // Header: connection state + nick + unread count (per the UI contract).
-    // Replaces the default global toolbar, so the page title and a back button
-    // are re-created here.
+    // Header: current context + connection status pill + nick chip + flat menu
+    // buttons. Replaces the default global toolbar, so the page title and a
+    // back button are re-created here.
     // ---------------------------------------------------------------------- //
     header: Controls.ToolBar {
         id: headerBar
 
+        background: Rectangle {
+            color: Kirigami.Theme.backgroundColor
+
+            Rectangle {
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.bottom: parent.bottom
+                height: 1
+                color: root.hairline
+            }
+        }
+
         RowLayout {
             anchors.fill: parent
+            anchors.leftMargin: Kirigami.Units.smallSpacing
+            anchors.rightMargin: Kirigami.Units.smallSpacing
             spacing: Kirigami.Units.smallSpacing
 
             Controls.ToolButton {
@@ -141,28 +190,133 @@ Kirigami.ApplicationWindow {
                 Controls.ToolTip.text: qsTr("Back to connection settings")
             }
 
+            // Context glyph: the channel's own hash colour, or a server
+            // pictogram for the "*server*" console buffer.
+            Rectangle {
+                visible: root.pageStack.depth > 1
+                Layout.alignment: Qt.AlignVCenter
+                implicitWidth: Math.round(Kirigami.Units.gridUnit * 1.35)
+                implicitHeight: Math.round(Kirigami.Units.gridUnit * 1.35)
+                radius: Kirigami.Units.cornerRadius
+                color: root.chatChannel === "*server*"
+                    ? ThemeEngine.withAlpha(Kirigami.Theme.textColor, 0.12)
+                    : ThemeEngine.nickColor(root.chatChannel, root.darkTheme)
+
+                Kirigami.Icon {
+                    anchors.centerIn: parent
+                    visible: root.chatChannel === "*server*"
+                    source: "network-server"
+                    color: Kirigami.Theme.textColor
+                    implicitWidth: Math.round(parent.width * 0.66)
+                    implicitHeight: implicitWidth
+                }
+
+                Controls.Label {
+                    anchors.centerIn: parent
+                    visible: root.chatChannel !== "*server*"
+                    text: "#"
+                    color: ThemeEngine.contrastingTextColor(parent.color)
+                    font.bold: true
+                    font.pointSize: Math.max(1, Kirigami.Theme.defaultFont.pointSize)
+                }
+            }
+
             Controls.Label {
                 text: root.headerTitle
                 font.bold: true
+                font.pointSize: Kirigami.Theme.defaultFont.pointSize + 1
                 elide: Text.ElideRight
                 Layout.fillWidth: true
             }
 
-            Controls.Label {
-                text: root.statusText
-                color: root.statusColor
+            // ---- connection status pill ----
+            Rectangle {
+                Layout.alignment: Qt.AlignVCenter
+                implicitWidth: statusPill.implicitWidth + Kirigami.Units.smallSpacing * 2
+                implicitHeight: Math.round(Kirigami.Units.gridUnit * 1.5)
+                radius: height / 2
+                color: ThemeEngine.withAlpha(root.statusColor, 0.16)
+
+                RowLayout {
+                    id: statusPill
+                    anchors.centerIn: parent
+                    spacing: Math.round(Kirigami.Units.smallSpacing * 0.75)
+
+                    Rectangle {
+                        Layout.alignment: Qt.AlignVCenter
+                        implicitWidth: Math.round(Kirigami.Units.gridUnit * 0.45)
+                        implicitHeight: implicitWidth
+                        radius: width / 2
+                        color: root.statusColor
+                    }
+
+                    Controls.Label {
+                        Layout.alignment: Qt.AlignVCenter
+                        text: root.statusText
+                        color: root.statusColor
+                        font.pointSize: Math.max(1, Kirigami.Theme.defaultFont.pointSize - 1)
+                    }
+                }
             }
 
-            Controls.Label {
+            // ---- unread badge ----
+            Rectangle {
+                Layout.alignment: Qt.AlignVCenter
                 visible: root.bridge.unread_count > 0
-                text: qsTr("%1 unread").arg(root.bridge.unread_count)
-                color: Kirigami.Theme.neutralTextColor
+                implicitWidth: Math.max(height, unreadLabel.implicitWidth + Kirigami.Units.smallSpacing * 2)
+                implicitHeight: Math.round(Kirigami.Units.gridUnit * 1.5)
+                radius: height / 2
+                color: Kirigami.Theme.highlightColor
+
+                Controls.Label {
+                    id: unreadLabel
+                    anchors.centerIn: parent
+                    text: root.bridge.unread_count
+                    color: Kirigami.Theme.highlightedTextColor
+                    font.bold: true
+                    font.pointSize: Math.max(1, Kirigami.Theme.defaultFont.pointSize - 1)
+                }
             }
 
-            Controls.Label {
+            // ---- nick chip ----
+            Rectangle {
+                Layout.alignment: Qt.AlignVCenter
                 visible: root.bridge.nickname.length > 0
-                text: root.bridge.nickname
-                color: Kirigami.Theme.disabledTextColor
+                implicitWidth: nickChip.implicitWidth + Kirigami.Units.smallSpacing * 2
+                implicitHeight: Math.round(Kirigami.Units.gridUnit * 1.6)
+                radius: height / 2
+                color: ThemeEngine.withAlpha(Kirigami.Theme.textColor, 0.07)
+
+                RowLayout {
+                    id: nickChip
+                    anchors.centerIn: parent
+                    spacing: Math.round(Kirigami.Units.smallSpacing * 0.75)
+
+                    Rectangle {
+                        Layout.alignment: Qt.AlignVCenter
+                        implicitWidth: Math.round(Kirigami.Units.gridUnit * 1.05)
+                        implicitHeight: implicitWidth
+                        radius: width / 2
+                        color: ThemeEngine.nickColor(root.bridge.nickname, root.darkTheme)
+
+                        Controls.Label {
+                            anchors.centerIn: parent
+                            text: ThemeEngine.initial(root.bridge.nickname)
+                            color: ThemeEngine.contrastingTextColor(parent.color)
+                            font.bold: true
+                            font.pointSize: Math.max(1, Kirigami.Theme.defaultFont.pointSize - 2)
+                        }
+                    }
+
+                    Controls.Label {
+                        Layout.alignment: Qt.AlignVCenter
+                        text: root.bridge.nickname
+                        color: Kirigami.Theme.textColor
+                        elide: Text.ElideRight
+                        Layout.maximumWidth: Kirigami.Units.gridUnit * 8
+                        font.pointSize: Math.max(1, Kirigami.Theme.defaultFont.pointSize - 1)
+                    }
+                }
             }
 
             Controls.ToolButton {
