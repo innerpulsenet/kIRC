@@ -1098,12 +1098,20 @@ Kirigami.Page {
 
     function isNickServ(nick)
     {
-        var want = "NickServ"
-        if (page.hostWindow !== null && page.hostWindow.appConfig !== null
-                && page.hostWindow.appConfig.nickservNick.length > 0) {
-            want = page.hostWindow.appConfig.nickservNick
+        return page.sameTarget(nick, "NickServ")
+    }
+
+    function nickservAccount()
+    {
+        var cfg = (page.hostWindow !== null) ? page.hostWindow.appConfig : null
+        if (cfg === null) {
+            return ""
         }
-        return page.sameTarget(nick, want)
+        var account = String(cfg.nickservNick).trim()
+        if (account.length === 0 || account.toLowerCase() === "nickserv") {
+            account = String(cfg.nickname).trim()
+        }
+        return account.split(/\s+/)[0]
     }
 
     function isIdentifySuccess(text)
@@ -1150,8 +1158,12 @@ Kirigami.Page {
         }
         var cfg = (page.hostWindow !== null) ? page.hostWindow.appConfig : null
         if (cfg !== null && cfg.identifyOnConnect && cfg.nickservPassword.length > 0) {
-            var svc = cfg.nickservNick.length > 0 ? cfg.nickservNick : "NickServ"
-            page.bridge.send_raw("PRIVMSG " + svc + " :IDENTIFY " + cfg.nickservPassword)
+            var account = page.nickservAccount()
+            if (account.length === 0) {
+                page.applyAutojoin()
+                return
+            }
+            page.bridge.send_raw("PRIVMSG NickServ :IDENTIFY " + account + " " + cfg.nickservPassword)
             identifyTimer.restart()
             return
         }

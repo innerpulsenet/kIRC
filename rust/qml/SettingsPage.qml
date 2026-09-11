@@ -140,8 +140,8 @@ Kirigami.ScrollablePage {
 
         Controls.TextField {
             id: nickservNickField
-            Kirigami.FormData.label: qsTr("Service nick")
-            placeholderText: "NickServ"
+            Kirigami.FormData.label: qsTr("Account")
+            placeholderText: qsTr("Registered account (not your current nick)")
             onEditingFinished: page.persist()
         }
 

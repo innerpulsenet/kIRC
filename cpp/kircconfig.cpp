@@ -236,7 +236,13 @@ void KircConfig::load()
 
     const KConfigGroup services = config.group(QString::fromLatin1(kServicesGroup));
     m_identifyOnConnect = services.readEntry(QStringLiteral("IdentifyOnConnect"), m_identifyOnConnect);
-    m_nickservNick = services.readEntry(QStringLiteral("NickServ"), m_nickservNick);
+    m_nickservNick = services.readEntry(QStringLiteral("Account"), QString());
+    if (m_nickservNick.isEmpty()) {
+        const QString legacy = services.readEntry(QStringLiteral("NickServ"), QString());
+        if (!legacy.isEmpty() && legacy.compare(QStringLiteral("NickServ"), Qt::CaseInsensitive) != 0) {
+            m_nickservNick = legacy;
+        }
+    }
     m_nickservPassword = services.readEntry(QStringLiteral("Password"), m_nickservPassword);
 
     Q_EMIT hostChanged();
@@ -280,7 +286,8 @@ void KircConfig::save()
 
     KConfigGroup services = config.group(QString::fromLatin1(kServicesGroup));
     services.writeEntry(QStringLiteral("IdentifyOnConnect"), m_identifyOnConnect);
-    services.writeEntry(QStringLiteral("NickServ"), m_nickservNick);
+    services.writeEntry(QStringLiteral("Account"), m_nickservNick);
+    services.deleteEntry(QStringLiteral("NickServ"));
     services.writeEntry(QStringLiteral("Password"), m_nickservPassword);
 
     config.sync();

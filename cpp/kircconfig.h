@@ -127,6 +127,6 @@ private:
     bool m_reconnect = true;
     int m_fontDelta = 0;
     bool m_identifyOnConnect = false;
-    QString m_nickservNick = QStringLiteral("NickServ");
+    QString m_nickservNick;
     QString m_nickservPassword;
 };
