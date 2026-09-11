@@ -173,6 +173,27 @@ fn irc_event_variants() {
         IrcEvent::NickChanged {
             nick: "n_".into(),
         },
+        IrcEvent::NickRename {
+            old: "n".into(),
+            new: "n_".into(),
+            is_self: false,
+        },
+        IrcEvent::NickRename {
+            old: "n".into(),
+            new: "n_".into(),
+            is_self: true,
+        },
+        IrcEvent::Kick {
+            channel: "#c".into(),
+            nick: "n".into(),
+            kicker: "op".into(),
+            reason: "spam".into(),
+            is_self: false,
+        },
+        IrcEvent::Mode {
+            target: "#c".into(),
+            modes: "+o n".into(),
+        },
         IrcEvent::HistoryBatch {
             messages: vec![HistoryMsg {
                 timestamp: None,
@@ -185,7 +206,7 @@ fn irc_event_variants() {
             message: "e".into(),
         },
     ];
-    assert_eq!(events.len(), 16);
+    assert_eq!(events.len(), 20);
 }
 
 #[test]

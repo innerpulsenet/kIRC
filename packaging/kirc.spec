@@ -47,6 +47,7 @@ BuildRequires:  kf6-kirigami-devel
 BuildRequires:  kf6-kconfig-devel
 BuildRequires:  kf6-knotifications-devel
 BuildRequires:  kf6-kstatusnotifieritem-devel
+BuildRequires:  kf6-kwallet-devel
 BuildRequires:  desktop-file-utils
 BuildRequires:  libappstream-glib
 
@@ -60,6 +61,7 @@ Requires:       kf6-kirigami
 Requires:       kf6-kconfig
 Requires:       kf6-knotifications
 Requires:       kf6-kstatusnotifieritem
+Requires:       kf6-kwallet
 
 %description
 kIRC is an IRCv3 client for the KDE Plasma desktop.  The interface is built

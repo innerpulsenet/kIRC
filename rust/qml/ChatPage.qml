@@ -61,6 +61,11 @@ Kirigami.Page {
     property string joinError: ""
     property var pendingJoins: []
     property bool autojoinDone: false
+    // Set when the pending reload carries our own echo: always scroll, even
+    // if the user had scrolled up (their own line must be visible).
+    property bool reloadSelf: false
+    // Guards the post-identify GHOST+NICK reclaim: once per connection.
+    property bool ghostDone: false
 
     title: page.channelLabel(page.currentChannel)
     padding: 0
@@ -95,7 +100,17 @@ Kirigami.Page {
         id: reloadTimer
         interval: 50
         repeat: false
-        onTriggered: page.refreshHistory()
+        // Coalesced refresh for the open channel.  Autoscroll is conditional:
+        // only pin to the bottom when the view is already there or the new
+        // line is our own echo — never yank a user who scrolled up to read.
+        onTriggered: {
+            var stick = page.reloadSelf || messageView.atYEnd
+            page.reloadSelf = false
+            msgModel.load_channel(page.currentChannel)
+            if (stick) {
+                page.scrollToEnd()
+            }
+        }
     }
 
     Connections {
@@ -103,29 +118,36 @@ Kirigami.Page {
 
         function onMessage_received(target, nick, text, is_self, is_highlight) {
             if (page.sameTarget(target, page.currentChannel)) {
+                if (is_self) {
+                    page.reloadSelf = true
+                }
                 if (!reloadTimer.running) {
                     reloadTimer.start()
                 }
             }
             if (!is_self && page.isNickServ(nick) && page.isIdentifySuccess(text)) {
                 identifyTimer.stop()
+                page.maybeGhost()
                 page.applyAutojoin()
             }
         }
 
         function onHistory_batch_received(target) {
             if (page.sameTarget(target, page.currentChannel)) {
-                Qt.callLater(page.scrollToEnd)
+                page.refreshHistory()
+                page.scrollIfAtBottom()
             }
         }
 
         function onState_changed(state) {
             if (state === 2) {
                 page.autojoinDone = false
+                page.ghostDone = false
                 page.refreshHistory()
                 page.startIdentifyAndJoin()
             } else if (state === 0) {
                 page.autojoinDone = false
+                page.ghostDone = false
                 page.pendingJoins = []
                 identifyTimer.stop()
                 page.channels = ["*server*"]
@@ -147,7 +169,7 @@ Kirigami.Page {
 
         function onChannel_parted(channel) {
             page.removeBuffer(channel)
-            if (page.currentChannel === channel) {
+            if (page.sameTarget(page.currentChannel, channel)) {
                 page.openChannel("*server*")
             }
         }
@@ -162,13 +184,13 @@ Kirigami.Page {
         }
 
         function onTopic_changed(channel, topic) {
-            if (channel === page.currentChannel) {
+            if (page.sameTarget(channel, page.currentChannel)) {
                 page.currentTopic = topic
             }
         }
 
         function onNames_updated(channel, nicks) {
-            if (channel === page.currentChannel) {
+            if (page.sameTarget(channel, page.currentChannel)) {
                 page.nickList = nicks.length === 0 ? [] : nicks.split(" ")
             }
         }
@@ -192,7 +214,7 @@ Kirigami.Page {
         for (var i = 0; i < page.channels.length; ++i) {
             var target = page.channels[i]
             var isServer = (target === "*server*")
-            var isQuery = !isServer && target.charAt(0) !== "#" && target.charAt(0) !== "&"
+            var isQuery = !isServer && !page.isChannel(target)
             var kind = isServer ? "server" : (isQuery ? "query" : "channel")
             var title = isServer ? qsTr("Server") : (isQuery ? qsTr("Messages") : qsTr("Channels"))
             out.push({
@@ -497,7 +519,7 @@ Kirigami.Page {
             }
 
             Rectangle {
-                visible: page.currentTopic.length > 0 && page.currentChannel.charAt(0) === "#"
+                visible: page.currentTopic.length > 0 && page.isChannel(page.currentChannel)
                 Layout.fillWidth: true
                 implicitHeight: topicLabel.implicitHeight + Kirigami.Units.smallSpacing * 2
                 color: ThemeEngine.withAlpha(Kirigami.Theme.textColor, 0.04)
@@ -596,7 +618,7 @@ Kirigami.Page {
                             if (page.currentChannel === "*server*") {
                                 return qsTr("Server console")
                             }
-                            if (page.currentChannel.charAt(0) !== "#" && page.currentChannel.charAt(0) !== "&") {
+                            if (!page.isChannel(page.currentChannel)) {
                                 return qsTr("No messages yet")
                             }
                             return qsTr("No messages in %1 yet").arg(page.currentChannel)
@@ -616,7 +638,7 @@ Kirigami.Page {
                             if (page.currentChannel === "*server*") {
                                 return qsTr("Server notices, joins and parts show up here.")
                             }
-                            if (page.currentChannel.charAt(0) !== "#" && page.currentChannel.charAt(0) !== "&") {
+                            if (!page.isChannel(page.currentChannel)) {
                                 return qsTr("Private messages with this nick show up here.")
                             }
                             return qsTr("Say hi!")
@@ -760,7 +782,7 @@ Kirigami.Page {
         }
 
         Rectangle {
-            visible: page.currentChannel.charAt(0) === "#" || page.currentChannel.charAt(0) === "&"
+            visible: page.isChannel(page.currentChannel)
             Layout.preferredWidth: Kirigami.Units.gridUnit * 9
             Layout.minimumWidth: Kirigami.Units.gridUnit * 7
             Layout.fillHeight: true
@@ -836,6 +858,9 @@ Kirigami.Page {
         }
         var switching = !page.sameTarget(target, page.currentChannel)
         page.currentChannel = page.existingTarget(target)
+        if (page.bridge !== null && typeof page.bridge.mark_read === "function") {
+            page.bridge.mark_read()
+        }
         if (page.hostWindow !== null && page.hostWindow !== undefined) {
             page.hostWindow.chatChannel = page.currentChannel
         }
@@ -849,6 +874,17 @@ Kirigami.Page {
         if (switching) {
             contentFade.restart()
         }
+    }
+
+    /// True for channel targets: the # & + ! prefixes. Everything else is a
+    /// query nick or the *server* console.
+    function isChannel(target)
+    {
+        if (target === undefined || target === null || target === "*server*") {
+            return false
+        }
+        var c = String(target).charAt(0)
+        return c === "#" || c === "&" || c === "+" || c === "!"
     }
 
     function sameTarget(a, b)
@@ -916,11 +952,10 @@ Kirigami.Page {
         if (target === undefined || target === null || target === "*server*") {
             return
         }
-        var isChan = target.charAt(0) === "#" || target.charAt(0) === "&"
-        if (isChan && page.bridge !== null) {
+        if (page.isChannel(target) && page.bridge !== null) {
             page.bridge.part_channel(target)
         }
-        var leaving = page.currentChannel === target
+        var leaving = page.sameTarget(page.currentChannel, target)
         page.removeBuffer(target)
         if (leaving) {
             page.openChannel("*server*")
@@ -931,6 +966,15 @@ Kirigami.Page {
     {
         msgModel.load_channel(page.currentChannel)
         page.scrollToEnd()
+    }
+
+    function scrollIfAtBottom()
+    {
+        // Conditional autoscroll for live traffic: stay pinned when already at
+        // the bottom, but never yank a user who scrolled up to read back.
+        if (messageView.atYEnd) {
+            page.scrollToEnd()
+        }
     }
 
     function scrollToEnd()
@@ -973,8 +1017,23 @@ Kirigami.Page {
             return true
         }
         if (cmd === "/part" || cmd === "/close" || cmd === "/wc") {
-            var chan = rest.length > 0 ? rest.split(" ")[0] : page.currentChannel
-            page.closeBuffer(chan)
+            if (page.bridge === null) {
+                return true
+            }
+            var words = rest.length > 0 ? rest.split(" ") : []
+            var chan = words.length > 0 && words[0].length > 0 ? words[0] : page.currentChannel
+            var reason = words.length > 1 ? words.slice(1).join(" ").trim() : ""
+            if (!page.isChannel(chan)) {
+                page.closeBuffer(chan)
+                return true
+            }
+            if (reason.length > 0) {
+                page.bridge.send_raw("PART " + chan + " :" + reason)
+            } else if (typeof page.bridge.part_channel === "function") {
+                page.bridge.part_channel(chan)
+            } else {
+                page.bridge.send_raw("PART " + chan)
+            }
             return true
         }
         if (cmd === "/query" || cmd === "/msg") {
@@ -1006,7 +1065,7 @@ Kirigami.Page {
         }
         if (cmd === "/whois") {
             var who = rest.length > 0 ? rest.split(" ")[0] : page.currentChannel
-            if (who.charAt(0) === "#" || who === "*server*") {
+            if (page.isChannel(who) || who === "*server*") {
                 return false
             }
             page.addBuffer(who)
@@ -1031,7 +1090,7 @@ Kirigami.Page {
             return true
         }
         if (cmd === "/topic") {
-            if (page.currentChannel.charAt(0) !== "#") {
+            if (!page.isChannel(page.currentChannel)) {
                 return false
             }
             if (rest.length === 0) {
@@ -1052,7 +1111,7 @@ Kirigami.Page {
         }
         if (cmd === "/kick") {
             var kb = rest.split(" ")
-            if (kb.length === 0 || page.currentChannel.charAt(0) !== "#") {
+            if (kb.length === 0 || !page.isChannel(page.currentChannel)) {
                 return false
             }
             var reason = kb.length > 1 ? kb.slice(1).join(" ") : ""
@@ -1129,7 +1188,7 @@ Kirigami.Page {
     function rememberPendingJoin(channel)
     {
         var ch = String(channel)
-        if (ch.length === 0 || ch.charAt(0) !== "#") {
+        if (ch.length === 0 || !page.isChannel(ch)) {
             return
         }
         for (var i = 0; i < page.pendingJoins.length; ++i) {
@@ -1149,6 +1208,34 @@ Kirigami.Page {
             }
         }
         page.pendingJoins = out
+    }
+
+    /// Reclaim the registered nick after NickServ confirms the IDENTIFY
+    /// (typically a 433 forced us onto a fallback nick while a ghost session
+    /// still holds the account).  Once per connection: GHOST the stale session
+    /// for our own account, then take the nick back.  The password never
+    /// appears in the UI — IDENTIFY/GHOST lines are NickServ traffic the core
+    /// already filters from display.
+    function maybeGhost()
+    {
+        if (page.ghostDone || page.bridge === null || page.bridge === undefined) {
+            return
+        }
+        page.ghostDone = true
+        var cfg = (page.hostWindow !== null) ? page.hostWindow.appConfig : null
+        if (cfg === null || cfg.nickservPassword.length === 0) {
+            return
+        }
+        var account = page.nickservAccount()
+        if (account.length === 0) {
+            return
+        }
+        var current = String(page.bridge.nickname)
+        if (current.length > 0 && current.toLowerCase() === account.toLowerCase()) {
+            return
+        }
+        page.bridge.send_raw("PRIVMSG NickServ :GHOST " + account + " " + cfg.nickservPassword)
+        page.bridge.send_raw("NICK " + account)
     }
 
     function startIdentifyAndJoin()
@@ -1194,7 +1281,7 @@ Kirigami.Page {
                     if (ch.length === 0) {
                         continue
                     }
-                    if (ch.charAt(0) !== "#" && ch.charAt(0) !== "&") {
+                    if (!page.isChannel(ch)) {
                         ch = "#" + ch
                     }
                     add(ch)
@@ -1261,12 +1348,12 @@ Kirigami.Page {
         }
         joinField.text = ""
         page.joinError = ""
-        var isChan = target.charAt(0) === "#" || target.charAt(0) === "&"
-        if (!isChan) {
+        if (!page.isChannel(target)) {
             // A nick → query window. A bare word → treat as a channel.
             // Users type "pain" meaning "#pain"; they type a nick via /query.
+            // Join attempts need a #-style prefix, but + and ! are real
+            // channel types already — only add # when there is no prefix.
             target = "#" + target
-            isChan = true
         }
         if (page.bridge !== null) {
             page.bridge.join_channel(target)

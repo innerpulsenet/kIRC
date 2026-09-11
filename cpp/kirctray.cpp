@@ -260,9 +260,10 @@ void KircTray::onConnect()
         return;
     }
     showWindow();
-    // Reconnect from the last saved profile.  The SASL password is never
-    // persisted (see kircconfig.h), so it is intentionally passed empty — the
-    // server will reject SASL and the user completes it in the form.
+    // Reconnect from the last saved profile.  The SASL password is memory-only
+    // (KircConfig::sessionSaslPassword, never on disk): empty unless the user
+    // connected with SASL this session, in which case reuse it so the tray
+    // reconnect does not SASL-904-loop.
     const bool ok = QMetaObject::invokeMethod(m_bridge,
                                               "connect_server",
                                               Q_ARG(QString, m_config->host()),
@@ -270,7 +271,7 @@ void KircTray::onConnect()
                                               Q_ARG(bool, m_config->tls()),
                                               Q_ARG(QString, m_config->nickname()),
                                               Q_ARG(QString, m_config->saslUser()),
-                                              Q_ARG(QString, QString()));
+                                              Q_ARG(QString, m_config->sessionSaslPassword()));
     if (!ok) {
         qWarning("kIRC: tray could not invoke IrcBridge::connect_server");
     }

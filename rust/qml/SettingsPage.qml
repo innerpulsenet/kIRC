@@ -149,7 +149,7 @@ Kirigami.ScrollablePage {
             id: nickservPassField
             Kirigami.FormData.label: qsTr("Password")
             echoMode: Controls.TextInput.Password
-            placeholderText: qsTr("Stored in kirc.conf")
+            placeholderText: qsTr("Stored in KWallet, never in kirc.conf")
             onEditingFinished: page.persist()
         }
 

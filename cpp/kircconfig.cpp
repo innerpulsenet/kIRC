@@ -4,6 +4,7 @@
 
 #include <KConfig>
 #include <KConfigGroup>
+#include <KWallet>
 
 #include <QDir>
 #include <QFileInfo>
@@ -15,6 +16,77 @@ namespace {
 constexpr auto kConnectionGroup = "Connection";
 constexpr auto kUiGroup = "UI";
 constexpr auto kServicesGroup = "Services";
+
+// KWallet location of the NickServ password.  Never written to kirc.conf.
+constexpr auto kWalletFolder = "kIRC";
+constexpr auto kWalletKey = "nickserv-password";
+
+} // namespace
+
+/// Best-effort KWallet helpers.  A null return means the wallet is locked or
+/// unavailable; the caller then keeps the value in memory only for this
+/// process and must not write it to disk.
+namespace {
+
+KWallet::Wallet *openKircWallet()
+{
+    KWallet::Wallet *wallet =
+        KWallet::Wallet::openWallet(KWallet::Wallet::LocalWallet(), 0, KWallet::Wallet::Synchronous);
+    if (!wallet || !wallet->isOpen()) {
+        delete wallet;
+        return nullptr;
+    }
+    if (!wallet->hasFolder(QString::fromLatin1(kWalletFolder))) {
+        if (!wallet->createFolder(QString::fromLatin1(kWalletFolder))) {
+            delete wallet;
+            return nullptr;
+        }
+    }
+    if (!wallet->setFolder(QString::fromLatin1(kWalletFolder))) {
+        delete wallet;
+        return nullptr;
+    }
+    return wallet;
+}
+
+bool walletReadPassword(QString *out)
+{
+    KWallet::Wallet *wallet = openKircWallet();
+    if (!wallet) {
+        return false;
+    }
+    QString value;
+    const int rc = wallet->readPassword(QString::fromLatin1(kWalletKey), value);
+    delete wallet;
+    if (rc != 0) {
+        return false;
+    }
+    *out = value;
+    return true;
+}
+
+bool walletWritePassword(const QString &value)
+{
+    KWallet::Wallet *wallet = openKircWallet();
+    if (!wallet) {
+        return false;
+    }
+    const int rc = wallet->writePassword(QString::fromLatin1(kWalletKey), value);
+    delete wallet;
+    return rc == 0;
+}
+
+void walletRemovePassword()
+{
+    KWallet::Wallet *wallet = openKircWallet();
+    if (!wallet) {
+        return;
+    }
+    if (wallet->hasEntry(QString::fromLatin1(kWalletKey))) {
+        wallet->removeEntry(QString::fromLatin1(kWalletKey));
+    }
+    delete wallet;
+}
 
 } // namespace
 
@@ -215,6 +287,20 @@ void KircConfig::setNickservPassword(const QString &nickservPassword)
     Q_EMIT nickservPasswordChanged();
 }
 
+QString KircConfig::sessionSaslPassword() const
+{
+    return m_sessionSaslPassword;
+}
+
+void KircConfig::setSessionSaslPassword(const QString &sessionSaslPassword)
+{
+    if (m_sessionSaslPassword == sessionSaslPassword) {
+        return;
+    }
+    m_sessionSaslPassword = sessionSaslPassword;
+    Q_EMIT sessionSaslPasswordChanged();
+}
+
 void KircConfig::load()
 {
     const KConfig config(configFilePath(), KConfig::SimpleConfig);
@@ -243,7 +329,17 @@ void KircConfig::load()
             m_nickservNick = legacy;
         }
     }
-    m_nickservPassword = services.readEntry(QStringLiteral("Password"), m_nickservPassword);
+    // The password lives in KWallet, never in kirc.conf.  A legacy plaintext
+    // entry is only *read* here for a one-time migration into the wallet;
+    // save() deletes it from disk.
+    const QString legacyPassword = services.readEntry(QStringLiteral("Password"), QString());
+    m_nickservPassword.clear();
+    QString walletPassword;
+    if (walletReadPassword(&walletPassword)) {
+        m_nickservPassword = walletPassword;
+    } else if (!legacyPassword.isEmpty()) {
+        m_nickservPassword = legacyPassword;
+    }
 
     Q_EMIT hostChanged();
     Q_EMIT portChanged();
@@ -288,7 +384,15 @@ void KircConfig::save()
     services.writeEntry(QStringLiteral("IdentifyOnConnect"), m_identifyOnConnect);
     services.writeEntry(QStringLiteral("Account"), m_nickservNick);
     services.deleteEntry(QStringLiteral("NickServ"));
-    services.writeEntry(QStringLiteral("Password"), m_nickservPassword);
+    // Never persist a password to kirc.conf: drop any legacy plaintext entry
+    // and store the value in KWallet instead.  If the wallet is locked or
+    // unavailable the in-memory value is kept for this process only.
+    services.deleteEntry(QStringLiteral("Password"));
+    if (m_nickservPassword.isEmpty()) {
+        walletRemovePassword();
+    } else {
+        walletWritePassword(m_nickservPassword);
+    }
 
     config.sync();
 }

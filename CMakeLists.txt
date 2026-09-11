@@ -46,7 +46,7 @@ find_package(Qt6 6.6 REQUIRED COMPONENTS
 # NOTE: in KF6, KStatusNotifierItem is no longer part of KNotifications — it
 # moved into its own framework, so the tray needs KF6StatusNotifierItem.
 # ---------------------------------------------------------------------------
-find_package(KF6 QUIET COMPONENTS Kirigami Config Notifications StatusNotifierItem)
+find_package(KF6 QUIET COMPONENTS Kirigami Config Notifications StatusNotifierItem Wallet)
 
 if(NOT TARGET KF6::Kirigami)
     find_package(KF6Kirigami REQUIRED)
@@ -59,6 +59,9 @@ if(NOT TARGET KF6::Notifications)
 endif()
 if(NOT TARGET KF6::StatusNotifierItem)
     find_package(KF6StatusNotifierItem REQUIRED)
+endif()
+if(NOT TARGET KF6::Wallet)
+    find_package(KF6Wallet REQUIRED)
 endif()
 
 if(TARGET KF6::ConfigCore)
@@ -130,6 +133,7 @@ target_link_libraries(kIRC PRIVATE
     KF6::Kirigami
     KF6::Notifications
     KF6::StatusNotifierItem
+    KF6::Wallet
     ${KIRC_KCONFIG_TARGET}
 )
 

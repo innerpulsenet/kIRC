@@ -9,12 +9,13 @@
 // connection form can be prefilled on startup and the profile saved once a
 // connection actually succeeds.
 //
-// SECURITY — SASL password is deliberately NOT persisted:
-//   kirc.conf is an ordinary world-readable plaintext INI file.  The SASL
-//   password therefore has to be re-entered once per start.
-//   NickServ identify-on-connect is stored under [Services] Password because
-//   that feature is useless without it.  Prefer SASL when the server supports
-//   it; move NickServ to KWallet if this file is synced.
+// SECURITY — no password is ever persisted to kirc.conf:
+//   kirc.conf is an ordinary world-readable plaintext INI file, so neither
+//   the SASL password nor the NickServ password may be written there.
+//   The SASL password lives only in memory (sessionSaslPassword, never
+//   saved).  The NickServ password lives in KWallet (folder "kIRC", key
+//   "nickserv-password"); when the wallet is locked or unavailable the value
+//   is kept in memory for this process only and still never hits the disk.
 //
 // Implemented with the plain KConfig API rather than a KConfigXT .kcfg +
 // generated header: nothing here needs a settings dialog, and plain KConfig
@@ -42,6 +43,7 @@ class KircConfig : public QObject
     Q_PROPERTY(bool identifyOnConnect READ identifyOnConnect WRITE setIdentifyOnConnect NOTIFY identifyOnConnectChanged)
     Q_PROPERTY(QString nickservNick READ nickservNick WRITE setNickservNick NOTIFY nickservNickChanged)
     Q_PROPERTY(QString nickservPassword READ nickservPassword WRITE setNickservPassword NOTIFY nickservPasswordChanged)
+    Q_PROPERTY(QString sessionSaslPassword READ sessionSaslPassword WRITE setSessionSaslPassword NOTIFY sessionSaslPasswordChanged)
 
 public:
     explicit KircConfig(QObject *parent = nullptr);
@@ -90,6 +92,11 @@ public:
     QString nickservPassword() const;
     void setNickservPassword(const QString &nickservPassword);
 
+    /// Memory-only SASL password for this session (tray reconnect).  Never
+    /// loaded from or saved to disk.
+    QString sessionSaslPassword() const;
+    void setSessionSaslPassword(const QString &sessionSaslPassword);
+
     /// Re-read every value from disk.  Called once at startup, before the QML
     /// engine is created, so the form is prefilled on first paint.
     void load();
@@ -112,6 +119,7 @@ Q_SIGNALS:
     void identifyOnConnectChanged();
     void nickservNickChanged();
     void nickservPasswordChanged();
+    void sessionSaslPasswordChanged();
 
 private:
     // Defaults mirror the initial values in ConnectPage.qml so a first run
@@ -129,4 +137,5 @@ private:
     bool m_identifyOnConnect = false;
     QString m_nickservNick;
     QString m_nickservPassword;
+    QString m_sessionSaslPassword;
 };

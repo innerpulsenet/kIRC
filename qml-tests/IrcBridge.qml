@@ -22,6 +22,10 @@ QtObject {
     signal names_updated(string channel, string nicks)
     signal query_opened(string nick)
 
+    function mark_read() {
+        console.error("STUB mark_read()")
+        bridge.unread_count = 0
+    }
     function connect_server(host, port, tls, nickname, sasl_user, sasl_pass) {
         console.error("STUB connect_server(" + host + ", " + port + ", " + tls + ", " + nickname + ", " + sasl_user + ")")
         bridge.nickname = nickname

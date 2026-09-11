@@ -130,6 +130,22 @@ pub enum IrcEvent {
     JoinFailed { channel: String, reason: String },
     /// Someone quit the network.
     Quit { nick: String, reason: String },
+    /// Someone was kicked from a channel.
+    Kick {
+        channel: String,
+        nick: String,
+        kicker: String,
+        reason: String,
+        is_self: bool,
+    },
+    /// A MODE change (channel or user).
+    Mode { target: String, modes: String },
+    /// Someone changed nick (including self).
+    NickRename {
+        old: String,
+        new: String,
+        is_self: bool,
+    },
     /// Our nick changed (433 fallback, or the nick the server accepted in 001).
     NickChanged { nick: String },
     /// A resolved `chathistory` batch.
@@ -310,11 +326,13 @@ struct Session {
     nick_attempts: u8,
     /// True after CAP ACK of echo-message — the server will replay our PRIVMSG.
     echo_message: bool,
+    /// Set when ERROR already emitted Disconnected, so run_session skips its own.
+    error_disconnect_emitted: bool,
 }
 
 impl Session {
     async fn send(&mut self, line: &str) -> io::Result<()> {
-        debug!(">> {line}");
+        debug!(">> {}", redact_log_line(line));
         self.writer.write_all(line.as_bytes()).await?;
         self.writer.write_all(b"\r\n").await?;
         self.writer.flush().await
@@ -422,19 +440,55 @@ impl Session {
                 let reason = message.params.first().cloned().unwrap_or_default();
                 self.emit(IrcEvent::Quit { nick, reason }).await;
             }
-            "NICK" => {
-                let old = source_name(&message);
-                let new_nick = message.params.first().cloned().unwrap_or_default();
-                self.emit(IrcEvent::Quit {
-                    nick: old,
-                    reason: format!("is now {new_nick}"),
+            "KICK" => {
+                let channel = message.params.first().cloned().unwrap_or_default();
+                let nick = message.params.get(1).cloned().unwrap_or_default();
+                if channel.is_empty() || nick.is_empty() {
+                    debug!("ignoring malformed KICK");
+                    return Ok(());
+                }
+                let reason = message.params.get(2).cloned().unwrap_or_default();
+                let kicker = source_name(&message);
+                let is_self = nick.eq_ignore_ascii_case(&self.config.nickname);
+                self.emit(IrcEvent::Kick {
+                    channel,
+                    nick,
+                    kicker,
+                    reason,
+                    is_self,
                 })
                 .await;
             }
+            "MODE" => {
+                let target = message.params.first().cloned().unwrap_or_default();
+                if target.is_empty() {
+                    return Ok(());
+                }
+                let modes = message.params.get(1..).unwrap_or_default().join(" ");
+                self.emit(IrcEvent::Mode { target, modes }).await;
+            }
+            "NICK" => {
+                let old = source_name(&message);
+                let new_nick = message.params.first().cloned().unwrap_or_default();
+                if new_nick.is_empty() {
+                    return Ok(());
+                }
+                let ours = self.config.nickname.clone();
+                if old.eq_ignore_ascii_case(&ours) {
+                    self.config.nickname = new_nick.clone();
+                }
+                for event in nick_rename_events(&old, &new_nick, &ours) {
+                    self.emit(event).await;
+                }
+            }
             "INVITE" => {
                 let from = source_name(&message);
-                let channel = message.params.get(1).cloned().unwrap_or_default();
-                if !channel.is_empty() {
+                // RFC 2812 params are <invitee> <channel>. Auto-join only
+                // invites addressed to us; invites for other nicks are
+                // ignored (Info still emitted for ours).
+                if let Some((_, channel, true)) =
+                    parse_invite(&message.params, &self.config.nickname)
+                {
                     self.emit(IrcEvent::Info {
                         text: format!("Invited to {channel} by {from}"),
                     })
@@ -455,6 +509,7 @@ impl Session {
                 })
                 .await;
                 self.emit(IrcEvent::Disconnected { reason: text }).await;
+                self.error_disconnect_emitted = true;
                 self.should_stop = true;
             }
             other => {
@@ -502,12 +557,26 @@ impl Session {
                     self.emit(IrcEvent::Topic { channel, topic }).await;
                 }
             }
+            333 => {
+                // RPL_TOPICWHOTIME: <client> <channel> <setter> <unixtime>
+                let channel = message.params.get(1).cloned().unwrap_or_default();
+                let setter = message.params.get(2).cloned().unwrap_or_default();
+                if !channel.is_empty() && !setter.is_empty() {
+                    self.emit(IrcEvent::Info {
+                        text: format!("topic in {channel} set by {setter}"),
+                    })
+                    .await;
+                }
+            }
             353 => {
                 // RPL_NAMREPLY: <client> <symbol> <channel> :<names>
                 let channel = channel_from_numeric(message);
                 let names = message.params.last().cloned().unwrap_or_default();
                 if !channel.is_empty() {
-                    let entry = self.names_acc.entry(channel).or_default();
+                    let entry = self
+                        .names_acc
+                        .entry(channel.to_ascii_lowercase())
+                        .or_default();
                     for nick in names.split_whitespace() {
                         if !nick.is_empty() {
                             entry.push(nick.to_string());
@@ -518,7 +587,10 @@ impl Session {
             366 => {
                 // RPL_ENDOFNAMES: <client> <channel> :End of /NAMES
                 let channel = channel_from_numeric(message);
-                let nicks = self.names_acc.remove(&channel).unwrap_or_default();
+                let nicks = self
+                    .names_acc
+                    .remove(&channel.to_ascii_lowercase())
+                    .unwrap_or_default();
                 self.emit(IrcEvent::Names { channel, nicks }).await;
             }
             301 | 307 | 311 | 312 | 313 | 317 | 318 | 319 | 330 | 335 | 338 | 378 | 379 | 671 => {
@@ -560,7 +632,23 @@ impl Session {
                 // ERR_UNAVAILRESOURCE is also used for nicks during split/reg.
                 self.handle_nick_unavailable(message).await;
             }
-            403 | 405 | 437 | 471 | 473 | 474 | 475 | 476 | 477 | 479 => {
+            437 => {
+                // After registration 437 targets either a channel (join
+                // throttled) or a nick (momentarily unavailable). Never
+                // report a nick as a failed channel join.
+                let target = message.params.get(1).cloned().unwrap_or_default();
+                let reason = numeric_summary(message);
+                if is_channel(&target) {
+                    self.emit(IrcEvent::JoinFailed {
+                        channel: target,
+                        reason,
+                    })
+                    .await;
+                } else {
+                    self.emit(IrcEvent::Error { message: reason }).await;
+                }
+            }
+            403 | 405 | 471 | 473 | 474 | 475 | 476 | 477 | 479 => {
                 let channel = channel_from_numeric(message);
                 let reason = numeric_summary(message);
                 self.emit(IrcEvent::JoinFailed { channel, reason }).await;
@@ -823,12 +911,9 @@ impl Session {
         if text.trim().is_empty() {
             return;
         }
-        if is_self
-            && text
-                .split_whitespace()
-                .next()
-                .is_some_and(|w| w.eq_ignore_ascii_case("IDENTIFY"))
-        {
+        // Swallow only our own NickServ IDENTIFY echo (seen via
+        // echo-message); channel traffic starting with "identify" displays.
+        if is_self && is_identify_echo(&raw_target, &text) {
             return;
         }
         self.emit(IrcEvent::Msg {
@@ -890,18 +975,24 @@ impl Session {
                 }
             }
             ClientCommand::Privmsg { target, text } => {
-                self.send(&format!("PRIVMSG {target} :{text}")).await?;
+                // One PRIVMSG per line: a raw newline must never go out in a
+                // single send(). Local echo mirrors the same split.
+                let lines = split_privmsg_lines(&text);
+                for line in &lines {
+                    self.send(&format!("PRIVMSG {target} :{line}")).await?;
+                }
                 if !self.echo_message {
-                    let display = display_privmsg(&text);
-                    self.emit(IrcEvent::Msg {
-                        target: target.clone(),
-                        nick: self.config.nickname.clone(),
-                        text: display,
-                        timestamp: None,
-                        is_self: true,
-                        is_highlight: false,
-                    })
-                    .await;
+                    for line in &lines {
+                        self.emit(IrcEvent::Msg {
+                            target: target.clone(),
+                            nick: self.config.nickname.clone(),
+                            text: display_privmsg(line),
+                            timestamp: None,
+                            is_self: true,
+                            is_highlight: false,
+                        })
+                        .await;
+                    }
                 }
             }
             ClientCommand::Join(channel) => {
@@ -955,6 +1046,89 @@ impl Session {
 /// True when `target` is a channel name (`#`, `&`, `+`, `!` prefixes).
 pub fn is_channel(target: &str) -> bool {
     matches!(target.as_bytes().first(), Some(b'#' | b'&' | b'+' | b'!'))
+}
+
+/// Split outbound PRIVMSG text into wire-safe lines: split on CR/LF and
+/// drop empty lines so no raw newline ever goes out in a single send().
+fn split_privmsg_lines(text: &str) -> Vec<&str> {
+    text.split(|c| c == '\n' || c == '\r')
+        .filter(|line| !line.is_empty())
+        .collect()
+}
+
+/// Split an incoming INVITE into `(invitee, channel, is_for_us)`.
+///
+/// RFC 2812 parameters are `<invitee> <channel>`. A lone channel parameter
+/// implies the invite is for us. Returns `None` when no usable channel is
+/// present.
+fn parse_invite(params: &[String], ours: &str) -> Option<(String, String, bool)> {
+    let (invitee, channel) = match params {
+        [invitee, channel, ..] => (invitee.clone(), channel.clone()),
+        [only] if is_channel(only) => (ours.to_string(), only.clone()),
+        _ => return None,
+    };
+    if channel.is_empty() {
+        return None;
+    }
+    let is_for_us = invitee.eq_ignore_ascii_case(ours);
+    Some((invitee, channel, is_for_us))
+}
+
+/// Events for an incoming NICK rename. A rename is never a Quit — not even
+/// for other users — and our own rename additionally reports NickChanged.
+fn nick_rename_events(old: &str, new: &str, ours: &str) -> Vec<IrcEvent> {
+    let is_self = old.eq_ignore_ascii_case(ours);
+    let mut events = Vec::with_capacity(2);
+    if is_self {
+        events.push(IrcEvent::NickChanged {
+            nick: new.to_string(),
+        });
+    }
+    events.push(IrcEvent::NickRename {
+        old: old.to_string(),
+        new: new.to_string(),
+        is_self,
+    });
+    events
+}
+
+/// True when an echoed self-PRIVMSG is really our NickServ IDENTIFY (which
+/// must be swallowed). Only the NickServ target counts: channel traffic
+/// starting with "identify" must still display.
+fn is_identify_echo(target: &str, text: &str) -> bool {
+    target.eq_ignore_ascii_case("NickServ")
+        && text
+            .split_whitespace()
+            .next()
+            .is_some_and(|w| w.eq_ignore_ascii_case("IDENTIFY"))
+}
+
+/// Redact secrets from an outbound line before it reaches the debug log.
+/// SASL base64, IDENTIFY passwords and PASS values must never be logged.
+fn redact_log_line(line: &str) -> String {
+    let mut parts = line.splitn(3, ' ');
+    let head = parts.next().unwrap_or_default();
+    if head.eq_ignore_ascii_case("AUTHENTICATE") {
+        return "AUTHENTICATE *".to_string();
+    }
+    if head.eq_ignore_ascii_case("PASS") || head.eq_ignore_ascii_case("IDENTIFY") {
+        return format!("{head} *");
+    }
+    // NickServ IDENTIFY over PRIVMSG/NOTICE: redact only the NickServ
+    // target so channel chat starting with "identify" still logs.
+    if head.eq_ignore_ascii_case("PRIVMSG") || head.eq_ignore_ascii_case("NOTICE") {
+        let mut rest = parts;
+        let target = rest.next().unwrap_or_default();
+        let trailing = rest.next().unwrap_or_default();
+        if target.eq_ignore_ascii_case("NickServ") {
+            if let Some(first) = trailing.strip_prefix(':').unwrap_or(trailing).split_whitespace().next() {
+                if first.eq_ignore_ascii_case("IDENTIFY") || first.eq_ignore_ascii_case("PASS") {
+                    return format!("{head} {target} :{first} *");
+                }
+            }
+        }
+    }
+    line.to_string()
 }
 
 /// Buffer key for a PRIVMSG: channels stay as-is; incoming queries are filed
@@ -1141,6 +1315,7 @@ pub async fn run_session(
         disconnect_reason: "connection closed".to_string(),
         nick_attempts: 0,
         echo_message: false,
+        error_disconnect_emitted: false,
     };
 
     // Registration handshake.
@@ -1220,7 +1395,10 @@ pub async fn run_session(
     }
 
     let reason = session.disconnect_reason.clone();
-    session.emit(IrcEvent::Disconnected { reason }).await;
+    // ERROR already emitted Disconnected; don't send it twice.
+    if !session.error_disconnect_emitted {
+        session.emit(IrcEvent::Disconnected { reason }).await;
+    }
     Ok(())
 }
 
@@ -1340,6 +1518,88 @@ mod tests {
         let long = "abcdefghijklmnop";
         assert!(alternate_nick(long, 1).len() <= 16);
         assert_ne!(alternate_nick(long, 1), long);
+    }
+
+    #[test]
+    fn privmsg_split_skips_empty_lines() {
+        assert_eq!(split_privmsg_lines("one\ntwo"), vec!["one", "two"]);
+        assert_eq!(
+            split_privmsg_lines("one\r\ntwo\n\nthree\r\n"),
+            vec!["one", "two", "three"]
+        );
+        assert!(split_privmsg_lines("\n\r\n").is_empty());
+        assert_eq!(split_privmsg_lines("single"), vec!["single"]);
+        for line in split_privmsg_lines("a\nb\r\nc") {
+            assert!(!line.contains('\n') && !line.contains('\r'));
+        }
+    }
+
+    #[test]
+    fn invite_parses_rfc_params() {
+        // RFC order: <invitee> <channel>. Only our own invites join.
+        let p = |a: &str, b: &str| vec![a.to_string(), b.to_string()];
+        assert!(parse_invite(&p("KircUser", "#c"), "kircuser")
+            .is_some_and(|(_, ch, ours)| ch == "#c" && ours));
+        assert!(parse_invite(&p("someone", "#c"), "kircuser")
+            .is_some_and(|(_, _, ours)| !ours));
+        assert!(parse_invite(&p("someone", ""), "kircuser").is_none());
+        assert!(parse_invite(&["#c".to_string()], "kircuser")
+            .is_some_and(|(_, ch, ours)| ch == "#c" && ours));
+        assert!(parse_invite(&[], "kircuser").is_none());
+    }
+
+    #[test]
+    fn nick_rename_is_never_quit() {
+        let self_events = nick_rename_events("me", "me_", "Me");
+        assert!(matches!(
+            self_events[0],
+            IrcEvent::NickChanged { ref nick } if nick == "me_"
+        ));
+        assert!(matches!(
+            self_events[1],
+            IrcEvent::NickRename { is_self: true, .. }
+        ));
+        let other = nick_rename_events("alice", "alice2", "me");
+        assert_eq!(other.len(), 1);
+        assert!(matches!(
+            other[0],
+            IrcEvent::NickRename { is_self: false, .. }
+        ));
+        assert!(!other.iter().any(|e| matches!(e, IrcEvent::Quit { .. })));
+    }
+
+    #[test]
+    fn identify_swallow_requires_nickserv_target() {
+        assert!(is_identify_echo("NickServ", "IDENTIFY hunter2"));
+        assert!(is_identify_echo("nickserv", "identify hunter2"));
+        // Channel traffic or other targets starting with identify display.
+        assert!(!is_identify_echo("#c", "identify this song"));
+        assert!(!is_identify_echo("alice", "IDENTIFY me"));
+        assert!(!is_identify_echo("NickServ", "hello there"));
+    }
+
+    #[test]
+    fn secret_lines_are_redacted() {
+        assert_eq!(redact_log_line("AUTHENTICATE c2VjcmV0"), "AUTHENTICATE *");
+        assert_eq!(redact_log_line("authenticate +"), "AUTHENTICATE *");
+        assert_eq!(redact_log_line("PASS hunter2"), "PASS *");
+        assert_eq!(redact_log_line("PASS :hunter2"), "PASS *");
+        assert_eq!(
+            redact_log_line("NOTICE NickServ :identify hunter2"),
+            "NOTICE NickServ :identify *"
+        );
+        assert_eq!(
+            redact_log_line("PRIVMSG NickServ :IDENTIFY hunter2"),
+            "PRIVMSG NickServ :IDENTIFY *"
+        );
+        assert_eq!(
+            redact_log_line("PRIVMSG #c :identify this song"),
+            "PRIVMSG #c :identify this song"
+        );
+        assert_eq!(
+            redact_log_line("PRIVMSG #c :hello"),
+            "PRIVMSG #c :hello"
+        );
     }
 
     #[test]

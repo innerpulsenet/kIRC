@@ -107,6 +107,7 @@ Kirigami.ApplicationWindow {
     property bool lastTls: true
     property string lastNickname: ""
     property string lastSaslUser: ""
+    property string lastSaslPass: ""
     property bool userDisconnect: false
     property int reconnectAttempt: 0
 
@@ -133,7 +134,7 @@ Kirigami.ApplicationWindow {
         if (target === "*server*") {
             return qsTr("Server")
         }
-        if (target.length > 1 && target.charAt(0) === "#") {
+        if (target.length > 1 && root.isChannel(target)) {
             return target.substring(1)
         }
         return target
@@ -141,7 +142,17 @@ Kirigami.ApplicationWindow {
 
     readonly property bool currentIsQuery: {
         var t = root.chatChannel
-        return t.length > 0 && t !== "*server*" && t.charAt(0) !== "#" && t.charAt(0) !== "&"
+        return t.length > 0 && t !== "*server*" && !root.isChannel(t)
+    }
+
+    /// Channel prefixes (# & + !). Mirrors ChatPage.isChannel for the header.
+    function isChannel(target)
+    {
+        if (target === undefined || target === null || target === "*server*") {
+            return false
+        }
+        var c = String(target).charAt(0)
+        return c === "#" || c === "&" || c === "+" || c === "!"
     }
 
     readonly property string headerTitle: root.pageStack.depth > 1
@@ -462,12 +473,19 @@ Kirigami.ApplicationWindow {
 
         onConnectRequested: (host, port, tls, nickname, saslUser, saslPass) => {
             // Remember what was attempted; persisted once the connection
-            // actually succeeds (state 2 below). No password is kept.
+            // actually succeeds (state 2 below). The SASL password is kept in
+            // memory only (never KConfig): reused by tryReconnect and handed
+            // to the tray through sessionSaslPassword so a tray reconnect
+            // does not SASL-904-loop.
             root.lastHost = host
             root.lastPort = port
             root.lastTls = tls
             root.lastNickname = nickname
             root.lastSaslUser = saslUser
+            root.lastSaslPass = saslPass
+            if (root.appConfig !== null && root.appConfig.sessionSaslPassword !== undefined) {
+                root.appConfig.sessionSaslPassword = saslPass
+            }
             root.userDisconnect = false
             root.reconnectAttempt = 0
             reconnectTimer.stop()
@@ -538,7 +556,7 @@ Kirigami.ApplicationWindow {
             return
         }
         root.bridge.connect_server(root.lastHost, root.lastPort, root.lastTls,
-                                   root.lastNickname, root.lastSaslUser, "")
+                                   root.lastNickname, root.lastSaslUser, root.lastSaslPass)
     }
 
     function wantReconnect()

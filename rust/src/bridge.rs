@@ -73,6 +73,34 @@ fn canon_key(map: &BTreeMap<String, Vec<StoreMsg>>, target: &str) -> String {
     canon_map_key(map, target)
 }
 
+/// The buffer currently shown in the UI, as last recorded by
+/// `MessageListModel::load_channel(..)`.
+///
+/// Used only to suppress the unread badge for the channel the user is already
+/// looking at. Empty until the first `load_channel` call.
+static VISIBLE_TARGET: OnceLock<Mutex<String>> = OnceLock::new();
+fn visible_target() -> &'static Mutex<String> {
+    VISIBLE_TARGET.get_or_init(|| Mutex::new(String::new()))
+}
+
+/// Drop every buffered transcript, nick list and topic, and forget which
+/// buffer is visible, so the next server never inherits the old one's state.
+fn clear_all_stores() {
+    store().lock().unwrap_or_else(|e| e.into_inner()).clear();
+    nick_store()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clear();
+    topic_store()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clear();
+    visible_target()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clear();
+}
+
 /// The process-wide tokio runtime that drives every IRC session.
 fn runtime() -> &'static tokio::runtime::Runtime {
     static RT: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
@@ -272,6 +300,10 @@ pub mod qobject {
         /// Drop the local history for `target`.
         #[qinvokable]
         fn clear_buffer(self: Pin<&mut Self>, target: QString);
+
+        /// Zero the unread badge. QML calls this when a channel is opened.
+        #[qinvokable]
+        fn mark_read(self: Pin<&mut Self>);
 
         /// Join a channel.
         #[qinvokable]
@@ -505,10 +537,14 @@ fn info_to_store(mut obj: Pin<&mut qobject::IrcBridge>, text: &str) {
 }
 
 fn push_channel_line(mut obj: Pin<&mut qobject::IrcBridge>, channel: &str, text: &str) {
+    let key = {
+        let guard = store().lock().unwrap_or_else(|e| e.into_inner());
+        canon_map_key(&guard, channel)
+    };
     {
         let mut guard = store().lock().unwrap_or_else(|e| e.into_inner());
         guard
-            .entry(channel.to_owned())
+            .entry(key.clone())
             .or_default()
             .push(StoreMsg {
                 nick: "*".to_owned(),
@@ -519,12 +555,30 @@ fn push_channel_line(mut obj: Pin<&mut qobject::IrcBridge>, channel: &str, text:
             });
     }
     obj.as_mut()
-        .message_received(qs(channel), qs("*"), qs(text), false, false);
+        .message_received(qs(&key), qs("*"), qs(text), false, false);
+}
+
+/// True when the user is already looking at `target` (case-insensitive).
+fn is_visible_target(target: &str) -> bool {
+    visible_target()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .eq_ignore_ascii_case(target)
+}
+
+/// Bump unread for `target` unless it is the visible buffer / console.
+fn bump_unread_for(mut obj: Pin<&mut qobject::IrcBridge>, target: &str, is_self: bool) {
+    if is_self || is_visible_target(target) || target == SERVER_BUFFER {
+        return;
+    }
+    let unread = *obj.as_ref().unread_count();
+    obj.as_mut().set_unread_count(unread.saturating_add(1));
 }
 
 fn add_nick(channel: &str, nick: &str) {
     let mut guard = nick_store().lock().unwrap_or_else(|e| e.into_inner());
-    let list = guard.entry(channel.to_owned()).or_default();
+    let key = canon_map_key(&guard, channel);
+    let list = guard.entry(key).or_default();
     if !list
         .iter()
         .any(|n| bare_nick(n).eq_ignore_ascii_case(bare_nick(nick)))
@@ -536,7 +590,8 @@ fn add_nick(channel: &str, nick: &str) {
 
 fn remove_nick(channel: &str, nick: &str) -> bool {
     let mut guard = nick_store().lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(list) = guard.get_mut(channel) {
+    let key = canon_map_key(&guard, channel);
+    if let Some(list) = guard.get_mut(&key) {
         let before = list.len();
         list.retain(|n| !bare_nick(n).eq_ignore_ascii_case(bare_nick(nick)));
         return list.len() != before;
@@ -544,15 +599,24 @@ fn remove_nick(channel: &str, nick: &str) -> bool {
     false
 }
 
+/// Remove the whole nick list for `channel` (case-folded key lookup).
+fn drop_nick_store(channel: &str) {
+    let mut guard = nick_store().lock().unwrap_or_else(|e| e.into_inner());
+    let key = canon_map_key(&guard, channel);
+    guard.remove(&key);
+}
+
 fn emit_names(obj: Pin<&mut qobject::IrcBridge>, channel: &str) {
-    let joined = {
+    let (key, joined) = {
         let guard = nick_store().lock().unwrap_or_else(|e| e.into_inner());
-        guard
-            .get(channel)
+        let key = canon_map_key(&guard, channel);
+        let joined = guard
+            .get(&key)
             .map(|n| n.join(" "))
-            .unwrap_or_default()
+            .unwrap_or_default();
+        (key, joined)
     };
-    obj.names_updated(qs(channel), qs(&joined));
+    obj.names_updated(qs(&key), qs(&joined));
 }
 
 /// Apply one `IrcEvent` to `IrcBridge`.  Always called on the Qt thread.
@@ -575,6 +639,9 @@ fn handle_event(mut obj: Pin<&mut qobject::IrcBridge>, event: IrcEvent) {
         }
 
         IrcEvent::Disconnected { reason } => {
+            // A dead server's logs must not leak into the next one. The
+            // disconnect line below (if any) becomes the only console row.
+            clear_all_stores();
             obj.as_mut()
                 .set_connection_state(qobject::ConnectionStatus::Disconnected);
             obj.as_mut()
@@ -613,10 +680,7 @@ fn handle_event(mut obj: Pin<&mut qobject::IrcBridge>, event: IrcEvent) {
                     });
             }
 
-            if !is_self {
-                let unread = *obj.as_ref().unread_count();
-                obj.as_mut().set_unread_count(unread.saturating_add(1));
-            }
+            bump_unread_for(obj.as_mut(), &target, is_self);
 
             obj.as_mut().message_received(
                 qs(&target),
@@ -636,19 +700,29 @@ fn handle_event(mut obj: Pin<&mut qobject::IrcBridge>, event: IrcEvent) {
         }
 
         IrcEvent::HistoryBatch { messages } => {
-            let target = rs(obj.as_ref().history_target());
+            // Scrollback is older than whatever is buffered live, so it goes
+            // in FRONT (oldest first). `history_target` records which buffer
+            // the batch was requested for.
+            let target = {
+                let requested = rs(obj.as_ref().history_target());
+                let guard = store().lock().unwrap_or_else(|e| e.into_inner());
+                canon_map_key(&guard, &requested)
+            };
             {
                 let mut guard = store().lock().unwrap_or_else(|e| e.into_inner());
-                let entry = guard.entry(target.clone()).or_default();
-                for msg in messages {
-                    entry.push(StoreMsg {
+                let key = canon_map_key(&guard, &target);
+                let rows: Vec<StoreMsg> = messages
+                    .into_iter()
+                    .map(|msg| StoreMsg {
                         nick: msg.nick,
                         text: msg.text,
                         timestamp: fmt_timestamp(msg.timestamp),
                         is_self: false,
                         is_highlight: false,
-                    });
-                }
+                    })
+                    .collect();
+                let entry = guard.entry(key).or_default();
+                entry.splice(..0, rows);
             }
             obj.as_mut().history_batch_received(qs(&target));
         }
@@ -691,10 +765,7 @@ fn handle_event(mut obj: Pin<&mut qobject::IrcBridge>, event: IrcEvent) {
             };
             push_channel_line(obj.as_mut(), &channel, &line);
             if is_self {
-                {
-                    let mut guard = nick_store().lock().unwrap_or_else(|e| e.into_inner());
-                    guard.remove(&channel);
-                }
+                drop_nick_store(&channel);
                 obj.as_mut().channel_parted(qs(&channel));
             } else {
                 remove_nick(&channel, &nick);
@@ -702,23 +773,113 @@ fn handle_event(mut obj: Pin<&mut qobject::IrcBridge>, event: IrcEvent) {
             }
         }
 
+        IrcEvent::Kick {
+            channel,
+            nick,
+            kicker,
+            reason,
+            is_self,
+        } => {
+            let line = if reason.trim().is_empty() {
+                format!("{kicker} kicked {nick}")
+            } else {
+                format!("{kicker} kicked {nick} ({reason})")
+            };
+            push_channel_line(obj.as_mut(), &channel, &line);
+            if is_self {
+                drop_nick_store(&channel);
+                obj.as_mut().channel_parted(qs(&channel));
+            } else {
+                remove_nick(&channel, &nick);
+                emit_names(obj.as_mut(), &channel);
+            }
+        }
+
+        IrcEvent::Mode { target, modes } => {
+            let line = format!("mode {modes} on {target}");
+            if is_channel(&target) {
+                push_channel_line(obj.as_mut(), &target, &line);
+            } else {
+                info_to_store(obj.as_mut(), &line);
+            }
+        }
+
+        IrcEvent::NickRename { old, new, is_self } => {
+            if is_self {
+                obj.as_mut().set_nickname(qs(&new));
+            }
+            // A rename is not a quit: keep the user in every channel they
+            // share with us, preserving their op/voice prefix where present.
+            let channels = {
+                let guard = nick_store().lock().unwrap_or_else(|e| e.into_inner());
+                guard.keys().cloned().collect::<Vec<_>>()
+            };
+            for channel in channels {
+                let renamed = {
+                    let mut guard = nick_store().lock().unwrap_or_else(|e| e.into_inner());
+                    let key = canon_map_key(&guard, &channel);
+                    match guard.get_mut(&key) {
+                        Some(list) => {
+                            let mut hit = false;
+                            for entry in list.iter_mut() {
+                                if bare_nick(entry).eq_ignore_ascii_case(&old) {
+                                    let prefix: String = entry
+                                        .chars()
+                                        .take_while(|c| {
+                                            matches!(c, '@' | '+' | '%' | '~' | '&')
+                                        })
+                                        .collect();
+                                    *entry = format!("{prefix}{new}");
+                                    hit = true;
+                                }
+                            }
+                            if hit {
+                                list.sort_by(|a, b| {
+                                    bare_nick(a)
+                                        .to_lowercase()
+                                        .cmp(&bare_nick(b).to_lowercase())
+                                });
+                            }
+                            hit
+                        }
+                        None => false,
+                    }
+                };
+                if renamed {
+                    push_channel_line(
+                        obj.as_mut(),
+                        &channel,
+                        &format!("{old} is now {new}"),
+                    );
+                    emit_names(obj.as_mut(), &channel);
+                }
+            }
+        }
+
         IrcEvent::Topic { channel, topic } => {
+            let key = {
+                let guard = topic_store().lock().unwrap_or_else(|e| e.into_inner());
+                canon_map_key(&guard, &channel)
+            };
             {
                 let mut guard = topic_store().lock().unwrap_or_else(|e| e.into_inner());
-                guard.insert(channel.clone(), topic.clone());
+                let key = canon_map_key(&guard, &key);
+                guard.insert(key.clone(), topic.clone());
             }
             push_channel_line(
                 obj.as_mut(),
                 &channel,
                 &format!("Topic for {channel}: {topic}"),
             );
-            obj.as_mut().topic_changed(qs(&channel), qs(&topic));
+            // Folded key: QML compares with strict `===` against currentChannel.
+            obj.as_mut().topic_changed(qs(&key), qs(&topic));
         }
 
         IrcEvent::Names { channel, nicks } => {
             {
                 let mut guard = nick_store().lock().unwrap_or_else(|e| e.into_inner());
-                guard.insert(channel.clone(), nicks.clone());
+                let key = canon_map_key(&guard, &channel);
+                guard.insert(key, nicks.clone());
             }
             emit_names(obj.as_mut(), &channel);
         }
@@ -816,6 +977,8 @@ impl qobject::IrcBridge {
             .set_connected_server(qs(&format!("{host_s}:{port}")));
         self.as_mut().set_unread_count(0);
         self.as_mut().set_history_target(QString::default());
+        // A new server must not inherit the old one's logs, nicks or topics.
+        clear_all_stores();
         self.as_mut()
             .set_connection_state(qobject::ConnectionStatus::Connecting);
         self.as_mut()
@@ -862,6 +1025,10 @@ impl qobject::IrcBridge {
     /// Tear down the current IRC session.
     pub fn disconnect_server(mut self: Pin<&mut Self>) {
         self.as_mut().shutdown_session();
+        // Forget the old server's logs outright; the Disconnected handler's
+        // console line (if any) is added after its own clear.
+        clear_all_stores();
+        self.as_mut().set_unread_count(0);
         self.as_mut().set_history_target(QString::default());
         self.as_mut()
             .set_connection_state(qobject::ConnectionStatus::Disconnected);
@@ -916,6 +1083,11 @@ impl qobject::IrcBridge {
         let mut guard = store().lock().unwrap_or_else(|e| e.into_inner());
         let key = canon_map_key(&guard, &target_s);
         guard.remove(&key);
+    }
+
+    /// Zero the unread badge. QML calls this when a channel is opened.
+    pub fn mark_read(mut self: Pin<&mut Self>) {
+        self.as_mut().set_unread_count(0);
     }
 
     /// Join a channel.
@@ -980,11 +1152,17 @@ impl qobject::MessageListModel {
     /// Replace the model contents with the buffered messages of `target`.
     pub fn load_channel(mut self: Pin<&mut Self>, target: QString) {
         let target_s = rs(&target);
-        let rows = {
+        let (key, rows) = {
             let guard = store().lock().unwrap_or_else(|e| e.into_inner());
             let key = canon_key(&guard, &target_s);
-            guard.get(&key).cloned().unwrap_or_default()
+            let rows = guard.get(&key).cloned().unwrap_or_default();
+            (key, rows)
         };
+        // Remember which buffer the user is viewing (folded key) so incoming
+        // lines for it do not inflate the unread badge.
+        *visible_target()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = key.clone();
 
         unsafe {
             self.as_mut().begin_reset_model();
@@ -992,7 +1170,7 @@ impl qobject::MessageListModel {
         {
             let mut rust = self.as_mut().rust_mut();
             rust.rows = rows;
-            rust.target = target_s;
+            rust.target = key;
         }
         unsafe {
             self.as_mut().end_reset_model();
@@ -1010,7 +1188,9 @@ impl qobject::MessageListModel {
         is_highlight: bool,
     ) {
         let target_s = rs(&target);
-        if target_s != self.as_ref().rust().target {
+        // Case-insensitive match: the store key (`#Kirc`) and the announced
+        // target (`#kirc`) may differ only by case.
+        if !target_s.eq_ignore_ascii_case(&self.as_ref().rust().target) {
             return;
         }
 
