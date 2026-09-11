@@ -117,7 +117,7 @@ install -Dpm 0644 packaging/org.kde.kirc.metainfo.xml \
 # Icons (hicolor theme)
 install -Dpm 0644 packaging/kirc.svg \
     %{buildroot}%{_datadir}/icons/hicolor/scalable/apps/kirc.svg
-for size in 16 22 32 48 64 128 256; do
+for size in 16 22 24 32 48 64 128 256; do
     install -Dpm 0644 \
         packaging/icons/hicolor/${size}x${size}/apps/kirc.png \
         %{buildroot}%{_datadir}/icons/hicolor/${size}x${size}/apps/kirc.png

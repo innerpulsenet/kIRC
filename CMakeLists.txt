@@ -145,3 +145,16 @@ install(TARGETS kIRC RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 # Notification event (see cpp/kircnotify.cpp), but the chat-specific event —
 # and with it per-event configuration in System Settings — needs this file.
 install(FILES cpp/kIRC.notifyrc DESTINATION ${CMAKE_INSTALL_DATADIR}/knotifications6)
+
+# ---------------------------------------------------------------------------
+# Desktop integration.  Without these a `cmake --install` produced a binary
+# with no menu entry and no icon, so the window fell back to a generic glyph.
+# ---------------------------------------------------------------------------
+install(FILES packaging/kIRC.desktop DESTINATION ${CMAKE_INSTALL_DATADIR}/applications)
+install(FILES packaging/org.kde.kirc.metainfo.xml DESTINATION ${CMAKE_INSTALL_DATADIR}/metainfo)
+install(FILES packaging/kirc.svg
+        DESTINATION ${CMAKE_INSTALL_DATADIR}/icons/hicolor/scalable/apps)
+foreach(_size 16 22 24 32 48 64 128 256)
+    install(FILES packaging/icons/hicolor/${_size}x${_size}/apps/kirc.png
+            DESTINATION ${CMAKE_INSTALL_DATADIR}/icons/hicolor/${_size}x${_size}/apps)
+endforeach()

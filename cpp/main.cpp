@@ -17,6 +17,7 @@
 
 #include <QApplication>
 #include <QCoreApplication>
+#include <QIcon>
 #include <QList>
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
@@ -37,6 +38,14 @@ int main(int argc, char *argv[])
     QCoreApplication::setApplicationVersion(QStringLiteral("0.1.0"));
 
     QApplication app(argc, argv);
+
+    // Window/taskbar/tray icon.  KWin prefers the window's own icon and only
+    // falls back to the desktop entry, so without this the title bar shows a
+    // generic glyph whenever the launcher/WM can't resolve the app id.
+    app.setWindowIcon(QIcon::fromTheme(QStringLiteral("kirc")));
+    // Ties the window to kIRC.desktop on Wayland, where the app id (not the
+    // window icon) is what the compositor matches against.
+    app.setDesktopFileName(QStringLiteral("kIRC"));
 
     // Must be set before the QML engine is created so that Kirigami picks up
     // qqc2-desktop-style.
