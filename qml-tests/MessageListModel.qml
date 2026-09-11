@@ -4,18 +4,21 @@ import QtQuick
 // the exact contract role names.
 //
 // Roles (must match rust/src/bridge.rs): nick, text, timestamp, isSelf,
-// isHighlight, isEvent, showDay, dayLabel.
+// isHighlight, isEvent, showDay, dayLabel, isError.
 //
-// `isEvent`/`showDay`/`dayLabel` are DERIVED roles: the real model computes
-// them once per row when a row is produced (single pass on load_channel, O(1)
-// on append_message comparing against the previous row). This double mirrors
-// that: every row carries a hidden `dayKey` ("YYYY-MM-DD"), isEvent is
-// `nick === "*"`, showDay is "this row's day differs from the previous row's"
-// and dayLabel is Today / Yesterday / "Sep 11".
+// `isEvent`/`isError`/`showDay`/`dayLabel` are DERIVED roles: the real model
+// computes them once per row when a row is produced (single pass on
+// load_channel, O(1) on append_message comparing against the previous row).
+// This double mirrors that: every row carries a hidden `dayKey` ("YYYY-MM-DD"),
+// isEvent is `nick === "*"`, isError is `isErrorLine(nick, text)` (the same
+// classification as Rust: console/service lines only, numerics by range,
+// failure phrasing with a success guard), showDay is "this row's day differs
+// from the previous row's" and dayLabel is Today / Yesterday / "Sep 11".
 //
 // The canned snapshot exercises every role path (plain, self, highlight,
-// event rows) plus two day boundaries, so the smoke test can assert the
-// contract without a live server.
+// event rows, a failing 473 line, a MOTD line whose text sounds alarming but
+// must stay non-error) plus two day boundaries, so the smoke test can assert
+// the contract without a live server.
 //
 // It mirrors the two write paths of the real bridge so a harness can tell them
 // apart (and count them):
@@ -54,6 +57,49 @@ ListModel {
         return dayKey === undefined || dayKey === null ? "" : String(dayKey)
     }
 
+    /// Mirror of Rust `line_is_error(nick, text)`: true when a row is a
+    /// failure (join rejection, 4xx/5xx numeric, IRC/connection error,
+    /// NickServ/ChanServ auth failure). Only synthesized lines are scanned —
+    /// console/event rows (nick "*") and service notices; ordinary chatter is
+    /// never classified. A leading 3-digit numeric decides by RANGE alone
+    /// (372/375/376 MOTD can never be an error), and success notices win over
+    /// failure phrasing.
+    function isErrorLine(nick, text) {
+        var consoleLine = String(nick) === "*"
+        var service = !consoleLine
+                && (String(nick).toLowerCase() === "nickserv"
+                    || String(nick).toLowerCase() === "chanserv")
+        if (!consoleLine && !service) {
+            return false
+        }
+        var body = String(text)
+        var leading = body.match(/^(\d{3})(\s|$)/)
+        if (leading !== null) {
+            var code = Number(leading[1])
+            return code >= 400 && code <= 599
+        }
+        var lower = body.toLowerCase()
+        if (consoleLine && lower.indexOf("disconnected:") === 0) {
+            return true
+        }
+        var success = ["you are now identified", "you are now logged in",
+                       "logged in as", "password accepted", "you have been identified"]
+        for (var s = 0; s < success.length; ++s) {
+            if (lower.indexOf(success[s]) >= 0) {
+                return false
+            }
+        }
+        var failure = ["invalid password", "authentication failed", "identification failed",
+                       "not registered", "access denied", "you are not", "denied", "incorrect",
+                       "cannot join channel", "is in use, trying"]
+        for (var f = 0; f < failure.length; ++f) {
+            if (lower.indexOf(failure[f]) >= 0) {
+                return true
+            }
+        }
+        return false
+    }
+
     /// Short human label for a "YYYY-MM-DD" key: Today / Yesterday / "Sep 11".
     function dayLabelFor(dayKey) {
         if (model.dayKeyOf(dayKey).length === 0) {
@@ -87,6 +133,7 @@ ListModel {
             "nick": nick, "text": text, "timestamp": timestamp,
             "isSelf": isSelf, "isHighlight": isHighlight,
             "isEvent": String(nick) === "*",
+            "isError": model.isErrorLine(nick, text),
             "showDay": showDay,
             "dayLabel": key.length > 0 ? model.dayLabelFor(key) : "",
             "dayKey": key
@@ -133,7 +180,12 @@ ListModel {
             ["bob", "kircuser: please look at this", "12:03", false, true, today],
             ["*", "bob left #kirc", "23:58", false, false, yesterday],
             ["dave", "morning from the other side", "00:01", false, false, today],
-            ["*", "erin joined #kirc", "00:02", false, false, today]
+            ["*", "erin joined #kirc", "00:02", false, false, today],
+            // A failing console line (the user's "473 ... Cannot join
+            // channel (+i)") and a MOTD line whose text *sounds* like a
+            // failure — the numeric range must keep the MOTD non-error.
+            ["*", "473 #pain Cannot join channel (+i)", "12:04", false, false, today],
+            ["*", "372 - MOTD: incorrect settings are denied", "12:05", false, false, today]
         ]
         var prev = null
         for (var j = 0; j < raw.length; ++j) {

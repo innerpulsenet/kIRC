@@ -69,8 +69,10 @@ wall-clock cost of `load_channel` + full delegate creation and the number of
 for `itemAtIndex` call sites and instruments the throwaway copy with a counter
 when any are found, so the same harness reports the pre-fix scan count (about
 3.5 full view scans per delegate, i.e. O(n²)) and the current 0. It also checks
-the model-computed `isEvent`/`showDay`/`dayLabel` roles reach the delegate, that
-no delegate exposes the removed grouping machinery, and that wrapped rows render
-from those roles. Exit code 0 = all checks passed. The numbers it produced are
+the model-computed `isEvent`/`isError`/`showDay`/`dayLabel` roles reach the
+delegate — including a failing `473 ...` row rendered warn-coloured with a `!`
+marker next to a dim MOTD row — that no delegate exposes the removed grouping
+machinery, and that wrapped rows render from those roles. Exit code 0 = all
+checks passed. The numbers it produced are
 recorded in `.hermes/implementation/p3-render.md` (and `p2-perf.md` for the
 incremental path).

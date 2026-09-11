@@ -7,10 +7,12 @@
 //     [17:41] patrickh  │ hello there
 //     [17:41] * bob joined #pain              <- event rows: dim, no nick column
 //     [17:41] patrickh  │ * waves             <- /me action (the core bakes "* ")
+//     [17:41] ! 473 #pain Cannot join channel (+i)  <- failures: warn + "!"
 //     ───────── Today ──────────              <- day rule (showDay/dayLabel)
 //
 // Every row renders from the model roles ALONE — nick, text, timestamp,
-// isSelf, isHighlight plus the model-computed isEvent, showDay and dayLabel.
+// isSelf, isHighlight plus the model-computed isEvent, isError, showDay and
+// dayLabel.
 // The delegate never scans the view for its own row, is never asked to look
 // at another delegate, and holds no neighbour/grouping state, so creating a
 // row costs the same whether the log holds ten rows or ten thousand.
@@ -51,6 +53,7 @@ Item {
     required property bool isHighlight
     // Model-computed presentation flags (rust/src/bridge.rs).
     required property bool isEvent
+    required property bool isError
     required property bool showDay
     required property string dayLabel
 
@@ -64,6 +67,10 @@ Item {
     readonly property color fgPrimaryColor: ThemeEngine.fgPrimaryColor(Kirigami.Theme.textColor)
     readonly property color fgDimColor: ThemeEngine.fgDimColor(Kirigami.Theme.disabledTextColor)
     readonly property color fgAccentColor: ThemeEngine.fgAccentColor(Kirigami.Theme.highlightColor)
+    // Failures (join rejections, 4xx/5xx numerics, auth/NickServ errors) use
+    // the theme's warn token; the resolver falls back to the desktop palette's
+    // negative colour for themes that leave the token empty (breeze).
+    readonly property color fgWarnColor: ThemeEngine.fgWarnColor(Kirigami.Theme.negativeTextColor)
     readonly property color ruleColor: ThemeEngine.ruleColorValue(Kirigami.Theme.textColor)
 
     // Own lines reuse the accent so they stand out without any alignment
@@ -120,9 +127,18 @@ Item {
     // the classic muted "* nick did a thing" line. Everything else is a normal
     // message; a /me action arrives with the star already baked into `text`
     // ("* waves"), so it shares the normal line.
-    readonly property string bodyText: delegate.isEvent
-        ? "* " + delegate.text
-        : delegate.text
+    //
+    // Failure rows (isError) swap the marker for "!" and render in the warn
+    // colour. The marker is the same two characters as the event star, so the
+    // text column never moves and nothing reflows.
+    readonly property string bodyText: delegate.isError
+        ? "! " + delegate.text
+        : (delegate.isEvent ? "* " + delegate.text : delegate.text)
+
+    // Body colour: failures warn, then the event/console dim, then normal.
+    readonly property color bodyColor: delegate.isError
+        ? delegate.fgWarnColor
+        : (delegate.isEvent ? delegate.fgDimColor : delegate.fgPrimaryColor)
 
     readonly property string bodyMarkup: ThemeEngine.formatMessage(
         delegate.bodyText,
@@ -243,7 +259,7 @@ Item {
             Layout.alignment: Qt.AlignTop
             text: delegate.bodyMarkup
             textFormat: Text.RichText
-            color: delegate.isEvent ? delegate.fgDimColor : delegate.fgPrimaryColor
+            color: delegate.bodyColor
             font.family: delegate.monoFamily
             font.pointSize: delegate.bodyPointSize
             wrapMode: Text.WrapAtWordBoundaryOrAnywhere

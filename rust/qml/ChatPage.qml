@@ -97,6 +97,27 @@ Kirigami.Page {
         return "── " + title + " (" + count + ")"
     }
 
+    /// Status rank of a nick-list prefix — the people panel's sort key:
+    /// 0 owner/admin (`~` / `&`), 1 operator (`@`), 2 halfop (`%`),
+    /// 3 voiced (`+`), 4 no status.  The core keeps these prefixes in the
+    /// nick list (NAMES / is_channel), so all five cases are real input.
+    function rankForPrefix(prefix)
+    {
+        if (prefix === "~" || prefix === "&") {
+            return 0
+        }
+        if (prefix === "@") {
+            return 1
+        }
+        if (prefix === "%") {
+            return 2
+        }
+        if (prefix === "+") {
+            return 3
+        }
+        return 4
+    }
+
     // Label of the "*server*" buffer row: the network we are actually on when
     // connected, so it never just repeats the "Server" section header.
     readonly property string serverBufferLabel: {
@@ -116,6 +137,16 @@ Kirigami.Page {
     property string currentTopic: ""
     property var nickList: []
     property string joinError: ""
+    // NickServ identify-on-connect was enabled but cannot run — no account, no
+    // password, or both.  A sticky warning shown in the error banner, kept
+    // apart from the transient join error so a later successful join cannot
+    // wipe it; raised at most once per app session (see startIdentifyAndJoin).
+    property string identifyWarning: ""
+    property bool identifyWarningRaised: false
+    /// What the error banner shows: the live join failure when there is one,
+    /// otherwise the sticky NickServ warning.
+    readonly property string bannerMessage: page.joinError.length > 0
+                                           ? page.joinError : page.identifyWarning
     property var pendingJoins: []
     property bool autojoinDone: false
     // Guards the post-identify GHOST+NICK reclaim: once per connection.
@@ -195,6 +226,9 @@ Kirigami.Page {
             }
             if (!is_self && page.isNickServ(nick) && page.isIdentifySuccess(text)) {
                 identifyTimer.stop()
+                // Identify actually went through: the credential warning (if
+                // any) is stale now.
+                page.identifyWarning = ""
                 page.maybeGhost()
                 page.applyAutojoin()
             }
@@ -315,14 +349,17 @@ Kirigami.Page {
         return out
     }
 
-    /// People panel model, derived from the channel's nick list: operators,
-    /// voiced, then everyone else, each sorted alphabetically and filtered
-    /// live by the panel's search field.
+    /// People panel model, derived from the channel's nick list: one section
+    /// per status rank — owner/admin (`~` / `&`), operators (`@`), halfops
+    /// (`%`), voiced (`+`) and everyone else — ranks in that order, members
+    /// alphabetical (case-insensitive) inside each rank, filtered live by the
+    /// panel's search field.  A rank with no members contributes no section at
+    /// all (no rule, no count) and the ASCII prefix stays inline on every row.
     readonly property var peopleEntries: {
         var filter = page.peopleFilter.trim().toLowerCase()
-        var ops = []
-        var voiced = []
-        var others = []
+        var titles = [qsTr("Owner & Admin"), qsTr("Operators"), qsTr("Halfops"),
+                      qsTr("Voiced"), qsTr("Others")]
+        var ranks = [[], [], [], [], []]
         for (var i = 0; i < page.nickList.length; ++i) {
             var raw = String(page.nickList[i])
             var m = /^([@+%~&]?)(.*)$/.exec(raw)
@@ -334,29 +371,32 @@ Kirigami.Page {
             if (filter.length > 0 && bare.toLowerCase().indexOf(filter) === -1) {
                 continue
             }
-            var entry = {"nick": raw, "bare": bare, "prefix": prefix, "group": ""}
-            if (prefix === "@" || prefix === "%" || prefix === "~" || prefix === "&") {
-                ops.push(entry)
-            } else if (prefix === "+") {
-                voiced.push(entry)
-            } else {
-                others.push(entry)
-            }
+            ranks[page.rankForPrefix(prefix)].push({
+                "nick": raw, "bare": bare, "prefix": prefix, "group": ""
+            })
         }
         function byBare(a, b) {
             var x = String(a.bare).toLowerCase()
             var y = String(b.bare).toLowerCase()
             return x < y ? -1 : (x > y ? 1 : 0)
         }
-        ops.sort(byBare)
-        voiced.sort(byBare)
-        others.sort(byBare)
-        // ASCII sub-rules (`── Operators (2)`) instead of a messenger-style
-        // section caption; the delegate renders `group` verbatim.
-        for (var o = 0; o < ops.length; ++o) { ops[o].group = page.subRule(qsTr("Operators"), ops.length) }
-        for (var v = 0; v < voiced.length; ++v) { voiced[v].group = page.subRule(qsTr("Voiced"), voiced.length) }
-        for (var r = 0; r < others.length; ++r) { others[r].group = page.subRule(qsTr("Others"), others.length) }
-        return ops.concat(voiced, others)
+        var out = []
+        for (var r = 0; r < ranks.length; ++r) {
+            if (ranks[r].length === 0) {
+                continue
+            }
+            ranks[r].sort(byBare)
+            // ASCII sub-rules (`── Operators (2)`) instead of a messenger-style
+            // section caption; the delegate renders `group` verbatim.  Every
+            // member of a rank carries the same rule, so the ListView section
+            // boundary falls between ranks, after the alphabetical sort.
+            var rule = page.subRule(titles[r], ranks[r].length)
+            for (var j = 0; j < ranks[r].length; ++j) {
+                ranks[r][j].group = rule
+                out.push(ranks[r][j])
+            }
+        }
+        return out
     }
 
     // ---------------------------------------------------------------------- //
@@ -668,17 +708,19 @@ Kirigami.Page {
             Layout.fillHeight: true
             spacing: 0
 
-            // Join failure: a flat terminal error line (`[!] reason ×`) with a
-            // warn-coloured rule instead of a rounded inline message surface.
+            // Error banner: a flat terminal warning line (`[!] message ×`) with
+            // a warn-coloured rule instead of a rounded inline message surface.
+            // Carries the live join failure, or — when there is none — the
+            // sticky NickServ-identify misconfiguration warning.
             Rectangle {
                 id: joinErrorBar
                 Layout.fillWidth: true
-                visible: page.joinError.length > 0
+                visible: page.bannerMessage.length > 0
                 implicitHeight: joinErrorRow.implicitHeight + Kirigami.Units.smallSpacing
                 color: page.bgPanel
 
                 Controls.ToolTip.visible: joinErrorHover.hovered
-                Controls.ToolTip.text: page.joinError
+                Controls.ToolTip.text: page.bannerMessage
 
                 HoverHandler {
                     id: joinErrorHover
@@ -710,7 +752,7 @@ Kirigami.Page {
                     Controls.Label {
                         Layout.fillWidth: true
                         Layout.alignment: Qt.AlignVCenter
-                        text: page.joinError
+                        text: page.bannerMessage
                         color: page.fgWarn
                         font.family: page.monoFamily
                         font.pointSize: page.eventSz
@@ -724,7 +766,15 @@ Kirigami.Page {
                         text: "\u00d7"
                         implicitWidth: Math.round(Kirigami.Units.gridUnit * 1.25)
                         implicitHeight: Math.round(Kirigami.Units.gridUnit * 1.25)
-                        onClicked: page.joinError = ""
+                        onClicked: {
+                            // Dismiss what is shown: a live join failure first,
+                            // then the sticky identify warning.
+                            if (page.joinError.length > 0) {
+                                page.joinError = ""
+                            } else {
+                                page.identifyWarning = ""
+                            }
+                        }
                         Controls.ToolTip.visible: hovered
                         Controls.ToolTip.text: qsTr("Dismiss")
 
@@ -1832,19 +1882,40 @@ Kirigami.Page {
         page.bridge.send_raw("NICK " + account)
     }
 
+    /// NickServ IDENTIFY is enabled but there is nothing to send — say exactly
+    /// which credential is missing in the error banner instead of silently
+    /// skipping the identify and letting a later join failure be the only
+    /// clue.  Raised once per app session: a reconnect must not re-raise it.
+    function warnIdentifyCredentialsMissing(missingAccount, missingPassword)
+    {
+        if (page.identifyWarningRaised) {
+            return
+        }
+        page.identifyWarningRaised = true
+        var missing = missingAccount && missingPassword
+            ? qsTr("no account or password is set")
+            : (missingAccount ? qsTr("no account is set") : qsTr("no password is set"))
+        page.identifyWarning = qsTr("NickServ identify is on but %1 — open Settings > Identity").arg(missing)
+    }
+
     function startIdentifyAndJoin()
     {
         if (page.bridge === null) {
             return
         }
         var cfg = (page.hostWindow !== null) ? page.hostWindow.appConfig : null
-        if (cfg !== null && cfg.identifyOnConnect && cfg.nickservPassword.length > 0) {
+        if (cfg !== null && cfg !== undefined && cfg.identifyOnConnect) {
             var account = page.nickservAccount()
-            if (account.length === 0) {
+            var password = (cfg.nickservPassword === undefined || cfg.nickservPassword === null)
+                ? "" : String(cfg.nickservPassword)
+            if (account.length === 0 || password.length === 0) {
+                // Identify is on but cannot be sent: surface what is missing
+                // in the banner, then run the joins as before.
+                page.warnIdentifyCredentialsMissing(account.length === 0, password.length === 0)
                 page.applyAutojoin()
                 return
             }
-            page.bridge.send_raw("PRIVMSG NickServ :IDENTIFY " + account + " " + cfg.nickservPassword)
+            page.bridge.send_raw("PRIVMSG NickServ :IDENTIFY " + account + " " + password)
             identifyTimer.restart()
             return
         }

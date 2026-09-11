@@ -21,8 +21,9 @@
 //     per row; it must be 0 now,
 //   * that no delegate carries the old grouping/scan machinery (it used to
 //     expose continuesPrevious/continuesNext/settle/viewIndex),
-//   * that the model-computed roles (isEvent/showDay/dayLabel) reach the
-//     delegate and gate what it renders.
+//   * that the model-computed roles (isEvent/isError/showDay/dayLabel) reach
+//     the delegate and gate what it renders — including a failing "473 ..."
+//     row (warn colour + "!" marker) next to a MOTD row that stays dim.
 //
 // The counters are wired to the model's real Qt signals (rowsInserted /
 // rowsRemoved / modelReset) via a Connections element, so the emission counts
@@ -42,7 +43,7 @@ Item {
     property int appends: 6000
 
     // The canned snapshot of the double (tst_smoke.qml asserts on it too).
-    property int snapshotRows: 7
+    property int snapshotRows: 9
 
     // Channel-switch benchmark: rows per transcript, timed repetitions.
     property int switchRows: 500
@@ -144,6 +145,20 @@ Item {
                 modelDouble.count === perf.snapshotRows + 1 && modelDouble.appendMessageCalls === 3,
                 "count=" + modelDouble.count)
 
+        // The live path derives isError from the row's content, exactly like
+        // the batch pass: a NickServ failure lands flagged, ordinary chatter
+        // (even numeric-sounding chatter) never does.
+        modelDouble.append_message("#perf", "NickServ", "Invalid password.", "12:10", false, false)
+        var liveFailure = modelDouble.get(modelDouble.count - 1)
+        perf.ok("append path flags a NickServ auth failure",
+                liveFailure.isError === true && liveFailure.nick === "NickServ",
+                "isError=" + liveFailure.isError + " nick=" + liveFailure.nick)
+        modelDouble.append_message("#perf", "alice", "404 skill not found, you are not funny", "12:11", false, false)
+        var liveChatter = modelDouble.get(modelDouble.count - 1)
+        perf.ok("append path leaves ordinary chatter alone",
+                liveChatter.isError === false && liveChatter.isEvent === false,
+                "isError=" + liveChatter.isError)
+
         // ---- model-computed derived roles (mirror of the Rust model) ----
         var row4 = modelDouble.get(4)
         perf.ok("snapshot row 4 is an event row on a new day",
@@ -155,7 +170,19 @@ Item {
                 "showDay=" + row5.showDay + " label=" + row5.dayLabel)
         var row0 = modelDouble.get(0)
         perf.ok("snapshot row 0 has no predecessor, so no day rule",
-                row0.showDay === false && row0.isEvent === false, "showDay=" + row0.showDay)
+                row0.showDay === false && row0.isEvent === false && row0.isError === false,
+                "showDay=" + row0.showDay + " isError=" + row0.isError)
+
+        // ---- isError: failing lines only ---------------------------------
+        var errRow = modelDouble.get(7)
+        perf.ok("snapshot row 7 is the failing 473 line",
+                errRow.isEvent === true && errRow.isError === true && errRow.showDay === false
+                && errRow.text === "473 #pain Cannot join channel (+i)",
+                "isError=" + errRow.isError + " text=" + errRow.text)
+        var motdRow = modelDouble.get(8)
+        perf.ok("snapshot row 8 is a MOTD line and never an error",
+                motdRow.isEvent === true && motdRow.isError === false,
+                "isError=" + motdRow.isError + " text=" + motdRow.text)
 
         // ---- long transcript: reload path vs append path -----------------
         modelDouble.syntheticRowCount = perf.bufferRows
@@ -320,8 +347,10 @@ Item {
             return false
         }
         var last = switchView.itemAtIndex(switchModel.count - 1)
-        // Row 6 of the snapshot is the "* erin joined #kirc" event line.
-        return last !== null && last.text === "erin joined #kirc" && last.isEvent === true
+        // The last row of the snapshot is the "372 - MOTD ..." line; the row
+        // before it is the failing 473 line.
+        return last !== null && last.text === "372 - MOTD: incorrect settings are denied"
+            && last.isEvent === true && last.isError === false
     }
 
     Timer {
@@ -390,8 +419,9 @@ Item {
         var row0 = switchView.itemAtIndex(0)
         perf.ok("plain row renders from the roles",
                 row0 !== null && row0.nick === "alice" && row0.isEvent === false
-                && row0.showDay === false && row0.dayLabel === "Today",
-                row0 ? ("nick=" + row0.nick + " showDay=" + row0.showDay + " label=" + row0.dayLabel) : "null")
+                && row0.isError === false && row0.showDay === false && row0.dayLabel === "Today",
+                row0 ? ("nick=" + row0.nick + " showDay=" + row0.showDay + " label=" + row0.dayLabel
+                        + " isError=" + row0.isError) : "null")
         perf.ok("plain row carries no day rule (showDay gates it)",
                 perf.renderedText(0).indexOf("Today") === -1, perf.renderedText(0))
 
@@ -409,6 +439,24 @@ Item {
                 row5 !== null && row5.showDay === true && row5.dayLabel === "Today"
                 && perf.renderedText(5).indexOf("Today") >= 0,
                 row5 ? ("showDay=" + row5.showDay + " rendered=" + perf.renderedText(5)) : "null")
+
+        var row7 = switchView.itemAtIndex(7)
+        perf.ok("failing row renders the ! marker in the warn colour",
+                row7 !== null && row7.isError === true
+                && perf.renderedText(7).indexOf("! 473 #pain Cannot join channel (+i)") >= 0
+                && row7.bodyColor.toString() === row7.fgWarnColor.toString()
+                && row7.fgWarnColor.toString() !== row7.fgDimColor.toString(),
+                row7 ? ("isError=" + row7.isError + " body=" + row7.bodyColor
+                        + " warn=" + row7.fgWarnColor + " rendered=" + perf.renderedText(7)) : "null")
+
+        var row8 = switchView.itemAtIndex(8)
+        perf.ok("MOTD row stays dim, no ! marker and no warn colour",
+                row8 !== null && row8.isError === false
+                && perf.renderedText(8).indexOf("* 372 - MOTD") >= 0
+                && perf.renderedText(8).indexOf("! 372") === -1
+                && row8.bodyColor.toString() === row8.fgDimColor.toString(),
+                row8 ? ("isError=" + row8.isError + " body=" + row8.bodyColor
+                        + " rendered=" + perf.renderedText(8)) : "null")
 
         console.error(perf.failures === 0 ? "PERF-RESULT: ALL PASS"
                                           : ("PERF-RESULT: " + perf.failures + " FAILURES"))

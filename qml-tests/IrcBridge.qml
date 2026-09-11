@@ -1,6 +1,13 @@
 import QtQuick
 
 // TEST DOUBLE for the cxx-qt IrcBridge (same ids, same signature).
+//
+// The model roles (including the derived isError flag) belong to the
+// MessageListModel double; this bridge double only has to produce the same
+// signals the cxx-qt bridge does. A failed join mirrors the real bridge's
+// behaviour: the failure reason (a "473 ..." numeric line) is written to the
+// *server* console buffer via message_received BEFORE join_failed fires, so
+// the model's isError derivation sees the same row it would in the app.
 QtObject {
     id: bridge
 
@@ -67,7 +74,11 @@ QtObject {
     function join_channel(channel) {
         console.error("STUB join_channel(" + channel + ")")
         if (channel.indexOf("pain") !== -1) {
-            bridge.join_failed(channel, "473 " + channel + " Cannot join channel (+i)")
+            var reason = "473 " + channel + " Cannot join channel (+i)"
+            // Same order as the real bridge (handle_event): console line, then
+            // the join_failed signal.
+            bridge.message_received("*server*", "*", reason, "12:07", false, false)
+            bridge.join_failed(channel, reason)
             return
         }
         Qt.callLater(function() { bridge.channel_joined(channel) })

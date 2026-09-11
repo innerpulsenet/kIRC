@@ -33,8 +33,8 @@ use kirc_core::{is_channel, ClientCommand, ConnectionConfig, IrcEvent, SaslConfi
 /// `day` is the local calendar date the row's timestamp fell on (`None` when
 /// the timestamp was unparseable); it is what the day-boundary roles are
 /// computed from, because the display stamp alone ("HH:MM") carries no date.
-/// `is_event`/`show_day`/`day_label` are DERIVED presentation flags: they are
-/// left at their defaults in the [`STORE`] and filled in by
+/// `is_event`/`is_error`/`show_day`/`day_label` are DERIVED presentation
+/// flags: they are left at their defaults in the [`STORE`] and filled in by
 /// [`qobject::MessageListModel`] when a row is produced (single pass in
 /// `load_channel`, O(1) in `append_message`).
 #[derive(Clone, Debug, Default)]
@@ -46,6 +46,7 @@ pub struct StoreMsg {
     pub is_highlight: bool,
     pub day: Option<chrono::NaiveDate>,
     pub is_event: bool,
+    pub is_error: bool,
     pub show_day: bool,
     pub day_label: String,
 }
@@ -190,6 +191,104 @@ fn nick_is_event(nick: &str) -> bool {
     nick.trim() == "*"
 }
 
+/// The numeric of a line that starts with a 3-digit IRC numeric.
+///
+/// The bridge formats every server-console info line as `"<numeric> <text>"`
+/// (the core's `numeric_summary`: `format!("{} {}", message.command, body)`),
+/// e.g. `"473 #pain Cannot join channel (+i)"`. The leading token must be
+/// exactly three digits followed by whitespace (or end of line), so `"4730 …"`
+/// and `"47 …"` are not numerics.
+fn leading_numeric(text: &str) -> Option<u32> {
+    let bytes = text.as_bytes();
+    if bytes.len() < 3 || !bytes[..3].iter().all(u8::is_ascii_digit) {
+        return None;
+    }
+    if bytes.len() > 3 && !bytes[3].is_ascii_whitespace() {
+        return None;
+    }
+    text[..3].parse().ok()
+}
+
+/// Nicks of network services whose notices report account/access status.
+fn is_service_nick(nick: &str) -> bool {
+    let nick = nick.trim();
+    nick.eq_ignore_ascii_case("nickserv") || nick.eq_ignore_ascii_case("chanserv")
+}
+
+/// Failure phrasing, matched case-insensitively against synthesized lines and
+/// service notices: NickServ/ChanServ auth failures, refusals and protocol
+/// errors that carry no numeric of their own.
+const FAILURE_PHRASES: &[&str] = &[
+    "invalid password",
+    "authentication failed",
+    "identification failed",
+    "not registered",
+    "access denied",
+    "you are not",
+    "denied",
+    "incorrect",
+    // A refused JOIN explained in words ("473 ... Cannot join channel (+i)")
+    // in case the reason ever arrives without its numeric prefix.
+    "cannot join channel",
+    // The requested nick was taken and the session fell back to an alternate
+    // ("* patrickh_ is in use, trying patrickh__").
+    "is in use, trying",
+];
+
+/// Success phrasing of an identify/login notice. Checked BEFORE the failure
+/// list so "You are now identified" / "You are now logged in as X" can never
+/// be flagged. Deliberately narrow: a bare "logged in" would also mask the
+/// failure "You are not logged in".
+const SUCCESS_PHRASES: &[&str] = &[
+    "you are now identified",
+    "you are now logged in",
+    "logged in as",
+    "password accepted",
+    "you have been identified",
+];
+
+/// True when a row represents a failure and must render in the warn colour.
+///
+/// Classification is content-based because both write paths (`derive_rows` on
+/// load, `derive_row` on append) only see the row's nick and text. Only
+/// synthesized lines are classified:
+///
+/// * console/event lines (nick `"*"` — what `info_to_store` and
+///   `push_channel_line` produce, numerics included), and
+/// * service notices in their query buffer (`NickServ`/`ChanServ`).
+///
+/// Ordinary chatter is NEVER scanned, so a user typing "404 not found" or
+/// "you are not funny" stays a normal line. A line that matches nothing here
+/// stays non-error: MOTD (372/375/376), joins/parts, topics and the rest keep
+/// their dim/primary rendering.
+fn line_is_error(nick: &str, text: &str) -> bool {
+    let console_line = nick_is_event(nick);
+    if !console_line && !is_service_nick(nick) {
+        return false;
+    }
+
+    // Numeric replies are classified by RANGE alone: 4xx/5xx fail, 3xx (MOTD
+    // 372/375/376, WHOIS, topic, names) never do — whatever the text after the
+    // numeric happens to say.
+    if let Some(numeric) = leading_numeric(text) {
+        return (400..=599).contains(&numeric);
+    }
+
+    let lower = text.to_ascii_lowercase();
+
+    // The console line the bridge emits when the session ends with a reason
+    // ("Disconnected: connection closed by server", "Disconnected: client
+    // requested disconnect") — a disconnect is a failure worth noticing.
+    if console_line && lower.starts_with("disconnected:") {
+        return true;
+    }
+
+    if SUCCESS_PHRASES.iter().any(|phrase| lower.contains(phrase)) {
+        return false;
+    }
+    FAILURE_PHRASES.iter().any(|phrase| lower.contains(phrase))
+}
+
 /// The model row's `dayLabel`: "Today", "Yesterday", else e.g. "Sep 11".
 fn day_label_for(day: chrono::NaiveDate, today: chrono::NaiveDate) -> String {
     if day == today {
@@ -210,8 +309,13 @@ fn day_label_for(day: chrono::NaiveDate, today: chrono::NaiveDate) -> String {
 /// unparseable timestamp). A day section starts only when both rows have a
 /// parseable date and the dates differ — an unparseable timestamp is never a
 /// day boundary.
+///
+/// `is_error` is derived here from the row's own content (see
+/// [`line_is_error`]), so the batch pass (`derive_rows`) and the O(1) append
+/// pass agree without the STORE having to carry the flag.
 fn derive_row(prev_day: Option<chrono::NaiveDate>, row: &mut StoreMsg) {
     row.is_event = nick_is_event(&row.nick);
+    row.is_error = line_is_error(&row.nick, &row.text);
     row.show_day = matches!((prev_day, row.day), (Some(prev), Some(day)) if prev != day);
     row.day_label = row.day.map(|day| day_label_for(day, now_day())).unwrap_or_default();
 }
@@ -278,8 +382,8 @@ pub mod qobject {
 
     /// Roles of [`MessageListModel`].
     ///
-    /// `isEvent`/`showDay`/`dayLabel` are computed in Rust when a row is
-    /// produced (see `derive_rows` / `derive_row`); QML binds them directly.
+    /// `isEvent`/`isError`/`showDay`/`dayLabel` are computed in Rust when a row
+    /// is produced (see `derive_rows` / `derive_row`); QML binds them directly.
     #[qenum(MessageListModel)]
     enum Roles {
         Nick,
@@ -290,6 +394,7 @@ pub mod qobject {
         IsEvent,
         ShowDay,
         DayLabel,
+        IsError,
     }
 
     // -----------------------------------------------------------------------
@@ -1449,6 +1554,7 @@ impl qobject::MessageListModel {
             qobject::Roles::IsSelf => QVariant::from(&row.is_self),
             qobject::Roles::IsHighlight => QVariant::from(&row.is_highlight),
             qobject::Roles::IsEvent => QVariant::from(&row.is_event),
+            qobject::Roles::IsError => QVariant::from(&row.is_error),
             qobject::Roles::ShowDay => QVariant::from(&row.show_day),
             qobject::Roles::DayLabel => {
                 let value = qs(&row.day_label);
@@ -1478,6 +1584,7 @@ impl qobject::MessageListModel {
             QByteArray::from("isHighlight"),
         );
         roles.insert(qobject::Roles::IsEvent.repr, QByteArray::from("isEvent"));
+        roles.insert(qobject::Roles::IsError.repr, QByteArray::from("isError"));
         roles.insert(qobject::Roles::ShowDay.repr, QByteArray::from("showDay"));
         roles.insert(qobject::Roles::DayLabel.repr, QByteArray::from("dayLabel"));
         roles
@@ -1579,5 +1686,111 @@ mod tests {
         assert!(!nick_is_event("bob"));
         assert!(!nick_is_event("*bob"));
         assert!(!nick_is_event(""));
+    }
+
+    fn row_text(nick: &str, text: &str) -> StoreMsg {
+        StoreMsg::new(
+            nick.to_owned(),
+            text.to_owned(),
+            "12:00".to_owned(),
+            false,
+            false,
+            date(2026, 9, 11),
+        )
+    }
+
+    #[test]
+    fn failing_lines_are_classified_as_errors() {
+        // Join failures — the user's "473 ... Cannot join channel (+i)".
+        assert!(line_is_error("*", "403 #pain No such channel"));
+        assert!(line_is_error("*", "405 #pain You have joined too many channels"));
+        assert!(line_is_error("*", "437 #pain Cannot join channel (temporarily unavailable)"));
+        assert!(line_is_error("*", "471 #pain Cannot join channel (+l)"));
+        assert!(line_is_error("*", "473 #pain Cannot join channel (+i)"));
+        assert!(line_is_error("*", "474 #pain Cannot join channel (+b)"));
+        assert!(line_is_error("*", "475 #pain Cannot join channel (+k)"));
+        assert!(line_is_error("*", "476 #pain Bad Channel Mask"));
+        assert!(line_is_error("*", "477 #pain Cannot join channel (+r)"));
+        assert!(line_is_error("*", "479 #pain Illegal channel name"));
+        // Any other 4xx/5xx numeric.
+        assert!(line_is_error("*", "401 ghost No such nick/channel"));
+        assert!(line_is_error("*", "404 #pain Cannot send to channel"));
+        assert!(line_is_error("*", "433 * patrickh :Nickname is already in use"));
+        assert!(line_is_error("*", "500 Unknown command"));
+        assert!(line_is_error("*", "599 Unknown error"));
+        // The nick fallback ("* patrickh_ is in use, trying patrickh__").
+        assert!(line_is_error("*", "patrickh_ is in use, trying patrickh__"));
+        // Disconnect-with-reason console lines.
+        assert!(line_is_error("*", "Disconnected: connection closed by server"));
+        assert!(line_is_error(
+            "*",
+            "Disconnected: SASL authentication failed: 904 SASL authentication failed"
+        ));
+        // NickServ / ChanServ failure notices.
+        assert!(line_is_error("NickServ", "Invalid password."));
+        assert!(line_is_error("ChanServ", "Access denied."));
+        assert!(line_is_error("NickServ", "You are not registered"));
+        assert!(line_is_error("nickserv", "You are not logged in"));
+        assert!(line_is_error("NickServ", "Password incorrect"));
+        assert!(line_is_error("NickServ", "Identification failed for patrickh"));
+        assert!(line_is_error("ChanServ", "Nickname is not registered"));
+    }
+
+    #[test]
+    fn non_failing_lines_stay_dim() {
+        // MOTD and friends (3xx numerics) stay dim even when the text after
+        // the numeric sounds alarming — the range decides, not the words.
+        assert!(!line_is_error(
+            "*",
+            "372 - MOTD: do not use incorrect settings or you will be denied"
+        ));
+        assert!(!line_is_error("*", "375 - Start of /MOTD command"));
+        assert!(!line_is_error("*", "376 - End of /MOTD command"));
+        assert!(!line_is_error("*", "001 patrickh Welcome to the network"));
+        // Joins/parts/modes/topics and ordinary console lines.
+        assert!(!line_is_error("*", "alice joined #kirc"));
+        assert!(!line_is_error("*", "bob left #kirc"));
+        assert!(!line_is_error("*", "mode +o alice on #kirc"));
+        assert!(!line_is_error("*", "Topic for #kirc: kIRC development"));
+        assert!(!line_is_error("*", "Connected to irc.libera.chat"));
+        assert!(!line_is_error("*", "kircuser is now known as kircuser_afk"));
+        // Ordinary chatter is never scanned, whatever it says.
+        assert!(!line_is_error("alice", "404 skill not found"));
+        assert!(!line_is_error("alice", "you are not funny"));
+        assert!(!line_is_error("alice", "Disconnected: my wifi died"));
+        assert!(!line_is_error("bob", "incorrect usage of the word literally"));
+        // Successful identify/log-in notices are not errors.
+        assert!(!line_is_error("NickServ", "You are now identified for patrickh."));
+        assert!(!line_is_error("NickServ", "You are now logged in as patrickh"));
+        assert!(!line_is_error("NickServ", "You are already logged in as patrickh"));
+        assert!(!line_is_error("NickServ", "Password accepted - you are now recognized"));
+        // A 3-digit token that is not a numeric reply is not a numeric.
+        assert!(!line_is_error("*", "4730 not a numeric"));
+        assert!(!line_is_error("*", "47 too short"));
+    }
+
+    #[test]
+    fn derive_rows_flag_error_rows_only() {
+        let mut rows = vec![
+            row_text("alice", "morning everyone"),
+            row_text("*", "473 #pain Cannot join channel (+i)"),
+            row_text("*", "372 - MOTD: welcome to the test network"),
+            row_text("NickServ", "Invalid password."),
+            row_text("*", "bob left #kirc"),
+        ];
+        derive_rows(&mut rows);
+        assert!(!rows[0].is_error);
+        assert!(rows[1].is_error && rows[1].is_event);
+        assert!(!rows[2].is_error);
+        assert!(rows[3].is_error);
+        assert!(!rows[4].is_error);
+
+        // The O(1) append path derives the identical flag from the row alone.
+        let mut appended = row_text("*", "473 #pain Cannot join channel (+i)");
+        derive_row(None, &mut appended);
+        assert!(appended.is_error && appended.is_event);
+        let mut motd = row_text("*", "372 - MOTD: welcome to the test network");
+        derive_row(None, &mut motd);
+        assert!(!motd.is_error);
     }
 }
