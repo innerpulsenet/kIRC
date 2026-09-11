@@ -399,6 +399,39 @@ impl Default for MessageListModelRust {
 // IrcEvent -> Qt bridge
 // ===========================================================================
 
+/// Target key of the persistent server-console buffer in [`STORE`].
+///
+/// Informational lines (MOTD, numerics, joins/parts, notices) used to surface
+/// as transient passive popups; they now live in a real, scrollable buffer the
+/// user can select like a channel.
+pub const SERVER_BUFFER: &str = "*server*";
+
+/// Append one informational line to the server-console buffer and notify the
+/// UI through the regular `message_received` path (a page showing the buffer
+/// reloads; no popup, no unread badge inflation).
+fn info_to_store(mut obj: Pin<&mut qobject::IrcBridge>, text: &str) {
+    {
+        let mut guard = store().lock().unwrap_or_else(|e| e.into_inner());
+        guard
+            .entry(SERVER_BUFFER.to_owned())
+            .or_default()
+            .push(StoreMsg {
+                nick: "*".to_owned(),
+                text: text.to_owned(),
+                timestamp: now_string(),
+                is_self: false,
+                is_highlight: false,
+            });
+    }
+    obj.as_mut().message_received(
+        qs(SERVER_BUFFER),
+        qs("*"),
+        qs(text),
+        false,
+        false,
+    );
+}
+
 /// Apply one `IrcEvent` to `IrcBridge`.  Always called on the Qt thread.
 fn handle_event(mut obj: Pin<&mut qobject::IrcBridge>, event: IrcEvent) {
     match event {
@@ -415,8 +448,7 @@ fn handle_event(mut obj: Pin<&mut qobject::IrcBridge>, event: IrcEvent) {
                 .set_connection_state(qobject::ConnectionStatus::Connected);
             obj.as_mut()
                 .state_changed(qobject::ConnectionStatus::Connected.repr);
-            obj.as_mut()
-                .info(qs(&format!("Connected to {server_name}")));
+            info_to_store(obj.as_mut(), &format!("Connected to {server_name}"));
         }
 
         IrcEvent::Disconnected { reason } => {
@@ -425,7 +457,7 @@ fn handle_event(mut obj: Pin<&mut qobject::IrcBridge>, event: IrcEvent) {
             obj.as_mut()
                 .state_changed(qobject::ConnectionStatus::Disconnected.repr);
             if !reason.is_empty() {
-                obj.as_mut().info(qs(&format!("Disconnected: {reason}")));
+                info_to_store(obj.as_mut(), &format!("Disconnected: {reason}"));
             }
         }
 
@@ -489,7 +521,7 @@ fn handle_event(mut obj: Pin<&mut qobject::IrcBridge>, event: IrcEvent) {
         }
 
         IrcEvent::Notice { nick, text } => {
-            obj.as_mut().info(qs(&format!("-{nick}- {text}")));
+            info_to_store(obj.as_mut(), &format!("-{nick}- {text}"));
         }
 
         IrcEvent::Join {
@@ -501,21 +533,19 @@ fn handle_event(mut obj: Pin<&mut qobject::IrcBridge>, event: IrcEvent) {
                 .as_deref()
                 .map(|a| format!(" ({a})"))
                 .unwrap_or_default();
-            obj.as_mut()
-                .info(qs(&format!("{nick}{suffix} joined {channel}")));
+            info_to_store(obj.as_mut(), &format!("{nick}{suffix} joined {channel}"));
         }
 
         IrcEvent::Part { channel, nick } => {
-            obj.as_mut().info(qs(&format!("{nick} left {channel}")));
+            info_to_store(obj.as_mut(), &format!("{nick} left {channel}"));
         }
 
         IrcEvent::Topic { channel, topic } => {
-            obj.as_mut()
-                .info(qs(&format!("Topic for {channel}: {topic}")));
+            info_to_store(obj.as_mut(), &format!("Topic for {channel}: {topic}"));
         }
 
         IrcEvent::Info { text } => {
-            obj.as_mut().info(qs(&text));
+            info_to_store(obj.as_mut(), &text);
         }
 
         IrcEvent::Error { message } => {

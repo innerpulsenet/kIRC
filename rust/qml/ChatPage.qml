@@ -34,10 +34,9 @@ Kirigami.Page {
     readonly property int timestampPointSize: ThemeEngine.resolvePointSize(ThemeEngine.timestampSize, Kirigami.Theme.defaultFont.pointSize)
 
     property string currentChannel: "#kirc"
-    // Channels are hardcoded to start with; more get appended when a JOIN is
-    // seen. TODO: hook a `channel_joined`/`channel_parted` signal from the
-    // bridge once the C++ side exposes one.
-    property var channels: ["#kirc"]
+    // The server console (numerics, MOTD, joins/parts) lives in a dedicated
+    // "*server*" buffer the bridge fills; channels join it in the sidebar.
+    property var channels: ["*server*", "#kirc"]
 
     readonly property string connectionLabel: {
         if (page.bridge === null) {
@@ -76,6 +75,11 @@ Kirigami.Page {
 
         function onMessage_received(target, nick, text, is_self, is_highlight) {
             if (target === page.currentChannel) {
+                if (!reloadTimer.running) {
+                    reloadTimer.start()
+                }
+            } else if (target === "*server*") {
+                // Server console lines land in the shared store; reload if shown.
                 if (!reloadTimer.running) {
                     reloadTimer.start()
                 }

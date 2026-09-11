@@ -307,9 +307,9 @@ Kirigami.ApplicationWindow {
             root.showPassiveNotification(message, 5000)
         }
 
-        function onInfo(text) {
-            root.showPassiveNotification(text)
-        }
+        // onInfo: intentional no handler — informational lines (MOTD,
+        // numerics, joins/parts) are persisted to the *server* buffer in
+        // the Rust bridge instead of transient popups.
     }
 
     // ---------------------------------------------------------------------- //
