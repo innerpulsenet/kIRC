@@ -142,11 +142,13 @@ fn irc_event_variants() {
             channel: "#c".into(),
             nick: "n".into(),
             account: Some("acct".into()),
+            is_self: false,
         },
         IrcEvent::Join {
             channel: "#c".into(),
             nick: "n".into(),
             account: None,
+            is_self: true,
         },
         IrcEvent::Part {
             channel: "#c".into(),

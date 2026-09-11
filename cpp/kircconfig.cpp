@@ -14,6 +14,7 @@ namespace {
 // Group/key names are part of the on-disk contract — keep them stable.
 constexpr auto kConnectionGroup = "Connection";
 constexpr auto kUiGroup = "UI";
+constexpr auto kServicesGroup = "Services";
 
 } // namespace
 
@@ -172,6 +173,48 @@ void KircConfig::setFontDelta(int fontDelta)
     Q_EMIT fontDeltaChanged();
 }
 
+bool KircConfig::identifyOnConnect() const
+{
+    return m_identifyOnConnect;
+}
+
+void KircConfig::setIdentifyOnConnect(bool identifyOnConnect)
+{
+    if (m_identifyOnConnect == identifyOnConnect) {
+        return;
+    }
+    m_identifyOnConnect = identifyOnConnect;
+    Q_EMIT identifyOnConnectChanged();
+}
+
+QString KircConfig::nickservNick() const
+{
+    return m_nickservNick;
+}
+
+void KircConfig::setNickservNick(const QString &nickservNick)
+{
+    if (m_nickservNick == nickservNick) {
+        return;
+    }
+    m_nickservNick = nickservNick;
+    Q_EMIT nickservNickChanged();
+}
+
+QString KircConfig::nickservPassword() const
+{
+    return m_nickservPassword;
+}
+
+void KircConfig::setNickservPassword(const QString &nickservPassword)
+{
+    if (m_nickservPassword == nickservPassword) {
+        return;
+    }
+    m_nickservPassword = nickservPassword;
+    Q_EMIT nickservPasswordChanged();
+}
+
 void KircConfig::load()
 {
     const KConfig config(configFilePath(), KConfig::SimpleConfig);
@@ -191,6 +234,11 @@ void KircConfig::load()
     m_reconnect = ui.readEntry(QStringLiteral("Reconnect"), m_reconnect);
     m_fontDelta = ui.readEntry(QStringLiteral("FontDelta"), m_fontDelta);
 
+    const KConfigGroup services = config.group(QString::fromLatin1(kServicesGroup));
+    m_identifyOnConnect = services.readEntry(QStringLiteral("IdentifyOnConnect"), m_identifyOnConnect);
+    m_nickservNick = services.readEntry(QStringLiteral("NickServ"), m_nickservNick);
+    m_nickservPassword = services.readEntry(QStringLiteral("Password"), m_nickservPassword);
+
     Q_EMIT hostChanged();
     Q_EMIT portChanged();
     Q_EMIT tlsChanged();
@@ -201,6 +249,9 @@ void KircConfig::load()
     Q_EMIT autojoinChanged();
     Q_EMIT reconnectChanged();
     Q_EMIT fontDeltaChanged();
+    Q_EMIT identifyOnConnectChanged();
+    Q_EMIT nickservNickChanged();
+    Q_EMIT nickservPasswordChanged();
 }
 
 void KircConfig::save()
@@ -226,6 +277,11 @@ void KircConfig::save()
     ui.writeEntry(QStringLiteral("Autojoin"), m_autojoin);
     ui.writeEntry(QStringLiteral("Reconnect"), m_reconnect);
     ui.writeEntry(QStringLiteral("FontDelta"), m_fontDelta);
+
+    KConfigGroup services = config.group(QString::fromLatin1(kServicesGroup));
+    services.writeEntry(QStringLiteral("IdentifyOnConnect"), m_identifyOnConnect);
+    services.writeEntry(QStringLiteral("NickServ"), m_nickservNick);
+    services.writeEntry(QStringLiteral("Password"), m_nickservPassword);
 
     config.sync();
 }

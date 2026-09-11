@@ -661,9 +661,8 @@ fn handle_event(mut obj: Pin<&mut qobject::IrcBridge>, event: IrcEvent) {
             channel,
             nick,
             account,
+            is_self,
         } => {
-            let ours = rs(obj.as_ref().nickname());
-            let is_self = nick.eq_ignore_ascii_case(&ours);
             let suffix = account
                 .as_deref()
                 .map(|a| format!(" ({a})"))

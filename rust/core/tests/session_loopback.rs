@@ -353,7 +353,7 @@ async fn plain_sasl_session_end_to_end() {
         "echo-message is_self missing: {msgs:?}"
     );
 
-    assert!(events.iter().any(|e| matches!(e, IrcEvent::Join { channel, nick, account: Some(a) } if channel == "#rust" && nick == "alice" && a == "account/alice")), "extended-join account missing");
+    assert!(events.iter().any(|e| matches!(e, IrcEvent::Join { channel, nick, account: Some(a), is_self: false } if channel == "#rust" && nick == "alice" && a == "account/alice")), "extended-join account missing");
     assert!(events.iter().any(|e| matches!(e, IrcEvent::Notice { nick, text } if nick == "irc.test" && text == "hello notice")));
     assert!(
         events

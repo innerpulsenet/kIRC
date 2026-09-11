@@ -118,6 +118,7 @@ pub enum IrcEvent {
         channel: String,
         nick: String,
         account: Option<String>,
+        is_self: bool,
     },
     /// Someone left a channel.
     Part { channel: String, nick: String },
@@ -397,10 +398,12 @@ impl Session {
                 let nick = source_name(&message);
                 // extended-join: JOIN <channel> <account> :<realname>
                 let account = message.params.get(1).filter(|a| a.as_str() != "*").cloned();
+                let is_self = nick.eq_ignore_ascii_case(&self.config.nickname);
                 self.emit(IrcEvent::Join {
                     channel,
                     nick,
                     account,
+                    is_self,
                 })
                 .await;
             }
@@ -427,6 +430,17 @@ impl Session {
                     reason: format!("is now {new_nick}"),
                 })
                 .await;
+            }
+            "INVITE" => {
+                let from = source_name(&message);
+                let channel = message.params.get(1).cloned().unwrap_or_default();
+                if !channel.is_empty() {
+                    self.emit(IrcEvent::Info {
+                        text: format!("Invited to {channel} by {from}"),
+                    })
+                    .await;
+                    let _ = self.send(&format!("JOIN {channel}")).await;
+                }
             }
             "ERROR" => {
                 let text = message.params.join(" ");
@@ -807,6 +821,14 @@ impl Session {
         let target = conversation_target(&self.config.nickname, &nick, &raw_target, is_self);
         let text = display_privmsg(&text);
         if text.trim().is_empty() {
+            return;
+        }
+        if is_self
+            && text
+                .split_whitespace()
+                .next()
+                .is_some_and(|w| w.eq_ignore_ascii_case("IDENTIFY"))
+        {
             return;
         }
         self.emit(IrcEvent::Msg {

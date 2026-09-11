@@ -9,13 +9,12 @@
 // connection form can be prefilled on startup and the profile saved once a
 // connection actually succeeds.
 //
-// SECURITY — passwords are deliberately NOT persisted:
-//   kirc.conf is an ordinary world-readable plaintext INI file.  Writing the
-//   SASL/services password (or any server password) there would leak it to
-//   every process running as the user and to any config backup/sync tool.
-//   The password therefore has to be re-entered once per start.  This is an
-//   intentional trade-off, not an oversight — do not "fix" it by adding a
-//   Password key without moving to KWallet/Secret Service first.
+// SECURITY — SASL password is deliberately NOT persisted:
+//   kirc.conf is an ordinary world-readable plaintext INI file.  The SASL
+//   password therefore has to be re-entered once per start.
+//   NickServ identify-on-connect is stored under [Services] Password because
+//   that feature is useless without it.  Prefer SASL when the server supports
+//   it; move NickServ to KWallet if this file is synced.
 //
 // Implemented with the plain KConfig API rather than a KConfigXT .kcfg +
 // generated header: nothing here needs a settings dialog, and plain KConfig
@@ -40,6 +39,9 @@ class KircConfig : public QObject
     Q_PROPERTY(QString autojoin READ autojoin WRITE setAutojoin NOTIFY autojoinChanged)
     Q_PROPERTY(bool reconnect READ reconnect WRITE setReconnect NOTIFY reconnectChanged)
     Q_PROPERTY(int fontDelta READ fontDelta WRITE setFontDelta NOTIFY fontDeltaChanged)
+    Q_PROPERTY(bool identifyOnConnect READ identifyOnConnect WRITE setIdentifyOnConnect NOTIFY identifyOnConnectChanged)
+    Q_PROPERTY(QString nickservNick READ nickservNick WRITE setNickservNick NOTIFY nickservNickChanged)
+    Q_PROPERTY(QString nickservPassword READ nickservPassword WRITE setNickservPassword NOTIFY nickservPasswordChanged)
 
 public:
     explicit KircConfig(QObject *parent = nullptr);
@@ -79,6 +81,15 @@ public:
     int fontDelta() const;
     void setFontDelta(int fontDelta);
 
+    bool identifyOnConnect() const;
+    void setIdentifyOnConnect(bool identifyOnConnect);
+
+    QString nickservNick() const;
+    void setNickservNick(const QString &nickservNick);
+
+    QString nickservPassword() const;
+    void setNickservPassword(const QString &nickservPassword);
+
     /// Re-read every value from disk.  Called once at startup, before the QML
     /// engine is created, so the form is prefilled on first paint.
     void load();
@@ -98,6 +109,9 @@ Q_SIGNALS:
     void autojoinChanged();
     void reconnectChanged();
     void fontDeltaChanged();
+    void identifyOnConnectChanged();
+    void nickservNickChanged();
+    void nickservPasswordChanged();
 
 private:
     // Defaults mirror the initial values in ConnectPage.qml so a first run
@@ -112,4 +126,7 @@ private:
     QString m_autojoin;
     bool m_reconnect = true;
     int m_fontDelta = 0;
+    bool m_identifyOnConnect = false;
+    QString m_nickservNick = QStringLiteral("NickServ");
+    QString m_nickservPassword;
 };

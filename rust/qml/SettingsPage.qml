@@ -26,6 +26,9 @@ Kirigami.ScrollablePage {
         page.kircConfig.autojoin = autojoinField.text
         page.kircConfig.reconnect = reconnectSwitch.checked
         page.kircConfig.minimizeToTray = traySwitch.checked
+        page.kircConfig.identifyOnConnect = identifySwitch.checked
+        page.kircConfig.nickservNick = nickservNickField.text
+        page.kircConfig.nickservPassword = nickservPassField.text
         page.kircConfig.save()
     }
 
@@ -35,6 +38,9 @@ Kirigami.ScrollablePage {
             reconnectSwitch.checked = page.kircConfig.reconnect
             traySwitch.checked = page.kircConfig.minimizeToTray
             fontSlider.value = page.kircConfig.fontDelta
+            identifySwitch.checked = page.kircConfig.identifyOnConnect
+            nickservNickField.text = page.kircConfig.nickservNick
+            nickservPassField.text = page.kircConfig.nickservPassword
         }
     }
 
@@ -117,6 +123,33 @@ Kirigami.ScrollablePage {
             id: autojoinField
             Kirigami.FormData.label: qsTr("Autojoin")
             placeholderText: qsTr("#channel, #another")
+            onEditingFinished: page.persist()
+        }
+
+        Kirigami.Separator {
+            Kirigami.FormData.label: qsTr("NickServ")
+            Kirigami.FormData.isSection: true
+        }
+
+        Controls.Switch {
+            id: identifySwitch
+            Kirigami.FormData.label: qsTr("Identify")
+            text: qsTr("Identify on connect, then autojoin")
+            onToggled: page.persist()
+        }
+
+        Controls.TextField {
+            id: nickservNickField
+            Kirigami.FormData.label: qsTr("Service nick")
+            placeholderText: "NickServ"
+            onEditingFinished: page.persist()
+        }
+
+        Controls.TextField {
+            id: nickservPassField
+            Kirigami.FormData.label: qsTr("Password")
+            echoMode: Controls.TextInput.Password
+            placeholderText: qsTr("Stored in kirc.conf")
             onEditingFinished: page.persist()
         }
 

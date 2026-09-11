@@ -59,6 +59,8 @@ Kirigami.Page {
     property string currentTopic: ""
     property var nickList: []
     property string joinError: ""
+    property var pendingJoins: []
+    property bool autojoinDone: false
 
     title: page.channelLabel(page.currentChannel)
     padding: 0
@@ -83,6 +85,13 @@ Kirigami.Page {
     // message_received. Reloading the channel on every single message would be
     // O(history) per line, so the reload is coalesced through this timer.
     Timer {
+        id: identifyTimer
+        interval: 4000
+        repeat: false
+        onTriggered: page.applyAutojoin()
+    }
+
+    Timer {
         id: reloadTimer
         interval: 50
         repeat: false
@@ -98,6 +107,10 @@ Kirigami.Page {
                     reloadTimer.start()
                 }
             }
+            if (!is_self && page.isNickServ(nick) && page.isIdentifySuccess(text)) {
+                identifyTimer.stop()
+                page.applyAutojoin()
+            }
         }
 
         function onHistory_batch_received(target) {
@@ -108,9 +121,13 @@ Kirigami.Page {
 
         function onState_changed(state) {
             if (state === 2) {
+                page.autojoinDone = false
                 page.refreshHistory()
-                page.applyAutojoin()
+                page.startIdentifyAndJoin()
             } else if (state === 0) {
+                page.autojoinDone = false
+                page.pendingJoins = []
+                identifyTimer.stop()
                 page.channels = ["*server*"]
                 page.nickList = []
                 page.currentTopic = ""
@@ -119,6 +136,7 @@ Kirigami.Page {
         }
 
         function onChannel_joined(channel) {
+            page.forgetPendingJoin(channel)
             page.addBuffer(channel)
             page.openChannel(channel)
             if (page.bridge !== null) {
@@ -135,6 +153,7 @@ Kirigami.Page {
         }
 
         function onJoin_failed(channel, reason) {
+            page.rememberPendingJoin(channel)
             page.removeBuffer(channel)
             page.joinError = reason
             if (page.hostWindow !== null && page.hostWindow.showPassiveNotification) {
@@ -1077,25 +1096,105 @@ Kirigami.Page {
         return false
     }
 
+    function isNickServ(nick)
+    {
+        var want = "NickServ"
+        if (page.hostWindow !== null && page.hostWindow.appConfig !== null
+                && page.hostWindow.appConfig.nickservNick.length > 0) {
+            want = page.hostWindow.appConfig.nickservNick
+        }
+        return page.sameTarget(nick, want)
+    }
+
+    function isIdentifySuccess(text)
+    {
+        var t = String(text).toLowerCase()
+        return t.indexOf("you are now logged in") !== -1
+            || t.indexOf("you are now identified") !== -1
+            || t.indexOf("already logged in") !== -1
+            || t.indexOf("already identified") !== -1
+            || t.indexOf("authentication successful") !== -1
+            || t.indexOf("password accepted") !== -1
+            || t.indexOf("you are now recognized") !== -1
+    }
+
+    function rememberPendingJoin(channel)
+    {
+        var ch = String(channel)
+        if (ch.length === 0 || ch.charAt(0) !== "#") {
+            return
+        }
+        for (var i = 0; i < page.pendingJoins.length; ++i) {
+            if (page.sameTarget(page.pendingJoins[i], ch)) {
+                return
+            }
+        }
+        page.pendingJoins = page.pendingJoins.concat([ch])
+    }
+
+    function forgetPendingJoin(channel)
+    {
+        var out = []
+        for (var i = 0; i < page.pendingJoins.length; ++i) {
+            if (!page.sameTarget(page.pendingJoins[i], channel)) {
+                out.push(page.pendingJoins[i])
+            }
+        }
+        page.pendingJoins = out
+    }
+
+    function startIdentifyAndJoin()
+    {
+        if (page.bridge === null) {
+            return
+        }
+        var cfg = (page.hostWindow !== null) ? page.hostWindow.appConfig : null
+        if (cfg !== null && cfg.identifyOnConnect && cfg.nickservPassword.length > 0) {
+            var svc = cfg.nickservNick.length > 0 ? cfg.nickservNick : "NickServ"
+            page.bridge.send_raw("PRIVMSG " + svc + " :IDENTIFY " + cfg.nickservPassword)
+            identifyTimer.restart()
+            return
+        }
+        page.applyAutojoin()
+    }
+
     function applyAutojoin()
     {
-        if (page.hostWindow === null || page.hostWindow.appConfig === null) {
+        if (page.bridge === null) {
             return
         }
-        var raw = page.hostWindow.appConfig.autojoin
-        if (!raw || raw.length === 0) {
-            return
+        var seen = {}
+        var targets = []
+        function add(ch) {
+            var key = String(ch).toLowerCase()
+            if (seen[key]) {
+                return
+            }
+            seen[key] = true
+            targets.push(ch)
         }
-        var parts = raw.split(/[\s,]+/)
-        for (var i = 0; i < parts.length; ++i) {
-            var ch = parts[i].trim()
-            if (ch.length === 0) {
-                continue
+        if (!page.autojoinDone && page.hostWindow !== null && page.hostWindow.appConfig !== null) {
+            var raw = page.hostWindow.appConfig.autojoin
+            if (raw && raw.length > 0) {
+                var parts = raw.split(/[\s,]+/)
+                for (var i = 0; i < parts.length; ++i) {
+                    var ch = parts[i].trim()
+                    if (ch.length === 0) {
+                        continue
+                    }
+                    if (ch.charAt(0) !== "#" && ch.charAt(0) !== "&") {
+                        ch = "#" + ch
+                    }
+                    add(ch)
+                }
             }
-            if (ch.charAt(0) !== "#" && ch.charAt(0) !== "&") {
-                ch = "#" + ch
-            }
-            page.bridge.join_channel(ch)
+        }
+        page.autojoinDone = true
+        for (var j = 0; j < page.pendingJoins.length; ++j) {
+            add(page.pendingJoins[j])
+        }
+        for (var k = 0; k < targets.length; ++k) {
+            page.bridge.join_channel(targets[k])
         }
     }
 
