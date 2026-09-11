@@ -806,6 +806,9 @@ impl Session {
         let is_highlight = !is_self && is_highlight(&text, &self.config.nickname);
         let target = conversation_target(&self.config.nickname, &nick, &raw_target, is_self);
         let text = display_privmsg(&text);
+        if text.trim().is_empty() {
+            return;
+        }
         self.emit(IrcEvent::Msg {
             target,
             nick,
@@ -839,10 +842,14 @@ impl Session {
         }
         let is_self = !nick.is_empty() && nick.eq_ignore_ascii_case(&self.config.nickname);
         let target = conversation_target(&self.config.nickname, &nick, &raw_target, is_self);
+        let text = display_privmsg(&text);
+        if text.trim().is_empty() {
+            return;
+        }
         self.emit(IrcEvent::Msg {
             target,
             nick,
-            text: display_privmsg(&text),
+            text,
             timestamp: message.tags.get("time").cloned().flatten(),
             is_self,
             is_highlight: false,
@@ -943,19 +950,67 @@ fn conversation_target(our_nick: &str, sender: &str, raw_target: &str, is_self: 
     }
 }
 
-/// Render CTCP ACTION as `/me` text; leave other payloads untouched.
+/// Render CTCP ACTION as `/me` text. Strip mIRC formatting so control
+/// bytes never show up as tofu in the UI.
 fn display_privmsg(text: &str) -> String {
-    const START: &str = "\x01ACTION ";
-    // CTCP ACTION is \x01ACTION <body>\x01
     let bytes = text.as_bytes();
-    if bytes.first() == Some(&0x01) && bytes.last() == Some(&0x01) && text.len() > 9 {
+    let body = if bytes.first() == Some(&0x01) && bytes.last() == Some(&0x01) && text.len() > 9 {
         let inner = &text[1..text.len() - 1];
-        if let Some(body) = inner.strip_prefix("ACTION ") {
-            return format!("* {body}");
+        if let Some(action) = inner.strip_prefix("ACTION ") {
+            format!("* {action}")
+        } else {
+            text.to_string()
+        }
+    } else {
+        text.to_string()
+    };
+    strip_irc_formatting(&body)
+}
+
+/// Remove mIRC/IRC formatting codes (bold, italic, underline, colours, reset).
+pub fn strip_irc_formatting(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let chars: Vec<char> = input.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        match chars[i] {
+            '\u{02}' | '\u{0f}' | '\u{16}' | '\u{1d}' | '\u{1e}' | '\u{1f}' | '\u{11}' => {
+                i += 1;
+            }
+            '\u{03}' => {
+                i += 1;
+                i += take_color_digits(&chars, i);
+                if i < chars.len() && chars[i] == ',' {
+                    i += 1;
+                    i += take_color_digits(&chars, i);
+                }
+            }
+            '\u{04}' => {
+                i += 1;
+                let mut hex = 0;
+                while i < chars.len() && hex < 6 && chars[i].is_ascii_hexdigit() {
+                    i += 1;
+                    hex += 1;
+                }
+            }
+            c if c.is_control() && c != '\n' && c != '\t' => {
+                i += 1;
+            }
+            c => {
+                out.push(c);
+                i += 1;
+            }
         }
     }
-    let _ = START;
-    text.to_string()
+    out
+}
+
+fn take_color_digits(chars: &[char], start: usize) -> usize {
+    let mut n = 0;
+    while start + n < chars.len() && n < 2 && chars[start + n].is_ascii_digit() {
+        n += 1;
+    }
+    n
 }
 
 /// First channel-like parameter after the client nick, else params[1].
@@ -1179,6 +1234,64 @@ mod tests {
         assert!(!is_highlight("anything", ""));
         assert!(is_highlight("(bob) hi", "bob"));
         assert!(is_highlight("hi, bob.", "bob"));
+    }
+
+    #[test]
+    fn strip_bold_and_color_around_register() {
+        assert_eq!(strip_irc_formatting("  \u{2}REGISTER\u{2}  ").trim(), "REGISTER");
+        assert_eq!(strip_irc_formatting("\u{3}04REGISTER\u{3}"), "REGISTER");
+        assert_eq!(strip_irc_formatting("\u{3}04,08REGISTER\u{3}"), "REGISTER");
+        assert_eq!(strip_irc_formatting("\u{4}ff0000REGISTER"), "REGISTER");
+        assert_eq!(display_privmsg("  \u{2}REGISTER\u{2}  ").trim(), "REGISTER");
+    }
+
+    #[test]
+    fn strip_nested_codes_and_reset() {
+        assert_eq!(
+            strip_irc_formatting("\u{2}bold \u{1f}underline\u{1f}\u{2} \u{3}04red\u{3} \u{f}plain"),
+            "bold underline red plain"
+        );
+        assert_eq!(
+            strip_irc_formatting("\u{1d}italic\u{1d} \u{16}reverse\u{16} \u{11}mono\u{11}"),
+            "italic reverse mono"
+        );
+        // CTCP ACTION body is also stripped of formatting.
+        assert_eq!(
+            display_privmsg("\u{1}ACTION \u{2}waves\u{2}\u{1}"),
+            "* waves"
+        );
+    }
+
+    #[test]
+    fn strip_format_only_is_empty() {
+        let only_codes = "\u{2}\u{3}\u{f}\u{16}\u{1d}\u{1f}\u{11}\u{1e}\u{3}04,08\u{4}ff0000";
+        assert_eq!(strip_irc_formatting(only_codes), "");
+        assert!(strip_irc_formatting(only_codes).trim().is_empty());
+        assert!(strip_irc_formatting("  \u{2}\u{f}  ").trim().is_empty());
+        // Leftover C0 controls (except \n) are dropped too.
+        assert!(strip_irc_formatting("\u{0}\u{1}\u{7}").is_empty());
+        assert_eq!(strip_irc_formatting("a\nb"), "a\nb");
+    }
+
+    #[test]
+    fn strip_leaves_normal_utf8_text() {
+        assert_eq!(strip_irc_formatting("héllo wörld ✓ — test"), "héllo wörld ✓ — test");
+        assert_eq!(strip_irc_formatting("plain message"), "plain message");
+        assert_eq!(strip_irc_formatting("emoji 🎉 test"), "emoji 🎉 test");
+        assert_eq!(display_privmsg("héllo ✓"), "héllo ✓");
+    }
+
+    #[test]
+    fn query_buffer_keys_are_case_insensitive() {
+        // conversation_target routes to the sender regardless of our-nick case.
+        assert_eq!(conversation_target("MyNick", "alice", "mynick", false), "alice");
+        assert_eq!(conversation_target("MyNick", "alice", "MYnick", false), "alice");
+        assert_eq!(conversation_target("MyNick", "alice", "MYNICK", false), "alice");
+        // Service/query names compare case-insensitively.
+        assert!("nickserv".eq_ignore_ascii_case("NickServ"));
+        assert!("NickServ".eq_ignore_ascii_case("NICKSERV"));
+        // Channels still key on the raw target.
+        assert_eq!(conversation_target("me", "alice", "#C", false), "#C");
     }
 
     #[test]

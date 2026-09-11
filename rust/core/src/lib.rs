@@ -57,6 +57,6 @@ pub use parser::{
 };
 pub use sasl::{SaslClient, SaslConfig, SaslError, SaslMechanism};
 pub use session::{
-    is_channel, is_highlight, run_session, ClientCommand, ConnectionConfig, HistoryMsg, IrcEvent,
-    KEEPALIVE_INTERVAL, MAX_MISSED_PONGS,
+    is_channel, is_highlight, run_session, strip_irc_formatting, ClientCommand, ConnectionConfig,
+    HistoryMsg, IrcEvent, KEEPALIVE_INTERVAL, MAX_MISSED_PONGS,
 };

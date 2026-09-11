@@ -60,6 +60,15 @@ fn bare_nick(nick: &str) -> &str {
     nick.trim_start_matches(|c: char| matches!(c, '@' | '+' | '%' | '~' | '&'))
 }
 
+/// Reuse an existing buffer key when the only difference is ASCII case
+/// (`nickserv` vs `NickServ`). Channels are folded the same way.
+fn canon_key(map: &BTreeMap<String, Vec<StoreMsg>>, target: &str) -> String {
+    map.keys()
+        .find(|k| k.eq_ignore_ascii_case(target))
+        .cloned()
+        .unwrap_or_else(|| target.to_string())
+}
+
 /// The process-wide tokio runtime that drives every IRC session.
 fn runtime() -> &'static tokio::runtime::Runtime {
     static RT: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
@@ -579,6 +588,13 @@ fn handle_event(mut obj: Pin<&mut qobject::IrcBridge>, event: IrcEvent) {
             is_self,
             is_highlight,
         } => {
+            if text.trim().is_empty() {
+                return;
+            }
+            let target = {
+                let guard = store().lock().unwrap_or_else(|e| e.into_inner());
+                canon_key(&guard, &target)
+            };
             {
                 let mut guard = store().lock().unwrap_or_else(|e| e.into_inner());
                 guard
@@ -870,7 +886,11 @@ impl qobject::IrcBridge {
     /// ACK `echo-message`; with echo-message we wait for the replay so the
     /// line is not shown twice (the NickServ "help" duplication).
     pub fn send_message(self: Pin<&mut Self>, target: QString, text: QString) {
-        let target_s = rs(&target);
+        let mut target_s = rs(&target);
+        {
+            let guard = store().lock().unwrap_or_else(|e| e.into_inner());
+            target_s = canon_key(&guard, &target_s);
+        }
         let text_s = rs(&text);
         if let Some(tx) = self.rust().command_tx.as_ref() {
             let _ = tx.try_send(ClientCommand::Privmsg {

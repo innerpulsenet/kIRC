@@ -93,7 +93,7 @@ Kirigami.Page {
         target: page.bridge
 
         function onMessage_received(target, nick, text, is_self, is_highlight) {
-            if (target === page.currentChannel) {
+            if (page.sameTarget(target, page.currentChannel)) {
                 if (!reloadTimer.running) {
                     reloadTimer.start()
                 }
@@ -101,7 +101,7 @@ Kirigami.Page {
         }
 
         function onHistory_batch_received(target) {
-            if (target === page.currentChannel) {
+            if (page.sameTarget(target, page.currentChannel)) {
                 Qt.callLater(page.scrollToEnd)
             }
         }
@@ -230,7 +230,7 @@ Kirigami.Page {
                         required property string sectionTitle
                         required property bool sectionStart
 
-                        readonly property bool active: bufferDelegate.target === page.currentChannel
+                        readonly property bool active: page.sameTarget(bufferDelegate.target, page.currentChannel)
                         readonly property color tileColor: bufferDelegate.isServer
                             ? ThemeEngine.withAlpha(Kirigami.Theme.textColor, 0.14)
                             : ThemeEngine.nickColor(bufferDelegate.target, page.darkTheme)
@@ -814,10 +814,10 @@ Kirigami.Page {
         if (target === undefined || target === null || target.length === 0) {
             return
         }
-        var switching = target !== page.currentChannel
-        page.currentChannel = target
+        var switching = !page.sameTarget(target, page.currentChannel)
+        page.currentChannel = page.existingTarget(target)
         if (page.hostWindow !== null && page.hostWindow !== undefined) {
-            page.hostWindow.chatChannel = target
+            page.hostWindow.chatChannel = page.currentChannel
         }
         page.joinError = ""
         page.refreshHistory()
@@ -831,21 +831,38 @@ Kirigami.Page {
         }
     }
 
+    function sameTarget(a, b)
+    {
+        return String(a).toLowerCase() === String(b).toLowerCase()
+    }
+
+    function existingTarget(target)
+    {
+        for (var i = 0; i < page.channels.length; ++i) {
+            if (page.sameTarget(page.channels[i], target)) {
+                return page.channels[i]
+            }
+        }
+        return target
+    }
+
     function addBuffer(target)
     {
         if (target === undefined || target === null || target.length === 0) {
             return
         }
-        var list = page.channels.slice()
-        if (list.indexOf(target) === -1) {
-            list.push(target)
-            page.channels = list
+        var have = page.existingTarget(target)
+        if (page.channels.indexOf(have) !== -1) {
+            return
         }
+        var list = page.channels.slice()
+        list.push(target)
+        page.channels = list
     }
 
     function removeBuffer(target)
     {
-        var list = page.channels.filter(function (c) { return c !== target })
+        var list = page.channels.filter(function (c) { return !page.sameTarget(c, target) })
         if (list.length === 0) {
             list = ["*server*"]
         }
