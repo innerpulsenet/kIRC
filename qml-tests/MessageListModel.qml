@@ -3,9 +3,19 @@ import QtQuick
 // TEST DOUBLE for the cxx-qt MessageListModel: a real QAbstractListModel with
 // the exact contract role names.
 //
-// The rows deliberately include two consecutive messages from one nick so the
-// smoke test can check MessageDelegate's grouping (avatar/name shown once), and
-// a highlight + a self line so every role path is exercised.
+// Roles (must match rust/src/bridge.rs): nick, text, timestamp, isSelf,
+// isHighlight, isEvent, showDay, dayLabel.
+//
+// `isEvent`/`showDay`/`dayLabel` are DERIVED roles: the real model computes
+// them once per row when a row is produced (single pass on load_channel, O(1)
+// on append_message comparing against the previous row). This double mirrors
+// that: every row carries a hidden `dayKey` ("YYYY-MM-DD"), isEvent is
+// `nick === "*"`, showDay is "this row's day differs from the previous row's"
+// and dayLabel is Today / Yesterday / "Sep 11".
+//
+// The canned snapshot exercises every role path (plain, self, highlight,
+// event rows) plus two day boundaries, so the smoke test can assert the
+// contract without a live server.
 //
 // It mirrors the two write paths of the real bridge so a harness can tell them
 // apart (and count them):
@@ -29,9 +39,74 @@ ListModel {
     // reload-vs-append comparison; 0 keeps the canned snapshot tst_smoke.qml
     // asserts on.
     property int syntheticRowCount: 0
+    // Distinguishes successive synthetic transcripts so a switch benchmark can
+    // force every delegate's role values to change (a real channel switch
+    // changes all of them). Empty by default so existing tests see the same
+    // row values as before.
+    property string syntheticTag: ""
     // tst_perf.qml turns the per-insert trace off (thousands of lines); the
     // smoke test keeps it on.
     property bool traceAppends: true
+
+    // ---- derived-role mirror (real model: rust/src/bridge.rs) -------------
+
+    function dayKeyOf(dayKey) {
+        return dayKey === undefined || dayKey === null ? "" : String(dayKey)
+    }
+
+    /// Short human label for a "YYYY-MM-DD" key: Today / Yesterday / "Sep 11".
+    function dayLabelFor(dayKey) {
+        if (model.dayKeyOf(dayKey).length === 0) {
+            return ""
+        }
+        var parts = model.dayKeyOf(dayKey).split("-")
+        if (parts.length !== 3) {
+            return ""
+        }
+        var day = new Date(Number(parts[0]), Number(parts[1]) - 1, Number(parts[2]))
+        var today = new Date()
+        today = new Date(today.getFullYear(), today.getMonth(), today.getDate())
+        var diffDays = Math.round((today.getTime() - day.getTime()) / 86400000)
+        if (diffDays === 0) {
+            return "Today"
+        }
+        if (diffDays === 1) {
+            return "Yesterday"
+        }
+        var months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                      "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+        return months[day.getMonth()] + " " + day.getDate()
+    }
+
+    /// Build one row with the derived roles, given the previous row (or null).
+    function row(prev, nick, text, timestamp, isSelf, isHighlight, dayKey) {
+        var key = model.dayKeyOf(dayKey)
+        var prevKey = prev === null || prev === undefined ? "" : model.dayKeyOf(prev.dayKey)
+        var showDay = key.length > 0 && prevKey.length > 0 && key !== prevKey
+        return {
+            "nick": nick, "text": text, "timestamp": timestamp,
+            "isSelf": isSelf, "isHighlight": isHighlight,
+            "isEvent": String(nick) === "*",
+            "showDay": showDay,
+            "dayLabel": key.length > 0 ? model.dayLabelFor(key) : "",
+            "dayKey": key
+        }
+    }
+
+    function todayKey() {
+        var d = new Date()
+        function pad(n) { return (n < 10 ? "0" : "") + n }
+        return d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate())
+    }
+
+    function yesterdayKey() {
+        var d = new Date()
+        d.setDate(d.getDate() - 1)
+        function pad(n) { return (n < 10 ? "0" : "") + n }
+        return d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate())
+    }
+
+    // ---- write paths ------------------------------------------------------
 
     function load_channel(target) {
         console.error("STUB load_channel(" + target + ") rows-before=" + model.count)
@@ -39,20 +114,33 @@ ListModel {
         model.loadedTarget = String(target)
         model.clear()
         if (model.syntheticRowCount > 0) {
+            var tag = model.syntheticTag.length > 0 ? ("-" + model.syntheticTag) : ""
+            var prev = null
             for (var i = 0; i < model.syntheticRowCount; ++i) {
-                model.append({"nick": "flood" + (i % 7), "text": "buffered transcript line " + i,
-                              "timestamp": "09:00", "isSelf": false, "isHighlight": false})
+                var r = model.row(prev, "flood" + (i % 7) + tag, "buffered transcript line " + i,
+                                  "09:00", false, false, model.todayKey())
+                model.append(r)
+                prev = r
             }
             return
         }
-        model.append({"nick": "alice", "text": "hello world https://kde.org and <b>raw html</b>",
-                      "timestamp": "12:00", "isSelf": false, "isHighlight": false})
-        model.append({"nick": "alice", "text": "second line from alice, one minute later",
-                      "timestamp": "12:01", "isSelf": false, "isHighlight": false})
-        model.append({"nick": "kircuser", "text": "my own line",
-                      "timestamp": "12:02", "isSelf": true, "isHighlight": false})
-        model.append({"nick": "bob", "text": "kircuser: please look at this",
-                      "timestamp": "12:03", "isSelf": false, "isHighlight": true})
+        var today = model.todayKey()
+        var yesterday = model.yesterdayKey()
+        var raw = [
+            ["alice", "hello world https://kde.org and <b>raw html</b>", "12:00", false, false, today],
+            ["alice", "second line from alice, one minute later", "12:01", false, false, today],
+            ["kircuser", "my own line", "12:02", true, false, today],
+            ["bob", "kircuser: please look at this", "12:03", false, true, today],
+            ["*", "bob left #kirc", "23:58", false, false, yesterday],
+            ["dave", "morning from the other side", "00:01", false, false, today],
+            ["*", "erin joined #kirc", "00:02", false, false, today]
+        ]
+        var prev = null
+        for (var j = 0; j < raw.length; ++j) {
+            var r = model.row(prev, raw[j][0], raw[j][1], raw[j][2], raw[j][3], raw[j][4], raw[j][5])
+            model.append(r)
+            prev = r
+        }
     }
 
     // Exactly the cxx-qt contract: one row via an insert, no reset, no-op for
@@ -65,12 +153,13 @@ ListModel {
                           + (model.loadedTarget.length > 0 ? model.loadedTarget : "<none>") + ")")
             return
         }
-        var row = model.count
+        var rowIndex = model.count
+        var prev = model.count > 0 ? model.get(model.count - 1) : null
         model.appendMessageCalls += 1
-        model.append({"nick": nick, "text": text, "timestamp": timestamp,
-                      "isSelf": is_self, "isHighlight": is_highlight})
+        model.append(model.row(prev, nick, text, timestamp, is_self, is_highlight,
+                               prev === null ? model.todayKey() : model.dayKeyOf(prev.dayKey)))
         if (model.traceAppends) {
-            console.error("STUB append_message(" + target + ", " + nick + ") -> inserted row " + row)
+            console.error("STUB append_message(" + target + ", " + nick + ") -> inserted row " + rowIndex)
         }
     }
 }

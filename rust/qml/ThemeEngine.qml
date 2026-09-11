@@ -9,9 +9,12 @@
 // Imported everywhere as the `ThemeEngine` singleton (see qmldir):
 //     color: ThemeEngine.nickColor(nick, darkBackground)
 //
-// The default theme ("breeze") is the modern bubble look. Every layout knob
-// the UI reads lives here as a flat, bindable property so switching themes
-// repaints the whole window without any manual signalling.
+// TERMINAL LOOK: every built-in theme is a dense monospace palette
+// (mode "dense" — `mode` can never be "bubble" any more; mergeTheme coerces
+// it). On top of the historical tokens this engine exposes the terminal
+// tokens the dense renderer reads: fontFamily, gutterWidth, nickColumn,
+// ruleColor, fg*, bg*. Every token has a Kirigami-palette fallback so a theme
+// with empty colours still renders coherently with the desktop scheme.
 
 pragma Singleton
 
@@ -29,11 +32,14 @@ QtObject {
 
     readonly property string themeId: theme.id
     readonly property string themeName: theme.name
+    // Always "dense" for anything that went through mergeTheme.
     readonly property string mode: theme.mode
 
     // --- flat, bindable views into `theme` ---------------------------------
     // MessageDelegate / ChatPage bind to these directly so that a theme switch
-    // repaints without any manual signalling.
+    // repaints without any manual signalling. The bubble* tokens stay for
+    // compatibility (a dense theme reports flat values); nothing renders a
+    // bubble any more.
     readonly property real bubbleRadius: theme.bubble.radius
     readonly property real bubbleSpacing: theme.bubble.spacing
     readonly property real bubbleGroupSpacing: theme.bubble.groupSpacing
@@ -68,10 +74,49 @@ QtObject {
     readonly property bool highlightIsBold: theme.colors.highlightIsBold
     readonly property string linkColor: theme.colors.linkColor
 
-    // --- surfaces (Fluent layered look) ------------------------------------
+    // --- terminal tokens (dense IRC look) ----------------------------------
+    // These are the tokens the console layout is built from.  They all have
+    // real defaults in the built-in themes; a theme may leave a colour empty,
+    // which means "use the palette fallback at the call site" (see the *Color
+    // resolvers below).
+
+    /// Monospace family used by every surface.  `fontFamilyOverride` is the
+    /// user's settings choice; "" means "whatever the theme says".
+    property string fontFamilyOverride: ""
+    readonly property string fontFamily: engine.fontFamilyOverride !== ""
+        ? engine.fontFamilyOverride
+        : ((theme.terminal.fontFamily !== "" && theme.terminal.fontFamily !== undefined)
+           ? theme.terminal.fontFamily
+           : "monospace")
+    readonly property bool fontFamilyIsCustom: engine.fontFamilyOverride !== ""
+
+    /// Fixed pixel width of the `[HH:MM]` time gutter.  0 = derive it from the
+    /// font metrics at the call site (see resolveGutterWidth()).
+    readonly property real gutterWidth: theme.terminal.gutterWidth
+
+    /// Characters to pad the nick to in the message log.  0 = no padding.
+    readonly property int nickColumn: theme.terminal.nickColumn
+
+    /// Box-drawing / separator rules.
+    readonly property string ruleColor: theme.terminal.ruleColor
+    /// Main text colour.
+    readonly property string fgPrimary: theme.terminal.fgPrimary
+    /// Timestamps, events, secondary text.
+    readonly property string fgDim: theme.terminal.fgDim
+    /// Highlights, selection marker, prompt.
+    readonly property string fgAccent: theme.terminal.fgAccent
+    /// Errors, join failures, disconnects.
+    readonly property string fgWarn: theme.terminal.fgWarn
+    /// Sidebar / people panel surface.
+    readonly property string bgPanel: theme.terminal.bgPanel
+    /// Message log surface.
+    readonly property string bgLog: theme.terminal.bgLog
+    /// Input bar surface.
+    readonly property string bgInput: theme.terminal.bgInput
+
+    // --- surfaces (kept for the surrounding chrome) ------------------------
     // Colour tokens are strings and may be "" meaning "fall back to the
     // Kirigami palette at the call site" (see the *Color() resolvers below).
-    // Geometry tokens carry the theme character and always have a real value.
     readonly property string surface: theme.surfaces.surface
     readonly property string surfaceAlt: theme.surfaces.surfaceAlt
     readonly property string sidebarSurface: theme.surfaces.sidebarSurface
@@ -104,6 +149,39 @@ QtObject {
     property string configError: ""
     property int fontDelta: 0
 
+    // Curated monospace families for the settings picker.  "monospace" is the
+    // Qt generic and always resolves; the rest are filtered against the fonts
+    // actually installed (Qt.fontFamilies(), best-effort — when that is not
+    // available the curated list is shown unfiltered).  A font stored by the
+    // user that is not in the list is prepended so the current choice is
+    // always visible.
+    function monospaceFamilies()
+    {
+        var preferred = ["monospace", "DejaVu Sans Mono", "Liberation Mono",
+                         "Noto Sans Mono", "Ubuntu Mono", "Fira Code",
+                         "JetBrains Mono", "Hack", "Source Code Pro",
+                         "IBM Plex Mono", "Terminus", "Cascadia Mono",
+                         "Courier New"]
+        var installed = []
+        try {
+            installed = Qt.fontFamilies()
+        } catch (e) {
+            installed = []
+        }
+        var out = []
+        for (var i = 0; i < preferred.length; ++i) {
+            if (preferred[i] === "monospace" || installed.length === 0
+                || installed.indexOf(preferred[i]) >= 0) {
+                out.push(preferred[i])
+            }
+        }
+        var current = engine.fontFamily
+        if (current.length > 0 && out.indexOf(current) < 0) {
+            out.unshift(current)
+        }
+        return out
+    }
+
     // --- theme application -------------------------------------------------
 
     // Accepts either an already-parsed object or raw JSON text. Unknown keys
@@ -129,9 +207,9 @@ QtObject {
         return ""
     }
 
-    // Load one of the compiled-in themes by id (breeze, breeze-classic,
-    // oxygen, neon). Legacy ids are still accepted. Returns "" on success, an
-    // error string otherwise.
+    // Load one of the compiled-in themes by id (tui, phosphor, amber, ice,
+    // breeze). Retired ids are aliased to `tui`, legacy ids still resolve.
+    // Returns "" on success, an error string otherwise.
     function applyBuiltinTheme(id)
     {
         var key = ThemeLib.canonicalId(id)
@@ -167,27 +245,43 @@ QtObject {
         return ThemeLib.canonicalId(id)
     }
 
-    // Preview colours for a theme id — the settings picker's swatches.  Colour
-    // tokens that are empty in the theme ("use the desktop palette") fall back
-    // to the caller's palette values, so palette-driven themes still show a
-    // usable preview.  Unknown ids (C++ may append custom themes) preview with
-    // the fallbacks and an empty mode.
+    // True for ids that used to be built-in bubble/glass themes.  The C++
+    // schema-3 migration rewrites them to `tui`; at runtime they alias to it.
+    function isRetiredThemeId(id)
+    {
+        return ThemeLib.isRetiredId(id)
+    }
+
+    // Preview colours for a theme id — the settings picker's swatch rows.
+    // Colour tokens that are empty in the theme ("use the desktop palette")
+    // fall back to the caller's palette values, so palette-driven themes still
+    // show a usable preview.  Unknown ids preview with the fallbacks.
     function themePreview(id, fallbackAccent, fallbackSurface, fallbackText)
     {
         var key = ThemeLib.canonicalId(id)
         if (!ThemeLib.builtins.hasOwnProperty(key)) {
             return {"accent": fallbackAccent, "surface": fallbackSurface,
-                    "bubble": fallbackSurface, "mode": ""}
+                    "bubble": fallbackSurface, "log": fallbackSurface,
+                    "panel": fallbackSurface, "input": fallbackSurface,
+                    "text": fallbackText, "mode": "dense"}
         }
         var t = ThemeLib.builtins[key]
         var s = t.surfaces
+        var term = t.terminal
         function pick(v, fb) {
             return (typeof v === "string" && v.length > 0) ? v : fb
         }
         return {
             "accent": pick(s.accent, fallbackAccent),
+            // "surface" and "bubble" are kept for older callers; they now
+            // point at the terminal surfaces.
             "surface": pick(s.surface, fallbackSurface),
-            "bubble": pick(t.bubble.selfColor, pick(s.surfaceAlt, fallbackSurface)),
+            "bubble": pick(term.bgInput, pick(s.surfaceAlt, fallbackSurface)),
+            "log": pick(term.bgLog, pick(s.surface, fallbackSurface)),
+            "panel": pick(term.bgPanel, fallbackSurface),
+            "input": pick(term.bgInput, fallbackSurface),
+            "text": pick(term.fgPrimary, fallbackText),
+            "dim": pick(term.fgDim, fallbackText),
             "mode": t.mode
         }
     }
@@ -270,14 +364,20 @@ QtObject {
                Math.round(p.sat * 100) + "%, " + Math.round(p.light * 100) + "%, 1)"
     }
 
-    // First letter drawn inside an avatar circle.
+    // First letter of a nick (kept for the channel tiles / person panel).
     function initial(nick)
     {
         return ThemeLib.nickInitial(nick)
     }
 
-    // Black or white — whichever stays readable on `background`. Used for the
-    // text inside nick-coloured avatars and glyph tiles.
+    // Pad a nick to the theme's nick column with spaces.  A longer nick is
+    // returned unchanged (never truncate a nick).
+    function paddedNick(nick)
+    {
+        return ThemeLib.padNick(nick, engine.nickColumn)
+    }
+
+    // Black or white — whichever stays readable on `background`.
     function contrastingTextColor(background)
     {
         return isDark(background) ? "#ffffff" : "#1b1e20"
@@ -301,8 +401,8 @@ QtObject {
         return Math.max(6, base + engine.fontDelta)
     }
 
-    // Avatar diameter in pixels: the theme can pin it, otherwise it scales
-    // with the grid.
+    // Avatar diameter in pixels (kept for callers that still ask; dense themes
+    // report avatarEnabled = false so nothing draws one).
     function avatarSizeFor(gridUnit)
     {
         return engine.avatarSize > 0 ? engine.avatarSize : Math.round(gridUnit * 1.9)
@@ -342,8 +442,8 @@ QtObject {
         return "#" + hex(c.r) + hex(c.g) + hex(c.b)
     }
 
-    // Colours used for the two bubble flavours; empty theme colours fall back
-    // to Kirigami's palette so the theme stays coherent with the desktop.
+    // Message colours for the two flavours (kept for compatibility; dense
+    // themes leave both empty so the caller's palette value is used).
     function selfBubbleColor(fallback)
     {
         return engine.selfColor !== "" ? engine.selfColor : fallback
@@ -359,10 +459,63 @@ QtObject {
         return engine.linkColor !== "" ? engine.linkColor : fallback
     }
 
+    // --- terminal resolvers -------------------------------------------------
+    // Every terminal colour token may be "" (theme says "use the desktop
+    // palette"). The pages and the delegate pass their Kirigami fallback in;
+    // a fixed palette theme (tui/phosphor/amber/ice) wins when set.
+
+    function ruleColorValue(fallback)
+    {
+        return engine.ruleColor !== "" ? engine.ruleColor : fallback
+    }
+
+    function fgPrimaryColor(fallback)
+    {
+        return engine.fgPrimary !== "" ? engine.fgPrimary : fallback
+    }
+
+    function fgDimColor(fallback)
+    {
+        return engine.fgDim !== "" ? engine.fgDim : fallback
+    }
+
+    function fgAccentColor(fallback)
+    {
+        return engine.fgAccent !== "" ? engine.fgAccent : fallback
+    }
+
+    function fgWarnColor(fallback)
+    {
+        return engine.fgWarn !== "" ? engine.fgWarn : fallback
+    }
+
+    function bgPanelColor(fallback)
+    {
+        return engine.bgPanel !== "" ? engine.bgPanel : fallback
+    }
+
+    function bgLogColor(fallback)
+    {
+        return engine.bgLog !== "" ? engine.bgLog : fallback
+    }
+
+    function bgInputColor(fallback)
+    {
+        return engine.bgInput !== "" ? engine.bgInput : fallback
+    }
+
+    // Pixel width of the time gutter: the theme's fixed width when set,
+    // otherwise the caller's font-derived fallback (e.g. measured advance
+    // width of "[00:00]").
+    function resolveGutterWidth(fallback)
+    {
+        return engine.gutterWidth > 0 ? engine.gutterWidth : fallback
+    }
+
     // --- surface resolvers --------------------------------------------------
     // Every colour token above may be "" (theme says "use the desktop
     // palette"). The delegate/pages pass their Kirigami fallback in; a fixed
-    // theme colour (neon) wins when set. Geometry tokens need no resolver.
+    // theme colour wins when set. Geometry tokens need no resolver.
     function surfaceColor(fallback)
     {
         return engine.surface !== "" ? engine.surface : fallback
@@ -478,14 +631,15 @@ QtObject {
     }
 
     // True when the clock runs backwards between the two preformatted "HH:MM"
-    // stamps (day rollover). Drives the centred day-separator pill.
+    // stamps (day rollover).
     function dayBoundary(prevTs, ts)
     {
         return ThemeLib.dayBoundaryMinutes(prevTs, ts)
     }
 
     // Do `row` and `prev` (objects with nick/timestamp/isSelf) belong to the
-    // same visual group? Honours the active theme's grouping window.
+    // same visual run? Kept for the harnesses; dense rendering shows every
+    // message on its own line.
     function grouped(prev, row)
     {
         if (!engine.groupingEnabled) {

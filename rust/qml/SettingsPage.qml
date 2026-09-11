@@ -1,9 +1,28 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 //
-// SettingsPage — modern settings pane: sectioned cards, live search filter,
-// every control persisted through KircConfig.  Passwords are never written
-// to kirc.conf: the NickServ password goes to KWallet (see cpp/kircconfig.h),
-// the SASL password stays session-only and is not editable here.
+// SettingsPage — two-pane terminal-style settings surface.
+//
+//   ┌ kirc settings ─────────────────────────────┐  search box
+//   ├ ▌ identity      │ ── Nickname ──────────── │
+//   │   connection    │  [ yournick          ]  │
+//   │   appearance    │ ── NickServ account ─── │
+//   │   notifications │  [ account           ]  │
+//   │   about         │                          │
+//
+// Left: a compact monospace navigation list (Identity / Connection /
+// Appearance / Notifications / About); the active row is inverse video.
+// Right: the selected section's rows, flat labelled rows separated by
+// box-drawing rules. No rounded cards, no oversized controls, everything
+// left-aligned in one label column so labels and controls line up.
+//
+// Behaviour is unchanged from the previous rebuild:
+//   * live search filters rows across sections (sections with matches are
+//     marked in the navigation, sections without are dimmed, and the pane
+//     follows the first section that matches),
+//   * every control persists through KircConfig (cpp/kircconfig.h),
+//   * a password is never written to kirc.conf: the NickServ password goes to
+//     KWallet via KircConfig.nickservPassword, the SASL password is session
+//     only and is not editable here.
 
 import QtQuick
 import QtQuick.Controls as Controls
@@ -12,12 +31,12 @@ import QtQuick.Layouts
 import org.kde.kirigami as Kirigami
 import org.kde.kirc
 
-// Delegates (autojoin list, theme picker) reference the page's functions and
-// properties; bound component behaviour resolves those statically instead of
-// through the dynamic context, and keeps qmllint clean.
+// Delegates (navigation rows, theme rows, autojoin rows) reference the page's
+// functions and properties; bound component behaviour resolves those
+// statically instead of through the dynamic context, and keeps qmllint clean.
 pragma ComponentBehavior: Bound
 
-Kirigami.ScrollablePage {
+Kirigami.Page {
     id: page
 
     property var kircConfig: null
@@ -25,42 +44,389 @@ Kirigami.ScrollablePage {
     readonly property bool isKircSettingsPage: true
 
     title: qsTr("Settings")
+    // The terminal surface owns its own margins: no page padding, no cards.
+    padding: 0
 
-    // Search text; each card/row binds its visibility to it.
-    property string filter: ""
-
-    // About anchors at the bottom; showAbout() scrolls there.
-    property var aboutCard: null
-
-    // A small round colour dot for the theme picker's preview strip.  An
-    // inline component keeps the three dots identical without a Repeater
-    // (see the contentItem note in the Appearance card).
-    component ThemeSwatch: Rectangle {
-        width: Math.round(Kirigami.Units.gridUnit * 0.75)
-        height: width
-        radius: width / 2
-        border.width: 1
-        border.color: ThemeEngine.withAlpha(Kirigami.Theme.textColor, 0.35)
+    // Page surface: the theme's log colour (empty token = the desktop
+    // background, so `breeze` still follows the user's scheme).
+    background: Rectangle {
+        color: page.bgLogC()
     }
 
-    function sectionVisible(matches)
+    // ---------------------------------------------------------------------- //
+    // Navigation + search state
+    // ---------------------------------------------------------------------- //
+    // 0 = identity, 1 = connection, 2 = appearance, 3 = notifications, 4 = about
+    property int sectionIndex: 0
+
+    // Live search text; each row binds its visibility to it.
+    property string filter: ""
+
+    // Compatibility shim: main.qml's openAbout() used to scroll to a card.
+    // In the two-pane layout "About" is simply the selected section.
+    property var aboutCard: null
+
+    readonly property var sectionIds: ["identity", "connection", "appearance", "notifications", "about"]
+
+    // Search keywords per section, and the row labels each section contains
+    // (used by the live filter).
+    readonly property var sectionKeywords: [
+        ["identity", "nickname", "nickserv", "account", "password", "sasl", "mechanism", "user", "plain", "external", "auto"],
+        ["connection", "autojoin", "channel", "reconnect", "retry", "authentication", "identify"],
+        ["appearance", "theme", "font", "size", "timestamps", "colour", "color", "palette"],
+        ["notifications", "notification", "highlight", "direct message", "tray", "minimize"],
+        ["about", "version", "kirc", "license", "kde", "passwords"]
+    ]
+    readonly property var sectionRowLabels: [
+        ["Nickname", "NickServ account", "NickServ password", "SASL user", "SASL mechanism"],
+        ["Identify", "Autojoin", "Reconnect", "Retry limit", "Auth failures"],
+        ["Theme", "Font family", "Font size", "Timestamps"],
+        ["Highlights", "Direct messages", "System tray"],
+        ["Version", "Passwords"]
+    ]
+
+    function sectionName(i)
+    {
+        switch (i) {
+        case 0: return qsTr("Identity")
+        case 1: return qsTr("Connection")
+        case 2: return qsTr("Appearance")
+        case 3: return qsTr("Notifications")
+        case 4: return qsTr("About")
+        }
+        return ""
+    }
+
+    function matches(haystack, needle)
+    {
+        return haystack.toLowerCase().indexOf(needle) >= 0
+    }
+
+    /// Number of rows in section `i` that match the live filter.
+    function sectionMatchCount(i)
+    {
+        if (page.filter.length === 0) {
+            return page.sectionRowLabels[i].length
+        }
+        var rows = page.sectionRowLabels[i]
+        var n = 0
+        for (var r = 0; r < rows.length; ++r) {
+            if (page.matches(rows[r], page.filter)) {
+                ++n
+            }
+        }
+        return n
+    }
+
+    /// True when the section has a match (or no filter is active).
+    function sectionMatches(i)
     {
         if (page.filter.length === 0) {
             return true
         }
-        for (var i = 0; i < matches.length; ++i) {
-            if (matches[i].toLowerCase().indexOf(page.filter.toLowerCase()) >= 0) {
+        if (page.sectionMatchCount(i) > 0) {
+            return true
+        }
+        var words = page.sectionKeywords[i]
+        for (var k = 0; k < words.length; ++k) {
+            if (page.matches(words[k], page.filter)) {
                 return true
             }
         }
         return false
     }
 
+    function anyMatch()
+    {
+        for (var i = 0; i < page.sectionIds.length; ++i) {
+            if (page.sectionMatches(i)) {
+                return true
+            }
+        }
+        return false
+    }
+
+    /// A single row is visible when it matches the filter.
     function rowVisible(label)
     {
-        return page.filter.length === 0
-            || label.toLowerCase().indexOf(page.filter.toLowerCase()) >= 0
+        return page.filter.length === 0 || page.matches(label, page.filter)
     }
+
+    /// Filtering rows across sections: apply the text, and keep the pane on a
+    /// section that actually has matches.
+    function setFilter(text)
+    {
+        page.filter = String(text === undefined || text === null ? "" : text).trim()
+        if (page.filter.length === 0) {
+            return
+        }
+        if (page.sectionIndex < page.sectionIds.length && page.sectionMatches(page.sectionIndex)) {
+            return
+        }
+        for (var i = 0; i < page.sectionIds.length; ++i) {
+            if (page.sectionMatches(i)) {
+                page.sectionIndex = i
+                return
+            }
+        }
+    }
+
+    function selectSection(i)
+    {
+        if (i >= 0 && i < page.sectionIds.length) {
+            page.sectionIndex = i
+        }
+    }
+
+    // main.qml (openAbout) selects the About section.
+    function showAbout()
+    {
+        page.selectSection(4)
+    }
+
+    // ---------------------------------------------------------------------- //
+    // Type scale + terminal colours (theme tokens with Kirigami fallbacks)
+    // ---------------------------------------------------------------------- //
+    readonly property string mono: ThemeEngine.fontFamily
+    readonly property int pt: Math.max(7, Kirigami.Theme.defaultFont.pointSize)
+    readonly property int ptSmall: Math.max(7, page.pt - 1)
+    readonly property int labelCol: Math.round(Kirigami.Units.gridUnit * 8)
+    readonly property int rowPad: 8
+
+    function fgMain() { return ThemeEngine.fgPrimaryColor(Kirigami.Theme.textColor) }
+    function fgDim() { return ThemeEngine.fgDimColor(Kirigami.Theme.disabledTextColor) }
+    function fgAccent() { return ThemeEngine.fgAccentColor(Kirigami.Theme.highlightColor) }
+    function fgWarn() { return ThemeEngine.fgWarnColor(Kirigami.Theme.negativeTextColor) }
+    function bgLogC() { return ThemeEngine.bgLogColor(Kirigami.Theme.backgroundColor) }
+    function bgPanelC() { return ThemeEngine.bgPanelColor(Kirigami.Theme.alternateBackgroundColor) }
+    function bgInputC() { return ThemeEngine.bgInputColor(Kirigami.Theme.alternateBackgroundColor) }
+    function ruleC() { return ThemeEngine.ruleColorValue(ThemeEngine.withAlpha(Kirigami.Theme.textColor, 0.20)) }
+    function accentTextC() { return ThemeEngine.accentTextColor(Kirigami.Theme.highlightedTextColor) }
+    function hoverC() { return ThemeEngine.rowHoverColor(ThemeEngine.withAlpha(Kirigami.Theme.textColor, 0.07)) }
+    function selC() { return ThemeEngine.rowSelectedColor(ThemeEngine.withAlpha(Kirigami.Theme.highlightColor, 0.20)) }
+
+    /// "── Identity " + a one-pixel rule that fills the rest of the row.
+    component SectionHeader: RowLayout {
+        id: sectionHeader
+
+        property string title: ""
+
+        Layout.fillWidth: true
+        Layout.leftMargin: 10
+        Layout.rightMargin: 10
+        Layout.topMargin: 10
+        Layout.bottomMargin: 6
+        spacing: 0
+
+        Text {
+            text: "── " + sectionHeader.title + " "
+            color: page.fgAccent()
+            font.family: page.mono
+            font.pointSize: page.ptSmall
+        }
+
+        Rectangle {
+            Layout.fillWidth: true
+            Layout.alignment: Qt.AlignVCenter
+            implicitHeight: 1
+            color: page.ruleC()
+        }
+    }
+
+    // ---------------------------------------------------------------------- //
+    // Inline components — flat, monospace, square. (A nested Repeater inside a
+    // control's custom contentItem SIGSEGVs Qt 6.11; these components keep the
+    // contentItems plain.)
+    // ---------------------------------------------------------------------- //
+
+    /// Flat labelled row: the label sits in a fixed monospace column so every
+    /// control in the pane starts at the same x.
+    component TermRow: RowLayout {
+        id: termRow
+
+        property string label: ""
+
+        Layout.fillWidth: true
+        Layout.topMargin: 5
+        Layout.bottomMargin: 5
+        spacing: 8
+
+        Text {
+            Layout.preferredWidth: page.labelCol
+            Layout.alignment: Qt.AlignVCenter
+            text: termRow.label
+            color: page.fgDim()
+            font.family: page.mono
+            font.pointSize: page.ptSmall
+            elide: Text.ElideRight
+        }
+    }
+
+    /// One-pixel box-drawing rule between rows.
+    component TermRule: Rectangle {
+        Layout.fillWidth: true
+        implicitHeight: 1
+        color: page.ruleC()
+    }
+
+    /// Flat square text field on the input surface.
+    component TermField: Controls.TextField {
+        id: termField
+
+        Layout.fillWidth: true
+        font.family: page.mono
+        font.pointSize: page.ptSmall
+        color: page.fgMain()
+        placeholderTextColor: page.fgDim()
+        selectionColor: page.fgAccent()
+        selectedTextColor: page.bgLogC()
+        leftPadding: 6
+        rightPadding: 6
+
+        background: Rectangle {
+            implicitWidth: 100
+            implicitHeight: Math.round(Kirigami.Units.gridUnit * 1.6)
+            radius: 0
+            color: page.bgInputC()
+            border.width: 1
+            border.color: termField.activeFocus ? page.fgAccent() : page.ruleC()
+        }
+    }
+
+    /// Terminal checkbox: [x] / [ ] drawn in monospace.
+    component TermToggle: Controls.CheckBox {
+        id: termToggle
+
+        Layout.fillWidth: true
+        font.family: page.mono
+        font.pointSize: page.ptSmall
+        spacing: 8
+        rightPadding: 0
+
+        indicator: Text {
+            x: termToggle.leftPadding
+            y: termToggle.topPadding + (termToggle.availableHeight - height) / 2
+            text: termToggle.checked ? "[x]" : "[ ]"
+            color: termToggle.checked ? page.fgAccent() : page.fgDim()
+            font.family: page.mono
+            font.pointSize: page.ptSmall
+        }
+
+        contentItem: Text {
+            leftPadding: termToggle.leftPadding + termToggle.indicator.width + termToggle.spacing
+            text: termToggle.text
+            color: termToggle.enabled ? page.fgMain() : page.fgDim()
+            font.family: page.mono
+            font.pointSize: page.ptSmall
+            verticalAlignment: Text.AlignVCenter
+            elide: Text.ElideRight
+        }
+    }
+
+    /// Flat square button ("[add]", "[show]"…).
+    component TermButton: Controls.Button {
+        id: termButton
+
+        property string prompt: ""
+
+        font.family: page.mono
+        font.pointSize: page.ptSmall
+        implicitHeight: Math.round(Kirigami.Units.gridUnit * 1.6)
+        implicitWidth: contentItem.implicitWidth + 16
+        text: termButton.prompt
+
+        background: Rectangle {
+            radius: 0
+            color: termButton.down ? page.selC() : (termButton.hovered ? page.hoverC() : page.bgInputC())
+            border.width: 1
+            border.color: termButton.enabled ? page.ruleC() : page.bgInputC()
+        }
+
+        contentItem: Text {
+            text: termButton.text
+            color: termButton.enabled ? page.fgMain() : page.fgDim()
+            font.family: page.mono
+            font.pointSize: page.ptSmall
+            horizontalAlignment: Text.AlignHCenter
+            verticalAlignment: Text.AlignVCenter
+        }
+    }
+
+    /// Flat square combo box.  The text and the arrow are drawn inside the flat
+    /// background on purpose: the desktop style draws a non-editable combo's
+    /// text in its StyleItem background, and its contentItem (an invisible
+    /// TextField) is what the style's mobile-cursor binding targets — replacing
+    /// either used to log a TypeError and hide the selected text.
+    component TermCombo: Controls.ComboBox {
+        id: termCombo
+
+        font.family: page.mono
+        font.pointSize: page.ptSmall
+        implicitWidth: Math.round(Kirigami.Units.gridUnit * 11)
+
+        background: Rectangle {
+            implicitWidth: 80
+            implicitHeight: Math.round(Kirigami.Units.gridUnit * 1.6)
+            radius: 0
+            color: page.bgInputC()
+            border.width: 1
+            border.color: (termCombo.activeFocus || termCombo.popup.visible) ? page.fgAccent() : page.ruleC()
+
+            Text {
+                anchors.left: parent.left
+                anchors.leftMargin: 6
+                anchors.right: comboArrow.left
+                anchors.rightMargin: 4
+                anchors.verticalCenter: parent.verticalCenter
+                text: termCombo.displayText
+                color: page.fgMain()
+                font.family: page.mono
+                font.pointSize: page.ptSmall
+                elide: Text.ElideRight
+            }
+
+            Text {
+                id: comboArrow
+                anchors.right: parent.right
+                anchors.rightMargin: 6
+                anchors.verticalCenter: parent.verticalCenter
+                text: "▾"
+                color: page.fgDim()
+                font.family: page.mono
+                font.pointSize: page.ptSmall
+            }
+        }
+
+        delegate: Controls.ItemDelegate {
+            id: termComboItem
+
+            required property var modelData
+            required property int index
+
+            width: termCombo.width
+            highlighted: termCombo.highlightedIndex === termComboItem.index
+
+            contentItem: Text {
+                leftPadding: 6
+                text: (termComboItem.modelData === undefined || termComboItem.modelData === null)
+                      ? "" : String(termComboItem.modelData)
+                color: page.fgMain()
+                font.family: page.mono
+                font.pointSize: page.ptSmall
+                verticalAlignment: Text.AlignVCenter
+                elide: Text.ElideRight
+            }
+
+            background: Rectangle {
+                radius: 0
+                color: termComboItem.highlighted ? page.selC() : page.bgInputC()
+            }
+        }
+    }
+
+    // ---------------------------------------------------------------------- //
+    // Configuration plumbing (unchanged contract)
+    // ---------------------------------------------------------------------- //
 
     function cfg()
     {
@@ -81,6 +447,9 @@ Kirigami.ScrollablePage {
         }
         c.themeId = ThemeEngine.themeId
         c.fontDelta = ThemeEngine.fontDelta
+        if (page.hasPref("fontFamily")) {
+            c.fontFamily = ThemeEngine.fontFamilyOverride
+        }
         c.autojoin = autojoinModel.join(", ")
         c.reconnect = reconnectSwitch.checked
         c.minimizeToTray = traySwitch.checked
@@ -106,9 +475,8 @@ Kirigami.ScrollablePage {
     }
 
     /// Apply a built-in theme and persist the pick.  ThemeEngine is a
-    /// singleton every surface binds to, so the switch is live; the picker's
-    /// selection markers and the density radios follow automatically.  An
-    /// unknown id leaves the active theme untouched (never persist a dead id).
+    /// singleton every surface binds to, so the switch is live.  An unknown id
+    /// leaves the active theme untouched (never persist a dead id).
     function selectTheme(id)
     {
         if (ThemeEngine.applyBuiltinTheme(id) !== "") {
@@ -161,70 +529,16 @@ Kirigami.ScrollablePage {
         return out
     }
 
-    function showAbout()
-    {
-        if (page.aboutCard !== null && page.aboutCard !== undefined) {
-            // ScrollablePage content is a flickable: center the About card.
-            var y = page.aboutCard.y
-            if (page.flickable !== undefined && page.flickable !== null) {
-                page.flickable.contentY = Math.max(0, y - Kirigami.Units.largeSpacing)
-            }
-        }
-    }
-
-    // --- card surface (theme tokens with Kirigami fallbacks) ---------------
-    // ThemeEngine gains cardBackground/cardBorder/cardRadius/cardPadding with
-    // the Fluent pass; until then (or for themes without them) fall back to
-    // Kirigami palette values so this page never renders unstyled.
-    function cardColor()
-    {
-        try {
-            var v = ThemeEngine["cardBackground"]
-            if (v !== undefined && String(v).length > 0) {
-                return v
-            }
-        } catch (e) {
-        }
-        return Kirigami.Theme.alternateBackgroundColor
-    }
-
-    function cardBorderColor()
-    {
-        try {
-            var v = ThemeEngine["cardBorder"]
-            if (v !== undefined && String(v).length > 0) {
-                return v
-            }
-        } catch (e) {
-        }
-        return ThemeEngine.withAlpha(Kirigami.Theme.textColor, 0.12)
-    }
-
-    function cardRadius()
-    {
-        try {
-            var v = ThemeEngine["cardRadius"]
-            if (v !== undefined && v > 0) {
-                return v
-            }
-        } catch (e) {
-        }
-        return Kirigami.Units.cornerRadius + 6
-    }
-
-    function cardPad()
-    {
-        try {
-            var v = ThemeEngine["cardPadding"]
-            if (v !== undefined && v > 0) {
-                return v
-            }
-        } catch (e) {
-        }
-        return Kirigami.Units.largeSpacing
-    }
+    // --- font family list (monospace) --------------------------------------
+    readonly property var fontFamilies: ThemeEngine.monospaceFamilies()
 
     Component.onCompleted: {
+        // Restore the persisted font family (cpp/main.cpp also applies it at
+        // startup; this covers harnesses and keeps the page self-consistent).
+        if (page.hasPref("fontFamily") && page.cfg().fontFamily !== undefined) {
+            ThemeEngine.fontFamilyOverride = page.cfg().fontFamily
+        }
+
         var c = page.cfg()
         if (c !== null && c !== undefined) {
             page.autojoinModel = page.parseAutojoin(c.autojoin)
@@ -256,705 +570,868 @@ Kirigami.ScrollablePage {
         }
     }
 
+    // ---------------------------------------------------------------------- //
+    // Layout
+    // ---------------------------------------------------------------------- //
     ColumnLayout {
-        width: Math.min(parent.width, Kirigami.Units.gridUnit * 34)
-        anchors.horizontalCenter: parent.horizontalCenter
-        spacing: Kirigami.Units.largeSpacing
+        anchors.fill: parent
+        spacing: 0
 
-        // ---------------- search ---------------- //
+        // ---------------- title bar + live search ----------------
         RowLayout {
             Layout.fillWidth: true
-            spacing: Kirigami.Units.smallSpacing
+            Layout.leftMargin: 10
+            Layout.rightMargin: 10
+            Layout.topMargin: 8
+            Layout.bottomMargin: 6
+            spacing: 8
 
-            Kirigami.SearchField {
-                id: searchField
+            Text {
+                text: "kirc"
+                color: page.fgAccent()
+                font.family: page.mono
+                font.pointSize: page.pt
+                font.bold: true
+            }
+
+            Text {
+                text: qsTr("settings")
+                color: page.fgDim()
+                font.family: page.mono
+                font.pointSize: page.pt
+            }
+
+            Rectangle {
                 Layout.fillWidth: true
-                placeholderText: qsTr("Search settings")
-                onTextChanged: page.filter = text.trim()
+                Layout.leftMargin: 4
+                Layout.alignment: Qt.AlignVCenter
+                implicitHeight: 1
+                color: page.ruleC()
             }
 
-            Controls.ToolButton {
-                visible: page.filter.length > 0
-                icon.name: "edit-clear"
-                text: qsTr("Clear search")
-                display: Controls.AbstractButton.IconOnly
-                onClicked: searchField.text = ""
+            Controls.TextField {
+                id: searchField
+                Layout.preferredWidth: Math.max(Math.round(Kirigami.Units.gridUnit * 9),
+                                                Math.min(page.width * 0.3, Math.round(Kirigami.Units.gridUnit * 16)))
+                placeholderText: qsTr("search")
+                font.family: page.mono
+                font.pointSize: page.ptSmall
+                color: page.fgMain()
+                placeholderTextColor: page.fgDim()
+                selectionColor: page.fgAccent()
+                selectedTextColor: page.bgLogC()
+                leftPadding: 6
+                rightPadding: 6
+                onTextChanged: page.setFilter(text)
 
-                Controls.ToolTip.visible: hovered
-                Controls.ToolTip.text: qsTr("Clear search")
+                background: Rectangle {
+                    implicitHeight: Math.round(Kirigami.Units.gridUnit * 1.6)
+                    radius: 0
+                    color: page.bgInputC()
+                    border.width: 1
+                    border.color: searchField.activeFocus ? page.fgAccent() : page.ruleC()
+                }
             }
         }
 
-        Kirigami.InlineMessage {
-            Layout.fillWidth: true
-            visible: page.filter.length > 0 && !identityCard.visible && !connectionCard.visible
-                     && !appearanceCard.visible && !notifyCard.visible && !aboutCardItem.visible
-            type: Kirigami.MessageType.Information
-            text: qsTr("No settings match “%1”.").arg(page.filter)
-        }
+        TermRule {}
 
-        // ---------------- Identity ---------------- //
-        Rectangle {
-            id: identityCard
+        // ---------------- the two panes ----------------
+        RowLayout {
             Layout.fillWidth: true
-            visible: page.sectionVisible(["identity", "nickname", "nickserv", "account",
-                                          "password", "sasl", "mechanism", "plain", "external", "auto"])
-            implicitHeight: identityLayout.implicitHeight + page.cardPad() * 2
-            radius: page.cardRadius()
-            color: page.cardColor()
-            border.width: 1
-            border.color: page.cardBorderColor()
+            Layout.fillHeight: true
+            spacing: 0
 
+            // ---- left: flat monospace navigation ----
             ColumnLayout {
-                id: identityLayout
-                anchors.left: parent.left
-                anchors.right: parent.right
-                anchors.top: parent.top
-                anchors.margins: page.cardPad()
-                spacing: Kirigami.Units.smallSpacing
-
-                Controls.Label {
-                    text: qsTr("Identity")
-                    font.bold: true
-                    font.pointSize: Kirigami.Theme.defaultFont.pointSize + 1
-                }
-
-                Kirigami.FormLayout {
-                    Layout.fillWidth: true
-
-                    Controls.TextField {
-                        id: nickField
-                        Kirigami.FormData.label: qsTr("Nickname:")
-                        visible: page.rowVisible(qsTr("Nickname"))
-                        placeholderText: qsTr("yournick")
-                        onEditingFinished: page.persist()
-                    }
-
-                    Controls.TextField {
-                        id: nickservNickField
-                        Kirigami.FormData.label: qsTr("NickServ account:")
-                        visible: page.rowVisible(qsTr("NickServ account"))
-                        placeholderText: qsTr("Registered account (not your current nick)")
-                        onEditingFinished: page.persist()
-                    }
-
-                    RowLayout {
-                        Kirigami.FormData.label: qsTr("NickServ password:")
-                        visible: page.rowVisible(qsTr("NickServ password"))
-
-                        Controls.TextField {
-                            id: nickservPassField
-                            Layout.fillWidth: true
-                            echoMode: showNickservPass.checked ? TextInput.Normal : TextInput.Password
-                            placeholderText: qsTr("Stored in KWallet, never in kirc.conf")
-                            onEditingFinished: page.persist()
-                        }
-
-                        Controls.ToolButton {
-                            id: showNickservPass
-                            checkable: true
-                            icon.name: checked ? "password-show-off" : "password-show-on"
-                            text: qsTr("Show")
-
-                            Controls.ToolTip.visible: hovered
-                            Controls.ToolTip.text: checked ? qsTr("Hide password") : qsTr("Show password")
-                        }
-                    }
-
-                    Controls.Label {
-                        visible: page.rowVisible(qsTr("NickServ password"))
-                        Layout.fillWidth: true
-                        text: qsTr("Stored in KWallet, never in kirc.conf.")
-                        color: Kirigami.Theme.disabledTextColor
-                        font.pointSize: Math.max(1, Kirigami.Theme.defaultFont.pointSize - 1)
-                        wrapMode: Text.WordWrap
-                    }
-
-                    Controls.TextField {
-                        id: saslUserField
-                        Kirigami.FormData.label: qsTr("SASL user:")
-                        visible: page.rowVisible(qsTr("SASL user"))
-                        placeholderText: qsTr("SASL account name")
-                        onEditingFinished: {
-                            var win = applicationWindow()
-                            if (win && win.appConfig) {
-                                win.appConfig.saslUser = text
-                                win.appConfig.save()
-                            }
-                        }
-                    }
-
-                    Controls.ComboBox {
-                        id: saslMechBox
-                        Kirigami.FormData.label: qsTr("SASL mechanism:")
-                        visible: page.rowVisible(qsTr("SASL mechanism"))
-                        model: [qsTr("Auto"), qsTr("PLAIN"), qsTr("EXTERNAL")]
-                        onActivated: {
-                            page.persist()
-                            var win = applicationWindow()
-                            if (win && win.saslMechanism !== undefined) {
-                                win.saslMechanism = page.saslMechanismId(currentIndex)
-                            }
-                        }
-
-                        Controls.ToolTip.visible: hovered
-                        Controls.ToolTip.text: qsTr("Auto negotiates SCRAM-SHA-256 when advertised, else PLAIN")
-                    }
-                }
-            }
-        }
-
-        // ---------------- Connection ---------------- //
-        Rectangle {
-            id: connectionCard
-            Layout.fillWidth: true
-            visible: page.sectionVisible(["connection", "autojoin", "channel", "reconnect",
-                                          "retry", "authentication", "identify"])
-            implicitHeight: connectionLayout.implicitHeight + page.cardPad() * 2
-            radius: page.cardRadius()
-            color: page.cardColor()
-            border.width: 1
-            border.color: page.cardBorderColor()
-
-            ColumnLayout {
-                id: connectionLayout
-                anchors.left: parent.left
-                anchors.right: parent.right
-                anchors.top: parent.top
-                anchors.margins: page.cardPad()
-                spacing: Kirigami.Units.smallSpacing
-
-                Controls.Label {
-                    text: qsTr("Connection")
-                    font.bold: true
-                    font.pointSize: Kirigami.Theme.defaultFont.pointSize + 1
-                }
-
-                Kirigami.FormLayout {
-                    Layout.fillWidth: true
-
-                    Controls.Switch {
-                        id: identifySwitch
-                        Kirigami.FormData.label: qsTr("Identify:")
-                        visible: page.rowVisible(qsTr("Identify"))
-                        text: qsTr("Identify on connect, then autojoin")
-                        onToggled: page.persist()
-
-                        Controls.ToolTip.visible: hovered
-                        Controls.ToolTip.text: qsTr("Send NickServ IDENTIFY before joining channels")
-                    }
-
-                    // Autojoin as an add/remove list, persisted back to the
-                    // comma-separated appConfig.autojoin string.
-                    ColumnLayout {
-                        Kirigami.FormData.label: qsTr("Autojoin:")
-                        visible: page.rowVisible(qsTr("Autojoin"))
-                        Layout.fillWidth: true
-                        spacing: Kirigami.Units.smallSpacing
-
-                        Repeater {
-                            model: page.autojoinModel
-                            delegate: RowLayout {
-                                required property string modelData
-                                required property int index
-                                Layout.fillWidth: true
-                                spacing: Kirigami.Units.smallSpacing
-
-                                Kirigami.Icon {
-                                    source: "im-chat"
-                                    implicitWidth: Kirigami.Units.iconSizes.smallMedium
-                                    implicitHeight: Kirigami.Units.iconSizes.smallMedium
-                                    Layout.alignment: Qt.AlignVCenter
-                                }
-
-                                Controls.Label {
-                                    Layout.fillWidth: true
-                                    text: modelData
-                                    elide: Text.ElideRight
-                                    Layout.alignment: Qt.AlignVCenter
-                                }
-
-                                Controls.ToolButton {
-                                    icon.name: "list-remove"
-                                    text: qsTr("Remove %1").arg(modelData)
-                                    display: Controls.AbstractButton.IconOnly
-                                    Layout.alignment: Qt.AlignVCenter
-                                    onClicked: {
-                                        var out = page.autojoinModel.slice()
-                                        out.splice(index, 1)
-                                        page.autojoinModel = out
-                                        page.persist()
-                                    }
-
-                                    Controls.ToolTip.visible: hovered
-                                    Controls.ToolTip.text: qsTr("Remove %1").arg(modelData)
-                                }
-                            }
-                        }
-
-                        RowLayout {
-                            Layout.fillWidth: true
-                            spacing: Kirigami.Units.smallSpacing
-
-                            Controls.TextField {
-                                id: autojoinAddField
-                                Layout.fillWidth: true
-                                placeholderText: qsTr("#channel")
-                                onAccepted: autojoinAddButton.clicked()
-                            }
-
-                            Controls.ToolButton {
-                                id: autojoinAddButton
-                                icon.name: "list-add"
-                                text: qsTr("Add channel")
-                                display: Controls.AbstractButton.IconOnly
-                                enabled: autojoinAddField.text.trim().length > 0
-                                onClicked: {
-                                    var ch = autojoinAddField.text.trim()
-                                    if (ch.length === 0) {
-                                        return
-                                    }
-                                    var out = page.autojoinModel.slice()
-                                    var key = ch.toLowerCase()
-                                    var dup = false
-                                    for (var i = 0; i < out.length; ++i) {
-                                        if (String(out[i]).toLowerCase() === key) {
-                                            dup = true
-                                            break
-                                        }
-                                    }
-                                    if (!dup) {
-                                        out.push(ch)
-                                        page.autojoinModel = out
-                                        page.persist()
-                                    }
-                                    autojoinAddField.text = ""
-                                }
-
-                                Controls.ToolTip.visible: hovered
-                                Controls.ToolTip.text: qsTr("Add channel to autojoin")
-                            }
-                        }
-
-                        Controls.Label {
-                            visible: page.autojoinModel.length === 0
-                            text: qsTr("No channels yet — joins on connect.")
-                            color: Kirigami.Theme.disabledTextColor
-                            font.pointSize: Math.max(1, Kirigami.Theme.defaultFont.pointSize - 1)
-                        }
-                    }
-
-                    Controls.Switch {
-                        id: reconnectSwitch
-                        Kirigami.FormData.label: qsTr("Reconnect:")
-                        visible: page.rowVisible(qsTr("Reconnect"))
-                        text: qsTr("Reconnect automatically if dropped")
-                        checked: true
-                        onToggled: page.persist()
-                    }
-
-                    Controls.TextField {
-                        id: retryField
-                        Kirigami.FormData.label: qsTr("Retry limit:")
-                        visible: page.rowVisible(qsTr("Retry limit")) && page.hasPref("reconnectLimit")
-                        placeholderText: qsTr("10 (0 = unlimited)")
-                        inputMethodHints: Qt.ImhDigitsOnly
-                        validator: IntValidator { bottom: 0; top: 999 }
-                        onEditingFinished: page.persist()
-
-                        Controls.ToolTip.visible: hovered
-                        Controls.ToolTip.text: qsTr("Max automatic reconnect attempts (0 = unlimited)")
-                    }
-
-                    Controls.Switch {
-                        id: authRetrySwitch
-                        Kirigami.FormData.label: qsTr("Auth failures:")
-                        visible: page.rowVisible(qsTr("Auth failures")) && page.hasPref("reconnectLimit")
-                        text: qsTr("Reconnect after authentication failure")
-                        onToggled: page.persist()
-
-                        Controls.ToolTip.visible: hovered
-                        Controls.ToolTip.text: qsTr("Off by default, so a bad password cannot retry in a loop")
-                    }
-                }
-            }
-        }
-
-        // ---------------- Appearance ---------------- //
-        Rectangle {
-            id: appearanceCard
-            Layout.fillWidth: true
-            visible: page.sectionVisible(["appearance", "theme", "density", "bubble",
-                                          "compact", "font", "timestamp", "fluent",
-                                          "light", "breeze", "classic", "oxygen", "neon"])
-            implicitHeight: appearanceLayout.implicitHeight + page.cardPad() * 2
-            radius: page.cardRadius()
-            color: page.cardColor()
-            border.width: 1
-            border.color: page.cardBorderColor()
-
-            ColumnLayout {
-                id: appearanceLayout
-                anchors.left: parent.left
-                anchors.right: parent.right
-                anchors.top: parent.top
-                anchors.margins: page.cardPad()
-                spacing: Kirigami.Units.smallSpacing
-
-                Controls.Label {
-                    text: qsTr("Appearance")
-                    font.bold: true
-                    font.pointSize: Kirigami.Theme.defaultFont.pointSize + 1
-                }
-
-                // ---- theme picker ------------------------------------------
-                // Six friendly options (C++ may append more), each with a
-                // three-dot preview of the theme's accent / surface / bubble
-                // colours and a radio marker on the active one.  Picking an
-                // option applies it immediately — ThemeEngine is a singleton,
-                // so every binding in the window repaints — and persists it.
-                ColumnLayout {
-                    Layout.fillWidth: true
-                    visible: page.rowVisible(qsTr("Theme"))
-                    spacing: Kirigami.Units.smallSpacing
-
-                    Controls.Label {
-                        Layout.fillWidth: true
-                        text: qsTr("Theme")
-                        color: Kirigami.Theme.textColor
-                        opacity: 0.75
-                        font.bold: true
-                        font.pointSize: Math.max(1, Kirigami.Theme.defaultFont.pointSize - 1)
-                    }
-
-                    GridLayout {
-                        id: themeGrid
-                        Layout.fillWidth: true
-                        // Two columns while the card is wide enough for legible
-                        // names; one otherwise.
-                        columns: themeGrid.width >= Kirigami.Units.gridUnit * 24 ? 2 : 1
-                        columnSpacing: Kirigami.Units.smallSpacing
-                        rowSpacing: Kirigami.Units.smallSpacing
-
-                        Repeater {
-                            model: ThemeEngine.availableThemeIds
-
-                            delegate: Controls.RadioButton {
-                                id: themeOption
-
-                                required property string modelData
-                                readonly property bool active: ThemeEngine.themeId === ThemeEngine.canonicalId(themeOption.modelData)
-                                readonly property var preview: ThemeEngine.themePreview(
-                                    themeOption.modelData,
-                                    Kirigami.Theme.highlightColor,
-                                    Kirigami.Theme.alternateBackgroundColor,
-                                    Kirigami.Theme.disabledTextColor)
-
-                                Layout.fillWidth: true
-                                Layout.minimumWidth: Kirigami.Units.gridUnit * 11
-                                Layout.preferredHeight: Math.round(Kirigami.Units.gridUnit * 2.4)
-                                // Bound to the engine so the marker follows a
-                                // theme change from anywhere (settings, toolbar
-                                // menu, config restore).  RadioButton's own
-                                // auto-exclusive group keeps one selection.
-                                checked: themeOption.active
-                                spacing: Kirigami.Units.smallSpacing
-                                onClicked: page.selectTheme(themeOption.modelData)
-
-                                Accessible.name: ThemeEngine.themeDisplayName(themeOption.modelData)
-                                Accessible.description: themeOption.preview.mode === "dense"
-                                    ? qsTr("Compact list layout") : qsTr("Bubble chat layout")
-
-                                Controls.ToolTip.visible: hovered
-                                Controls.ToolTip.text: qsTr("Apply the %1 theme — %2")
-                                    .arg(ThemeEngine.themeDisplayName(themeOption.modelData))
-                                    .arg(themeOption.preview.mode === "dense"
-                                         ? qsTr("compact one-line list") : qsTr("bubble chat"))
-
-                                background: Rectangle {
-                                    radius: page.cardRadius()
-                                    color: themeOption.active
-                                        ? ThemeEngine.withAlpha(Kirigami.Theme.highlightColor, 0.10)
-                                        : (themeOption.hovered
-                                           ? ThemeEngine.withAlpha(Kirigami.Theme.textColor, 0.05)
-                                           : page.cardColor())
-                                    border.width: themeOption.active ? 2 : 1
-                                    border.color: themeOption.active
-                                        ? Kirigami.Theme.highlightColor
-                                        : page.cardBorderColor()
-                                    Behavior on color {
-                                        ColorAnimation { duration: ThemeEngine.motionDuration }
-                                    }
-                                }
-
-                                contentItem: RowLayout {
-                                    spacing: Kirigami.Units.smallSpacing
-
-                                    // Accent / surface / bubble preview dots.
-                                    // Plain items on purpose: a nested Repeater
-                                    // here rebuilds its delegates while the
-                                    // platform palette updates during the page
-                                    // transition, which crashed Qt 6.11 (SIGSEGV
-                                    // in QQuickItem layout re-entrancy).
-                                    Row {
-                                        Layout.alignment: Qt.AlignVCenter
-                                        spacing: Math.max(1, Math.round(Kirigami.Units.smallSpacing / 2))
-
-                                        ThemeSwatch {
-                                            color: themeOption.preview.accent
-                                        }
-                                        ThemeSwatch {
-                                            color: themeOption.preview.surface
-                                        }
-                                        ThemeSwatch {
-                                            color: themeOption.preview.bubble
-                                        }
-                                    }
-
-                                    ColumnLayout {
-                                        Layout.fillWidth: true
-                                        spacing: 0
-
-                                        Controls.Label {
-                                            Layout.fillWidth: true
-                                            text: ThemeEngine.themeDisplayName(themeOption.modelData)
-                                            font.bold: themeOption.active
-                                            elide: Text.ElideRight
-                                        }
-
-                                        Controls.Label {
-                                            Layout.fillWidth: true
-                                            text: themeOption.preview.mode === "dense"
-                                                ? qsTr("Compact one-line list") : qsTr("Bubble layout")
-                                            color: Kirigami.Theme.disabledTextColor
-                                            font.pointSize: Math.max(1, Kirigami.Theme.defaultFont.pointSize - 1)
-                                            elide: Text.ElideRight
-                                        }
-                                    }
-
-                                    Kirigami.Icon {
-                                        Layout.alignment: Qt.AlignVCenter
-                                        visible: themeOption.active
-                                        source: "checkmark"
-                                        color: Kirigami.Theme.highlightColor
-                                        implicitWidth: Kirigami.Units.iconSizes.small
-                                        implicitHeight: Kirigami.Units.iconSizes.small
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-
-                Kirigami.FormLayout {
-                    Layout.fillWidth: true
-
-                    RowLayout {
-                        Kirigami.FormData.label: qsTr("Density:")
-                        visible: page.rowVisible(qsTr("Density"))
-                        spacing: Kirigami.Units.smallSpacing
-
-                        // Density is the theme's layout mode.  The radios track
-                        // the active theme (a lighter theme is bubble, a
-                        // classic/oxygen one is compact) and, when used, pick
-                        // the canonical theme of that mode.
-                        Controls.RadioButton {
-                            id: densityBubbles
-                            text: qsTr("Bubbles")
-                            checked: ThemeEngine.mode !== "dense"
-                            onClicked: page.selectTheme("breeze")
-
-                            Controls.ToolTip.visible: hovered
-                            Controls.ToolTip.text: qsTr("Bubble chat layout (switches to the Breeze theme)")
-                        }
-
-                        Controls.RadioButton {
-                            id: densityCompact
-                            text: qsTr("Compact")
-                            checked: ThemeEngine.mode === "dense"
-                            onClicked: page.selectTheme("breeze-classic")
-
-                            Controls.ToolTip.visible: hovered
-                            Controls.ToolTip.text: qsTr("Classic one-line-per-message layout (switches to the Breeze Classic theme)")
-                        }
-                    }
-
-                    ColumnLayout {
-                        Kirigami.FormData.label: qsTr("Font size:")
-                        visible: page.rowVisible(qsTr("Font size"))
-                        Layout.fillWidth: true
-                        spacing: 0
-
-                        Controls.Slider {
-                            id: fontSlider
-                            Layout.fillWidth: true
-                            from: -2
-                            to: 6
-                            stepSize: 1
-                            value: ThemeEngine.fontDelta
-                            onMoved: {
-                                ThemeEngine.fontDelta = value
-                                page.persist()
-                            }
-                        }
-
-                        Controls.Label {
-                            Layout.fillWidth: true
-                            text: qsTr("Aa — the quick brown fox")
-                            font.pointSize: ThemeEngine.resolvePointSize(ThemeEngine.messageSize,
-                                Kirigami.Theme.defaultFont.pointSize)
-                            color: Kirigami.Theme.disabledTextColor
-                        }
-                    }
-
-                    Controls.Switch {
-                        id: timestampsSwitch
-                        Kirigami.FormData.label: qsTr("Timestamps:")
-                        visible: page.rowVisible(qsTr("Timestamps")) && page.hasPref("showTimestamps")
-                        text: qsTr("Show message timestamps")
-                        checked: true
-                        onToggled: page.persist()
-                    }
-                }
-            }
-        }
-
-        // ---------------- Notifications ---------------- //
-        Rectangle {
-            id: notifyCard
-            Layout.fillWidth: true
-            visible: page.sectionVisible(["notification", "highlight", "direct message",
-                                          "tray", "minimize"])
-            implicitHeight: notifyLayout.implicitHeight + page.cardPad() * 2
-            radius: page.cardRadius()
-            color: page.cardColor()
-            border.width: 1
-            border.color: page.cardBorderColor()
-
-            ColumnLayout {
-                id: notifyLayout
-                anchors.left: parent.left
-                anchors.right: parent.right
-                anchors.top: parent.top
-                anchors.margins: page.cardPad()
-                spacing: Kirigami.Units.smallSpacing
-
-                Controls.Label {
-                    text: qsTr("Notifications")
-                    font.bold: true
-                    font.pointSize: Kirigami.Theme.defaultFont.pointSize + 1
-                }
-
-                Kirigami.FormLayout {
-                    Layout.fillWidth: true
-
-                    Controls.Switch {
-                        id: highlightSwitch
-                        Kirigami.FormData.label: qsTr("Highlights:")
-                        visible: page.rowVisible(qsTr("Highlights")) && page.hasPref("notifyHighlights")
-                        text: qsTr("Notify on highlight")
-                        checked: true
-                        onToggled: page.persist()
-                    }
-
-                    Controls.Switch {
-                        id: dmSwitch
-                        Kirigami.FormData.label: qsTr("Direct messages:")
-                        visible: page.rowVisible(qsTr("Direct messages")) && page.hasPref("notifyHighlights")
-                        text: qsTr("Notify on direct message")
-                        checked: true
-                        onToggled: page.persist()
-                    }
-
-                    Controls.Switch {
-                        id: traySwitch
-                        Kirigami.FormData.label: qsTr("System tray:")
-                        visible: page.rowVisible(qsTr("System tray"))
-                        text: qsTr("Minimize to tray on close")
-                        onToggled: page.persist()
-                    }
-                }
-            }
-        }
-
-        // ---------------- About ---------------- //
-        Rectangle {
-            id: aboutCardItem
-            Layout.fillWidth: true
-            visible: page.sectionVisible(["about", "version", "kirc", "license", "kde"])
-            implicitHeight: aboutLayout.implicitHeight + page.cardPad() * 2
-            radius: page.cardRadius()
-            color: page.cardColor()
-            border.width: 1
-            border.color: page.cardBorderColor()
-
-            Component.onCompleted: page.aboutCard = aboutCardItem
-
-            ColumnLayout {
-                id: aboutLayout
-                anchors.left: parent.left
-                anchors.right: parent.right
-                anchors.top: parent.top
-                anchors.margins: page.cardPad()
-                spacing: Kirigami.Units.smallSpacing
-
-                Controls.Label {
-                    text: qsTr("About")
-                    font.bold: true
-                    font.pointSize: Kirigami.Theme.defaultFont.pointSize + 1
-                }
-
-                RowLayout {
-                    Layout.fillWidth: true
-                    spacing: Kirigami.Units.smallSpacing
+                id: navPane
+                Layout.fillHeight: true
+                Layout.preferredWidth: Math.round(Kirigami.Units.gridUnit * 9.5)
+                Layout.leftMargin: 4
+                Layout.topMargin: 6
+                spacing: 0
+
+                Repeater {
+                    model: page.sectionIds
 
                     Rectangle {
-                        Layout.alignment: Qt.AlignVCenter
-                        implicitWidth: Math.round(Kirigami.Units.gridUnit * 2.2)
-                        implicitHeight: implicitWidth
-                        radius: width * 0.3
-                        color: Kirigami.Theme.highlightColor
+                        id: navRow
 
-                        Controls.Label {
-                            anchors.centerIn: parent
-                            text: "#"
-                            color: Kirigami.Theme.highlightedTextColor
-                            font.bold: true
-                            font.pointSize: Math.round(Kirigami.Theme.defaultFont.pointSize * 1.4)
-                        }
-                    }
+                        required property string modelData
+                        required property int index
 
-                    ColumnLayout {
+                        readonly property bool active: page.sectionIndex === navRow.index
+                        readonly property bool hasMatch: page.sectionMatches(navRow.index)
+
                         Layout.fillWidth: true
-                        spacing: 0
+                        implicitHeight: navLabel.implicitHeight + 8
+                        color: navRow.active ? page.fgAccent()
+                                             : (navMouse.containsMouse ? page.hoverC() : "transparent")
 
-                        Controls.Label {
-                            text: qsTr("kIRC")
-                            font.bold: true
-                            font.pointSize: Kirigami.Theme.defaultFont.pointSize + 2
+                        Text {
+                            id: navLabel
+                            anchors.left: parent.left
+                            anchors.leftMargin: 6
+                            anchors.right: parent.right
+                            anchors.rightMargin: 6
+                            anchors.verticalCenter: parent.verticalCenter
+                            text: (navRow.active ? "▌ " : "  ") + page.sectionName(navRow.index)
+                                  + (page.filter.length > 0 ? " (" + page.sectionMatchCount(navRow.index) + ")" : "")
+                            // Active row is inverse video; sections without a
+                            // match dim out while filtering.
+                            color: navRow.active ? page.bgLogC()
+                                                 : (navRow.hasMatch ? page.fgMain() : page.fgDim())
+                            font.family: page.mono
+                            font.pointSize: page.pt
+                            font.bold: navRow.active
+                            elide: Text.ElideRight
                         }
 
-                        Controls.Label {
-                            text: qsTr("A modern IRC client for KDE")
-                            color: Kirigami.Theme.disabledTextColor
-                            wrapMode: Text.WordWrap
-                            Layout.fillWidth: true
+                        MouseArea {
+                            id: navMouse
+                            anchors.fill: parent
+                            hoverEnabled: true
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: page.selectSection(navRow.index)
                         }
                     }
                 }
 
-                Controls.Label {
+                Item { Layout.fillHeight: true }
+
+                Text {
+                    Layout.leftMargin: 8
+                    Layout.bottomMargin: 8
+                    text: ThemeEngine.themeDisplayName(ThemeEngine.themeId) + " · " + ThemeEngine.fontFamily
+                    color: page.fgDim()
+                    font.family: page.mono
+                    font.pointSize: page.ptSmall
+                    elide: Text.ElideRight
                     Layout.fillWidth: true
-                    text: qsTr("Passwords are never written to kirc.conf: the NickServ password lives in KWallet, the SASL password lives only in memory for this session.")
-                    color: Kirigami.Theme.disabledTextColor
-                    font.pointSize: Math.max(1, Kirigami.Theme.defaultFont.pointSize - 1)
-                    wrapMode: Text.WordWrap
                 }
             }
-        }
 
-        Item {
-            Layout.preferredHeight: Kirigami.Units.largeSpacing
+            // ---- pane divider ----
+            Rectangle {
+                Layout.fillHeight: true
+                Layout.preferredWidth: 1
+                color: page.ruleC()
+            }
+
+            // ---- right: the selected section ----
+            Controls.ScrollView {
+                id: scroll
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                contentWidth: availableWidth
+                Controls.ScrollBar.horizontal.policy: Controls.ScrollBar.AlwaysOff
+
+                ColumnLayout {
+                    width: scroll.availableWidth
+                    spacing: 0
+
+                    // "no settings match" hint (search found nothing anywhere)
+                    Text {
+                        Layout.fillWidth: true
+                        Layout.margins: 10
+                        visible: page.filter.length > 0 && !page.anyMatch()
+                        text: qsTr("no settings match “%1”").arg(page.filter)
+                        color: page.fgWarn()
+                        font.family: page.mono
+                        font.pointSize: page.ptSmall
+                        elide: Text.ElideRight
+                    }
+
+                    // ========================================================== //
+                    // Identity
+                    // ========================================================== //
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        visible: page.sectionIndex === 0
+                        spacing: 0
+
+                        SectionHeader { title: page.sectionName(0) }
+
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            visible: page.rowVisible(qsTr("Nickname"))
+                            spacing: 0
+
+                            TermRow {
+                                label: qsTr("Nickname")
+                                TermField {
+                                    id: nickField
+                                    placeholderText: qsTr("yournick")
+                                    onEditingFinished: page.persist()
+                                }
+                            }
+                            TermRule {}
+                        }
+
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            visible: page.rowVisible(qsTr("NickServ account"))
+                            spacing: 0
+
+                            TermRow {
+                                label: qsTr("NickServ account")
+                                TermField {
+                                    id: nickservNickField
+                                    placeholderText: qsTr("registered account")
+                                    onEditingFinished: page.persist()
+                                }
+                            }
+                            TermRule {}
+                        }
+
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            visible: page.rowVisible(qsTr("NickServ password"))
+                            spacing: 0
+
+                            TermRow {
+                                label: qsTr("NickServ password")
+                                TermField {
+                                    id: nickservPassField
+                                    echoMode: showNickservPass.checked ? TextInput.Normal : TextInput.Password
+                                    placeholderText: qsTr("stored in kwallet")
+                                    onEditingFinished: page.persist()
+                                }
+                                TermButton {
+                                    id: showNickservPass
+                                    checkable: true
+                                    prompt: checked ? qsTr("[hide]") : qsTr("[show]")
+                                }
+                            }
+
+                            Text {
+                                Layout.fillWidth: true
+                                Layout.leftMargin: 10
+                                Layout.rightMargin: 10
+                                Layout.bottomMargin: 5
+                                text: qsTr("stored in KWallet — never written to kirc.conf")
+                                color: page.fgDim()
+                                font.family: page.mono
+                                font.pointSize: page.ptSmall
+                                elide: Text.ElideRight
+                            }
+
+                            TermRule {}
+                        }
+
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            visible: page.rowVisible(qsTr("SASL user"))
+                            spacing: 0
+
+                            TermRow {
+                                label: qsTr("SASL user")
+                                TermField {
+                                    id: saslUserField
+                                    placeholderText: qsTr("SASL account name")
+                                    onEditingFinished: {
+                                        var win = applicationWindow()
+                                        if (win && win.appConfig) {
+                                            win.appConfig.saslUser = text
+                                            win.appConfig.save()
+                                        }
+                                    }
+                                }
+                            }
+                            TermRule {}
+                        }
+
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            visible: page.rowVisible(qsTr("SASL mechanism"))
+                            spacing: 0
+
+                            TermRow {
+                                label: qsTr("SASL mechanism")
+                                TermCombo {
+                                    id: saslMechBox
+                                    model: [qsTr("Auto"), qsTr("PLAIN"), qsTr("EXTERNAL")]
+                                    onActivated: {
+                                        page.persist()
+                                        var win = applicationWindow()
+                                        if (win && win.saslMechanism !== undefined) {
+                                            win.saslMechanism = page.saslMechanismId(currentIndex)
+                                        }
+                                    }
+                                }
+                            }
+
+                            Text {
+                                Layout.fillWidth: true
+                                Layout.leftMargin: 10
+                                Layout.rightMargin: 10
+                                Layout.bottomMargin: 5
+                                text: qsTr("Auto negotiates SCRAM-SHA-256 when advertised, else PLAIN")
+                                color: page.fgDim()
+                                font.family: page.mono
+                                font.pointSize: page.ptSmall
+                                elide: Text.ElideRight
+                            }
+
+                            TermRule {}
+                        }
+                    }
+
+                    // ========================================================== //
+                    // Connection
+                    // ========================================================== //
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        visible: page.sectionIndex === 1
+                        spacing: 0
+
+                        SectionHeader { title: page.sectionName(1) }
+
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            visible: page.rowVisible(qsTr("Identify"))
+                            spacing: 0
+
+                            TermRow {
+                                label: qsTr("Identify")
+                                TermToggle {
+                                    id: identifySwitch
+                                    text: qsTr("Identify on connect, then autojoin")
+                                    onToggled: page.persist()
+                                }
+                            }
+                            TermRule {}
+                        }
+
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            visible: page.rowVisible(qsTr("Autojoin"))
+                            spacing: 0
+
+                            Text {
+                                Layout.fillWidth: true
+                                Layout.leftMargin: 10
+                                Layout.topMargin: 5
+                                text: qsTr("Autojoin")
+                                color: page.fgDim()
+                                font.family: page.mono
+                                font.pointSize: page.ptSmall
+                                elide: Text.ElideRight
+                            }
+
+                            Repeater {
+                                model: page.autojoinModel
+
+                                RowLayout {
+                                    id: autojoinRow
+
+                                    required property string modelData
+                                    required property int index
+
+                                    Layout.fillWidth: true
+                                    Layout.leftMargin: 10
+                                    Layout.rightMargin: 10
+                                    Layout.topMargin: 2
+                                    spacing: 8
+
+                                    Text {
+                                        Layout.fillWidth: true
+                                        text: "# " + autojoinRow.modelData
+                                        color: page.fgMain()
+                                        font.family: page.mono
+                                        font.pointSize: page.ptSmall
+                                        elide: Text.ElideRight
+                                    }
+
+                                    Text {
+                                        text: "[x]"
+                                        color: removeMouse.containsMouse ? page.fgWarn() : page.fgDim()
+                                        font.family: page.mono
+                                        font.pointSize: page.ptSmall
+
+                                        MouseArea {
+                                            id: removeMouse
+                                            anchors.fill: parent
+                                            hoverEnabled: true
+                                            cursorShape: Qt.PointingHandCursor
+                                            onClicked: {
+                                                var out = page.autojoinModel.slice()
+                                                out.splice(autojoinRow.index, 1)
+                                                page.autojoinModel = out
+                                                page.persist()
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            Text {
+                                Layout.fillWidth: true
+                                Layout.leftMargin: 10
+                                Layout.rightMargin: 10
+                                Layout.topMargin: 2
+                                visible: page.autojoinModel.length === 0
+                                text: qsTr("no channels yet — joins on connect")
+                                color: page.fgDim()
+                                font.family: page.mono
+                                font.pointSize: page.ptSmall
+                                elide: Text.ElideRight
+                            }
+
+                            RowLayout {
+                                Layout.fillWidth: true
+                                Layout.leftMargin: 10
+                                Layout.rightMargin: 10
+                                Layout.topMargin: 4
+                                spacing: 8
+
+                                TermField {
+                                    id: autojoinAddField
+                                    placeholderText: qsTr("#channel")
+                                    onAccepted: autojoinAddButton.clicked()
+                                }
+
+                                TermButton {
+                                    id: autojoinAddButton
+                                    prompt: qsTr("[add]")
+                                    enabled: autojoinAddField.text.trim().length > 0
+                                    onClicked: {
+                                        var ch = autojoinAddField.text.trim()
+                                        if (ch.length === 0) {
+                                            return
+                                        }
+                                        var out = page.autojoinModel.slice()
+                                        var key = ch.toLowerCase()
+                                        var dup = false
+                                        for (var i = 0; i < out.length; ++i) {
+                                            if (String(out[i]).toLowerCase() === key) {
+                                                dup = true
+                                                break
+                                            }
+                                        }
+                                        if (!dup) {
+                                            out.push(ch)
+                                            page.autojoinModel = out
+                                            page.persist()
+                                        }
+                                        autojoinAddField.text = ""
+                                    }
+                                }
+                            }
+
+                            TermRule {}
+                        }
+
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            visible: page.rowVisible(qsTr("Reconnect"))
+                            spacing: 0
+
+                            TermRow {
+                                label: qsTr("Reconnect")
+                                TermToggle {
+                                    id: reconnectSwitch
+                                    text: qsTr("Reconnect automatically if dropped")
+                                    checked: true
+                                    onToggled: page.persist()
+                                }
+                            }
+                            TermRule {}
+                        }
+
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            visible: page.rowVisible(qsTr("Retry limit")) && page.hasPref("reconnectLimit")
+                            spacing: 0
+
+                            TermRow {
+                                label: qsTr("Retry limit")
+                                TermField {
+                                    id: retryField
+                                    Layout.preferredWidth: Math.round(Kirigami.Units.gridUnit * 5)
+                                    Layout.fillWidth: false
+                                    placeholderText: qsTr("10 (0 = unlimited)")
+                                    inputMethodHints: Qt.ImhDigitsOnly
+                                    validator: IntValidator { bottom: 0; top: 999 }
+                                    onEditingFinished: page.persist()
+                                }
+                            }
+                            TermRule {}
+                        }
+
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            visible: page.rowVisible(qsTr("Auth failures")) && page.hasPref("reconnectLimit")
+                            spacing: 0
+
+                            TermRow {
+                                label: qsTr("Auth failures")
+                                TermToggle {
+                                    id: authRetrySwitch
+                                    text: qsTr("Reconnect after authentication failure")
+                                    onToggled: page.persist()
+                                }
+                            }
+                            TermRule {}
+                        }
+                    }
+
+                    // ========================================================== //
+                    // Appearance
+                    // ========================================================== //
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        visible: page.sectionIndex === 2
+                        spacing: 0
+
+                        SectionHeader { title: page.sectionName(2) }
+
+                        // ---- theme picker: flat monospace rows ----
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            visible: page.rowVisible(qsTr("Theme"))
+                            spacing: 0
+
+                            Text {
+                                Layout.fillWidth: true
+                                Layout.leftMargin: 10
+                                Layout.topMargin: 5
+                                text: qsTr("Theme")
+                                color: page.fgDim()
+                                font.family: page.mono
+                                font.pointSize: page.ptSmall
+                                elide: Text.ElideRight
+                            }
+
+                            Repeater {
+                                model: ThemeEngine.availableThemeIds
+
+                                Rectangle {
+                                    id: themeRow
+
+                                    required property string modelData
+
+                                    readonly property bool active: ThemeEngine.themeId === ThemeEngine.canonicalId(themeRow.modelData)
+                                    readonly property var preview: ThemeEngine.themePreview(
+                                        themeRow.modelData,
+                                        page.fgAccent(),
+                                        page.bgPanelC(),
+                                        page.fgMain())
+
+                                    Layout.fillWidth: true
+                                    Layout.leftMargin: 10
+                                    Layout.rightMargin: 10
+                                    Layout.topMargin: 1
+                                    implicitHeight: Math.round(Kirigami.Units.gridUnit * 1.7)
+                                    radius: 0
+                                    color: themeRow.active ? page.selC()
+                                                           : (themeMouse.containsMouse ? page.hoverC() : "transparent")
+                                    border.width: 1
+                                    border.color: themeRow.active ? page.fgAccent() : "transparent"
+
+                                    RowLayout {
+                                        anchors.fill: parent
+                                        anchors.leftMargin: 6
+                                        anchors.rightMargin: 6
+                                        spacing: 8
+
+                                        Text {
+                                            text: themeRow.active ? "▌" : " "
+                                            color: page.fgAccent()
+                                            font.family: page.mono
+                                            font.pointSize: page.pt
+                                            Layout.alignment: Qt.AlignVCenter
+                                        }
+
+                                        Text {
+                                            Layout.fillWidth: true
+                                            text: ThemeEngine.themeDisplayName(themeRow.modelData)
+                                            color: themeRow.active ? page.fgAccent() : page.fgMain()
+                                            font.family: page.mono
+                                            font.pointSize: page.ptSmall
+                                            font.bold: themeRow.active
+                                            elide: Text.ElideRight
+                                            Layout.alignment: Qt.AlignVCenter
+                                        }
+
+                                        // Swatch strip (accent / log / panel). Plain
+                                        // rectangles — no nested Repeater, which
+                                        // SIGSEGVs Qt 6.11 inside contentItems.
+                                        Row {
+                                            spacing: 2
+                                            Layout.alignment: Qt.AlignVCenter
+
+                                            Rectangle {
+                                                implicitWidth: 10
+                                                implicitHeight: 10
+                                                color: themeRow.preview.accent
+                                                border.width: 1
+                                                border.color: page.ruleC()
+                                            }
+                                            Rectangle {
+                                                implicitWidth: 10
+                                                implicitHeight: 10
+                                                color: themeRow.preview.log
+                                                border.width: 1
+                                                border.color: page.ruleC()
+                                            }
+                                            Rectangle {
+                                                implicitWidth: 10
+                                                implicitHeight: 10
+                                                color: themeRow.preview.panel
+                                                border.width: 1
+                                                border.color: page.ruleC()
+                                            }
+                                        }
+
+                                        Text {
+                                            text: qsTr("dense")
+                                            color: page.fgDim()
+                                            font.family: page.mono
+                                            font.pointSize: page.ptSmall
+                                            Layout.alignment: Qt.AlignVCenter
+                                        }
+                                    }
+
+                                    MouseArea {
+                                        id: themeMouse
+                                        anchors.fill: parent
+                                        hoverEnabled: true
+                                        cursorShape: Qt.PointingHandCursor
+                                        onClicked: page.selectTheme(themeRow.modelData)
+                                    }
+                                }
+                            }
+
+                            TermRule {}
+                        }
+
+                        // ---- font family (monospace list) ----
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            visible: page.rowVisible(qsTr("Font family"))
+                            spacing: 0
+
+                            TermRow {
+                                label: qsTr("Font family")
+
+                                TermCombo {
+                                    id: fontFamilyBox
+                                    Layout.fillWidth: false
+                                    implicitWidth: Math.round(Kirigami.Units.gridUnit * 13)
+                                    model: page.fontFamilies
+                                    currentIndex: Math.max(0, page.fontFamilies.indexOf(ThemeEngine.fontFamily))
+                                    onActivated: {
+                                        var fam = fontFamilyBox.textAt(currentIndex)
+                                        // "monospace" is the theme default: an
+                                        // empty override keeps the theme in charge.
+                                        ThemeEngine.fontFamilyOverride = (fam === "monospace") ? "" : fam
+                                        page.persist()
+                                    }
+                                }
+                            }
+
+                            TermRule {}
+                        }
+
+                        // ---- font size ----
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            visible: page.rowVisible(qsTr("Font size"))
+                            spacing: 0
+
+                            TermRow {
+                                label: qsTr("Font size")
+
+                                Controls.Slider {
+                                    id: fontSlider
+                                    Layout.fillWidth: true
+                                    from: -2
+                                    to: 6
+                                    stepSize: 1
+                                    value: ThemeEngine.fontDelta
+                                    onMoved: {
+                                        ThemeEngine.fontDelta = value
+                                        page.persist()
+                                    }
+
+                                    background: Rectangle {
+                                        x: fontSlider.leftPadding
+                                        y: fontSlider.topPadding + fontSlider.availableHeight / 2 - height / 2
+                                        implicitWidth: 120
+                                        implicitHeight: 4
+                                        width: fontSlider.availableWidth
+                                        height: 2
+                                        radius: 0
+                                        color: page.ruleC()
+
+                                        Rectangle {
+                                            width: fontSlider.visualPosition * parent.width
+                                            height: parent.height
+                                            radius: 0
+                                            color: page.fgAccent()
+                                        }
+                                    }
+
+                                    handle: Rectangle {
+                                        x: fontSlider.leftPadding + fontSlider.visualPosition * (fontSlider.availableWidth - width)
+                                        y: fontSlider.topPadding + fontSlider.availableHeight / 2 - height / 2
+                                        implicitWidth: 9
+                                        implicitHeight: 14
+                                        radius: 0
+                                        color: fontSlider.pressed ? page.fgAccent() : page.bgInputC()
+                                        border.width: 1
+                                        border.color: page.fgAccent()
+                                    }
+                                }
+
+                                Text {
+                                    text: (ThemeEngine.fontDelta >= 0 ? "+" : "") + ThemeEngine.fontDelta
+                                    color: page.fgDim()
+                                    font.family: page.mono
+                                    font.pointSize: page.ptSmall
+                                    Layout.alignment: Qt.AlignVCenter
+                                }
+                            }
+
+                            Text {
+                                Layout.fillWidth: true
+                                Layout.leftMargin: 10
+                                Layout.rightMargin: 10
+                                Layout.bottomMargin: 5
+                                text: qsTr("Aa — the quick brown fox")
+                                color: page.fgDim()
+                                font.family: page.mono
+                                font.pointSize: ThemeEngine.resolvePointSize(ThemeEngine.messageSize, page.pt)
+                                elide: Text.ElideRight
+                            }
+
+                            TermRule {}
+                        }
+
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            visible: page.rowVisible(qsTr("Timestamps")) && page.hasPref("showTimestamps")
+                            spacing: 0
+
+                            TermRow {
+                                label: qsTr("Timestamps")
+                                TermToggle {
+                                    id: timestampsSwitch
+                                    text: qsTr("Show message timestamps")
+                                    checked: true
+                                    onToggled: page.persist()
+                                }
+                            }
+                            TermRule {}
+                        }
+                    }
+
+                    // ========================================================== //
+                    // Notifications
+                    // ========================================================== //
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        visible: page.sectionIndex === 3
+                        spacing: 0
+
+                        SectionHeader { title: page.sectionName(3) }
+
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            visible: page.rowVisible(qsTr("Highlights")) && page.hasPref("notifyHighlights")
+                            spacing: 0
+
+                            TermRow {
+                                label: qsTr("Highlights")
+                                TermToggle {
+                                    id: highlightSwitch
+                                    text: qsTr("Notify on highlight")
+                                    checked: true
+                                    onToggled: page.persist()
+                                }
+                            }
+                            TermRule {}
+                        }
+
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            visible: page.rowVisible(qsTr("Direct messages")) && page.hasPref("notifyHighlights")
+                            spacing: 0
+
+                            TermRow {
+                                label: qsTr("Direct messages")
+                                TermToggle {
+                                    id: dmSwitch
+                                    text: qsTr("Notify on direct message")
+                                    checked: true
+                                    onToggled: page.persist()
+                                }
+                            }
+                            TermRule {}
+                        }
+
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            visible: page.rowVisible(qsTr("System tray"))
+                            spacing: 0
+
+                            TermRow {
+                                label: qsTr("System tray")
+                                TermToggle {
+                                    id: traySwitch
+                                    text: qsTr("Minimize to tray on close")
+                                    onToggled: page.persist()
+                                }
+                            }
+                            TermRule {}
+                        }
+                    }
+
+                    // ========================================================== //
+                    // About
+                    // ========================================================== //
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        visible: page.sectionIndex === 4
+                        spacing: 0
+
+                        SectionHeader { title: page.sectionName(4) }
+
+                        Text {
+                            Layout.fillWidth: true
+                            Layout.leftMargin: 10
+                            Layout.rightMargin: 10
+                            Layout.topMargin: 4
+                            text: qsTr("# kIRC 0.1.0 — IRC in a terminal coat.\n# Kirigami + Qt Quick, monospace everywhere, no bubbles.")
+                            color: page.fgMain()
+                            font.family: page.mono
+                            font.pointSize: page.ptSmall
+                            wrapMode: Text.WordWrap
+                        }
+
+                        TermRule { Layout.topMargin: 8 }
+
+                        Text {
+                            Layout.fillWidth: true
+                            Layout.leftMargin: 10
+                            Layout.rightMargin: 10
+                            Layout.topMargin: 6
+                            text: qsTr("Passwords are never written to kirc.conf: the NickServ password lives in KWallet, the SASL password lives only in memory for this session.")
+                            color: page.fgDim()
+                            font.family: page.mono
+                            font.pointSize: page.ptSmall
+                            wrapMode: Text.WordWrap
+                        }
+
+                        TermRule { Layout.topMargin: 8 }
+                    }
+
+                    Item {
+                        Layout.preferredHeight: Kirigami.Units.largeSpacing
+                    }
+                }
+            }
         }
     }
 }

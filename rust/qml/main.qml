@@ -27,6 +27,10 @@ import org.kde.kirigami as Kirigami
 import org.kde.kirigami.layouts as KirigamiLayouts
 import org.kde.kirc
 
+// Bound ids: the compact ASCII header controls below are an inline component,
+// which may reference the window's ids (root.*) like any nested component.
+pragma ComponentBehavior: Bound
+
 Kirigami.ApplicationWindow {
     id: root
 
@@ -59,6 +63,9 @@ Kirigami.ApplicationWindow {
     minimumWidth: Kirigami.Units.gridUnit * 32
     minimumHeight: Kirigami.Units.gridUnit * 24
     title: root.headerTitle + " — kIRC"
+    // One monospace family for the whole window: controls inherit it unless
+    // they set their own (the frozen `fontFamily` token).
+    font.family: root.monoFamily
 
     // The one and only bridge object. Children get it through the `bridge`
     // property (QML ids are file-scoped, so it cannot be referenced directly
@@ -85,8 +92,25 @@ Kirigami.ApplicationWindow {
     // a second toolbar (breadcrumb + navigation) underneath it.
     pageStack.globalToolBar.style: Kirigami.ApplicationHeaderStyle.None
 
-    readonly property bool darkTheme: ThemeEngine.isDark(Kirigami.Theme.backgroundColor)
     readonly property color hairline: ThemeEngine.withAlpha(Kirigami.Theme.textColor, 0.12)
+
+    // ---------------------------------------------------------------------- //
+    // Retro-terminal chrome tokens (frozen ThemeEngine interface, consumed via
+    // their resolvers). The header is monospace, flat and never hardcodes a
+    // colour: an empty token means "use the desktop palette".
+    // ---------------------------------------------------------------------- //
+    readonly property string monoFamily: ThemeEngine.fontFamily
+    readonly property color fgPrimary: ThemeEngine.fgPrimaryColor(Kirigami.Theme.textColor)
+    readonly property color fgDim: ThemeEngine.fgDimColor(Kirigami.Theme.disabledTextColor)
+    readonly property color fgAccent: ThemeEngine.fgAccentColor(Kirigami.Theme.highlightColor)
+    readonly property color fgWarn: ThemeEngine.fgWarnColor(Kirigami.Theme.negativeTextColor)
+    readonly property color bgPanel: ThemeEngine.bgPanelColor(Kirigami.Theme.alternateBackgroundColor)
+    readonly property color ruleC: ThemeEngine.ruleColorValue(root.hairline)
+    readonly property color hoverFill: ThemeEngine.withAlpha(root.fgPrimary, 0.07)
+
+    /// Colour tokens are strings that may be empty ("desktop palette"); the
+    /// ThemeEngine resolvers above always return a usable colour, so the
+    /// chrome never needs a literal colour.
 
     // ---------------------------------------------------------------------- //
     // Persisted profile (KircConfig). `appConfig` is null in harnesses that do
@@ -169,11 +193,6 @@ Kirigami.ApplicationWindow {
         return target
     }
 
-    readonly property bool currentIsQuery: {
-        var t = root.chatChannel
-        return t.length > 0 && t !== "*server*" && !root.isChannel(t)
-    }
-
     /// Channel prefixes (# & + !). Mirrors ChatPage.isChannel for the header.
     function isChannel(target)
     {
@@ -206,6 +225,29 @@ Kirigami.ApplicationWindow {
         case 2: return qsTr("Connected")
         }
         return qsTr("Disconnected")
+    }
+
+    /// Header status as bracketed terminal text: `[connected]` / `[connecting]`
+    /// / `[offline]` — no rounded pill, no dot.
+    readonly property string statusTag: {
+        switch (root.bridge.connection_state) {
+        case 0: return "[" + qsTr("offline") + "]"
+        case 1: return "[" + qsTr("connecting") + "]"
+        case 2: return "[" + qsTr("connected") + "]"
+        }
+        return "[" + qsTr("offline") + "]"
+    }
+
+    /// Header context line: the buffer as it is typed (`#pain`, a query nick,
+    /// or the server console) — there is no coloured glyph tile any more.
+    readonly property string headerContextText: {
+        if (root.pageStack.depth <= 1 || root.currentPageIsSettings()) {
+            return root.headerTitle
+        }
+        if (root.chatChannel === "*server*") {
+            return qsTr("Server")
+        }
+        return root.chatChannel
     }
 
     // Secondary header line: nick @ server, plus the channel topic when one
@@ -248,10 +290,10 @@ Kirigami.ApplicationWindow {
     }
 
     readonly property color statusColor: root.bridge.connection_state === 2
-        ? Kirigami.Theme.positiveTextColor
+        ? root.fgAccent
         : (root.bridge.connection_state === 1
-           ? Kirigami.Theme.neutralTextColor
-           : Kirigami.Theme.negativeTextColor)
+           ? root.fgDim
+           : root.fgWarn)
 
     // ---------------------------------------------------------------------- //
     // Close = hide to tray (when a tray is available and the setting is on).
@@ -363,22 +405,79 @@ Kirigami.ApplicationWindow {
     }
 
     // ---------------------------------------------------------------------- //
-    // Header: current context + connection status pill + nick chip + flat menu
-    // buttons. Replaces the default global toolbar, so the page title and a
-    // back button are re-created here.
+    // Header: compact ASCII toolbar. Monospace context line, dim secondary
+    // info, bracketed status text and flat `[action]` controls — the page
+    // title and back control are re-created here (the default global toolbar
+    // stays off).
     // ---------------------------------------------------------------------- //
-    header: Controls.ToolBar {
-        id: headerBar
+
+    /// Flat text control for the header: bracketed ASCII label, accent on
+    /// hover, no surface box. Keeps the ToolButton contract (text, tooltip,
+    /// click) so every header action behaves exactly as before.
+    component HeaderButton: Controls.ToolButton {
+        id: headerButton
+        display: Controls.AbstractButton.TextOnly
+        Layout.alignment: Qt.AlignVCenter
+        leftPadding: Kirigami.Units.smallSpacing
+        rightPadding: Kirigami.Units.smallSpacing
+
+        contentItem: Controls.Label {
+            text: headerButton.text
+            color: !headerButton.enabled ? root.fgDim
+                   : (headerButton.hovered || headerButton.activeFocus ? root.fgAccent : root.fgPrimary)
+            font.family: root.monoFamily
+            horizontalAlignment: Text.AlignHCenter
+            verticalAlignment: Text.AlignVCenter
+        }
 
         background: Rectangle {
-            color: Kirigami.Theme.backgroundColor
+            color: headerButton.hovered || headerButton.activeFocus ? root.hoverFill : "transparent"
+        }
+    }
+
+    /// Flat terminal menu row.  The stock popup styling is a modern rounded
+    /// light menu — against a black console it reads as a rendering bug, and
+    /// its light-theme text colour can land dark-on-dark once the popup
+    /// background is themed.
+    component TermMenuItem: Controls.MenuItem {
+        id: termItem
+        font.family: root.monoFamily
+        implicitHeight: Math.round(Kirigami.Units.gridUnit * 1.55)
+        // The stock check indicator paints from the item's left edge, which
+        // lands on top of the first letter once contentItem is replaced — so
+        // the mark is drawn as an ASCII checkbox inside the label instead.
+        indicator: null
+        background: Rectangle {
+            color: termItem.highlighted || termItem.activeFocus ? root.hoverFill : "transparent"
+        }
+        contentItem: Controls.Label {
+            leftPadding: Kirigami.Units.smallSpacing * 2
+            rightPadding: Kirigami.Units.smallSpacing * 2
+            text: termItem.checkable
+                ? ((termItem.checked ? "[*] " : "[ ] ") + termItem.text)
+                : termItem.text
+            font: termItem.font
+            color: termItem.enabled
+                ? ThemeEngine.fgPrimaryColor(Kirigami.Theme.textColor)
+                : ThemeEngine.fgDimColor(Kirigami.Theme.disabledTextColor)
+            verticalAlignment: Text.AlignVCenter
+            elide: Text.ElideRight
+        }
+    }
+
+    header: Controls.ToolBar {
+        id: headerBar
+        font.family: root.monoFamily
+
+        background: Rectangle {
+            color: root.bgPanel
 
             Rectangle {
                 anchors.left: parent.left
                 anchors.right: parent.right
                 anchors.bottom: parent.bottom
                 height: 1
-                color: root.hairline
+                color: root.ruleC
             }
         }
 
@@ -388,10 +487,8 @@ Kirigami.ApplicationWindow {
             anchors.rightMargin: Kirigami.Units.smallSpacing
             spacing: Kirigami.Units.smallSpacing
 
-            Controls.ToolButton {
-                icon.name: "go-previous"
-                text: qsTr("Back")
-                display: Controls.AbstractButton.IconOnly
+            HeaderButton {
+                text: "[" + qsTr("back") + "]"
                 visible: root.pageStack.depth > 1
                 onClicked: root.pageStack.pop()
 
@@ -399,68 +496,46 @@ Kirigami.ApplicationWindow {
                 Controls.ToolTip.text: qsTr("Back to connection settings")
             }
 
-            // Context glyph: the channel's own hash colour, or a server
-            // pictogram for the "*server*" console buffer.
-            Rectangle {
-                visible: root.pageStack.depth > 1
-                Layout.alignment: Qt.AlignVCenter
-                implicitWidth: Math.round(Kirigami.Units.gridUnit * 1.35)
-                implicitHeight: Math.round(Kirigami.Units.gridUnit * 1.35)
-                radius: Kirigami.Units.cornerRadius
-                color: root.chatChannel === "*server*"
-                    ? ThemeEngine.withAlpha(Kirigami.Theme.textColor, 0.12)
-                    : ThemeEngine.nickColor(root.chatChannel, root.darkTheme)
-
-                Kirigami.Icon {
-                    anchors.centerIn: parent
-                    visible: root.chatChannel === "*server*"
-                    source: "network-server"
-                    color: Kirigami.Theme.textColor
-                    implicitWidth: Math.round(parent.width * 0.66)
-                    implicitHeight: implicitWidth
-                }
-
-                Controls.Label {
-                    anchors.centerIn: parent
-                    visible: root.chatChannel !== "*server*"
-                    text: root.currentIsQuery ? ThemeEngine.initial(root.chatChannel) : "#"
-                    color: ThemeEngine.contrastingTextColor(parent.color)
-                    font.bold: true
-                    font.pointSize: Math.max(1, Kirigami.Theme.defaultFont.pointSize)
-                }
-            }
-
+            // Context: the buffer as it is typed (`#pain`, a query nick, or
+            // the server console). The coloured glyph tile is gone.
             Controls.Label {
-                text: root.headerTitle
+                text: root.headerContextText
+                color: root.fgPrimary
+                font.family: root.monoFamily
                 font.bold: true
                 font.pointSize: Kirigami.Theme.defaultFont.pointSize + 1
                 elide: Text.ElideRight
                 Layout.fillWidth: true
+                // Never elide below a readable floor: the title yields last.
+                Layout.minimumWidth: Math.min(implicitWidth, Math.round(Kirigami.Units.gridUnit * 6))
+                Layout.alignment: Qt.AlignVCenter
             }
 
-            // Secondary line (nick @ server · topic), truncating gracefully.
-            // A fixed width cap keeps long topics from squeezing the pills
-            // and toolbar off the header; below a comfortable width the line
+            // Secondary line (nick @ server · topic), dim and truncating
+            // gracefully. A fixed width cap keeps long topics from squeezing
+            // the controls off the header; below a comfortable width the line
             // yields entirely so the channel title stays readable at the
             // minimum window size.
             Controls.Label {
                 visible: root.headerSubtitle.length > 0
                          && root.width >= Kirigami.Units.gridUnit * 40
                 text: root.headerSubtitle
-                color: Kirigami.Theme.disabledTextColor
+                color: root.fgDim
+                font.family: root.monoFamily
                 font.pointSize: Math.max(1, Kirigami.Theme.defaultFont.pointSize - 1)
                 elide: Text.ElideRight
                 Layout.fillWidth: true
                 Layout.maximumWidth: Kirigami.Units.gridUnit * 22
+                Layout.alignment: Qt.AlignVCenter
             }
 
-            // ---- connection status pill ----
-            Rectangle {
+            // ---- connection status: bracketed terminal text ----
+            Controls.Label {
                 Layout.alignment: Qt.AlignVCenter
-                implicitWidth: statusPill.implicitWidth + Kirigami.Units.smallSpacing * 2
-                implicitHeight: Math.round(Kirigami.Units.gridUnit * 1.5)
-                radius: height / 2
-                color: ThemeEngine.withAlpha(root.statusColor, 0.16)
+                text: root.statusTag
+                color: root.statusColor
+                font.family: root.monoFamily
+                font.bold: true
 
                 Accessible.name: root.statusTip
                 Accessible.description: root.statusTip
@@ -471,42 +546,22 @@ Kirigami.ApplicationWindow {
                 HoverHandler {
                     id: statusHover
                 }
-
-                RowLayout {
-                    id: statusPill
-                    anchors.centerIn: parent
-                    spacing: Math.round(Kirigami.Units.smallSpacing * 0.75)
-
-                    Rectangle {
-                        Layout.alignment: Qt.AlignVCenter
-                        implicitWidth: Math.round(Kirigami.Units.gridUnit * 0.45)
-                        implicitHeight: implicitWidth
-                        radius: width / 2
-                        color: root.statusColor
-                    }
-
-                    Controls.Label {
-                        Layout.alignment: Qt.AlignVCenter
-                        text: root.statusText
-                        color: root.statusColor
-                        font.pointSize: Math.max(1, Kirigami.Theme.defaultFont.pointSize - 1)
-                    }
-                }
             }
 
-            // ---- unread badge: opens/clears with the buffers ----
+            // ---- unread count: `[3]`, opens/clears with the buffers ----
             // Count of unread messages across buffers; clears when the buffers
             // are read (ChatPage calls bridge.mark_read() on open/switch).
-            Rectangle {
+            Controls.Label {
+                id: unreadLabel
                 Layout.alignment: Qt.AlignVCenter
                 // Only meaningful once the chat is on screen: on the connect
                 // form a stale count from the previous session reads as a
                 // mystery badge.
                 visible: root.pageStack.depth > 1 && root.bridge.unread_count > 0
-                implicitWidth: Math.max(height, unreadLabel.implicitWidth + Kirigami.Units.smallSpacing * 2)
-                implicitHeight: Math.round(Kirigami.Units.gridUnit * 1.5)
-                radius: height / 2
-                color: Kirigami.Theme.highlightColor
+                text: "[" + (root.bridge.unread_count > 99 ? "99+" : root.bridge.unread_count) + "]"
+                color: root.fgAccent
+                font.family: root.monoFamily
+                font.bold: true
 
                 Accessible.name: qsTr("%n unread message(s)", "", root.bridge.unread_count)
                 Accessible.description: qsTr("Unread messages")
@@ -526,25 +581,20 @@ Kirigami.ApplicationWindow {
                         }
                     }
                 }
-
-                Controls.Label {
-                    id: unreadLabel
-                    anchors.centerIn: parent
-                    text: root.bridge.unread_count > 99 ? "99+" : root.bridge.unread_count
-                    color: Kirigami.Theme.highlightedTextColor
-                    font.bold: true
-                    font.pointSize: Math.max(1, Kirigami.Theme.defaultFont.pointSize - 1)
-                }
             }
 
-            // ---- nick chip ----
-            Rectangle {
+            // ---- own nick: plain text (no avatar chip) ----
+            // Yields below a comfortable width, like the secondary line, so
+            // the ASCII controls never get pushed out of the header.
+            Controls.Label {
                 Layout.alignment: Qt.AlignVCenter
                 visible: root.bridge.nickname.length > 0
-                implicitWidth: nickChip.implicitWidth + Kirigami.Units.smallSpacing * 2
-                implicitHeight: Math.round(Kirigami.Units.gridUnit * 1.6)
-                radius: height / 2
-                color: ThemeEngine.withAlpha(Kirigami.Theme.textColor, 0.07)
+                         && root.width >= Kirigami.Units.gridUnit * 40
+                text: root.bridge.nickname
+                color: root.fgPrimary
+                font.family: root.monoFamily
+                elide: Text.ElideRight
+                Layout.maximumWidth: Kirigami.Units.gridUnit * 8
 
                 Accessible.name: root.bridge.nickname
 
@@ -554,47 +604,25 @@ Kirigami.ApplicationWindow {
                 HoverHandler {
                     id: nickHover
                 }
-
-                RowLayout {
-                    id: nickChip
-                    anchors.centerIn: parent
-                    spacing: Math.round(Kirigami.Units.smallSpacing * 0.75)
-
-                    Rectangle {
-                        Layout.alignment: Qt.AlignVCenter
-                        implicitWidth: Math.round(Kirigami.Units.gridUnit * 1.05)
-                        implicitHeight: implicitWidth
-                        radius: width / 2
-                        color: ThemeEngine.nickColor(root.bridge.nickname, root.darkTheme)
-
-                        Controls.Label {
-                            anchors.centerIn: parent
-                            text: ThemeEngine.initial(root.bridge.nickname)
-                            color: ThemeEngine.contrastingTextColor(parent.color)
-                            font.bold: true
-                            font.pointSize: Math.max(1, Kirigami.Theme.defaultFont.pointSize - 2)
-                        }
-                    }
-
-                    Controls.Label {
-                        Layout.alignment: Qt.AlignVCenter
-                        text: root.bridge.nickname
-                        color: Kirigami.Theme.textColor
-                        elide: Text.ElideRight
-                        Layout.maximumWidth: Kirigami.Units.gridUnit * 8
-                        font.pointSize: Math.max(1, Kirigami.Theme.defaultFont.pointSize - 1)
-                    }
-                }
             }
 
-            // Proper toolbar: Search (Ctrl+F), Settings, Menu — each labelled
-            // with a tooltip.  (Search forwards to the chat page when one is
-            // open; it is disabled on the connection form.)
-            Controls.ToolButton {
+            // Proper ASCII toolbar: Join (Ctrl+J), Search (Ctrl+F), Theme,
+            // Settings, Disconnect, Menu — each with its tooltip.  (Search
+            // forwards to the chat page when one is open; it is disabled on
+            // the connection form.)
+            HeaderButton {
+                text: "[" + qsTr("join") + "]"
+                visible: root.pageStack.depth > 1
+                enabled: root.pageStack.depth > 1 && root.bridge.connection_state === 2
+                onClicked: root.requestChatJoin()
+
+                Controls.ToolTip.visible: hovered
+                Controls.ToolTip.text: qsTr("Join a channel (Ctrl+J)")
+            }
+
+            HeaderButton {
                 id: searchButton
-                icon.name: "edit-find"
-                text: qsTr("Search")
-                display: Controls.AbstractButton.IconOnly
+                text: "[" + qsTr("search") + "]"
                 enabled: root.pageStack.depth > 1
                 visible: root.pageStack.depth > 1
                 onClicked: root.focusChatSearch()
@@ -603,22 +631,18 @@ Kirigami.ApplicationWindow {
                 Controls.ToolTip.text: qsTr("Search messages (Ctrl+F)")
             }
 
-            Controls.ToolButton {
+            HeaderButton {
                 id: settingsButton
-                icon.name: "configure"
-                text: qsTr("Settings")
-                display: Controls.AbstractButton.IconOnly
+                text: "[" + qsTr("settings") + "]"
                 onClicked: root.openSettings()
 
                 Controls.ToolTip.visible: hovered
                 Controls.ToolTip.text: qsTr("Settings")
             }
 
-            Controls.ToolButton {
+            HeaderButton {
                 id: disconnectButton
-                icon.name: "network-disconnect"
-                text: qsTr("Disconnect")
-                display: Controls.AbstractButton.IconOnly
+                text: "[" + qsTr("disconnect") + "]"
                 visible: root.bridge.connection_state !== 0
                 onClicked: {
                     root.userDisconnect = true
@@ -630,11 +654,12 @@ Kirigami.ApplicationWindow {
                 Controls.ToolTip.text: qsTr("Disconnect")
             }
 
-            Controls.ToolButton {
+            // Theme picker: also reachable from the Settings pane when the
+            // header is too narrow for the control.
+            HeaderButton {
                 id: themeButton
-                icon.name: "preferences-desktop-theme"
-                text: qsTr("Theme")
-                display: Controls.AbstractButton.IconOnly
+                text: "[" + qsTr("theme") + "]"
+                visible: root.width >= Kirigami.Units.gridUnit * 36
                 onClicked: themeMenu.popup()
 
                 Controls.ToolTip.visible: hovered
@@ -643,6 +668,13 @@ Kirigami.ApplicationWindow {
                 Controls.Menu {
                     id: themeMenu
                     title: qsTr("Theme")
+                    font.family: root.monoFamily
+                    background: Rectangle {
+                        implicitWidth: Math.round(Kirigami.Units.gridUnit * 12)
+                        color: ThemeEngine.bgPanelColor(Kirigami.Theme.alternateBackgroundColor)
+                        border.width: 1
+                        border.color: ThemeEngine.ruleColorValue(Kirigami.Theme.textColor)
+                    }
 
                     // Built-in (compiled-in) themes. Additional themes from
                     // ~/.config/kIRC/themes/ are appended by the C++ side, which
@@ -651,7 +683,7 @@ Kirigami.ApplicationWindow {
                     Instantiator {
                         model: ThemeEngine.availableThemeIds
 
-                        delegate: Controls.MenuItem {
+                        delegate: TermMenuItem {
                             id: themeItem
                             required property string modelData
 
@@ -673,11 +705,9 @@ Kirigami.ApplicationWindow {
                 }
             }
 
-            Controls.ToolButton {
+            HeaderButton {
                 id: appMenuButton
-                icon.name: "application-menu"
-                text: qsTr("Menu")
-                display: Controls.AbstractButton.IconOnly
+                text: "[" + qsTr("menu") + "]"
                 onClicked: appMenu.popup()
 
                 Controls.ToolTip.visible: hovered
@@ -685,8 +715,15 @@ Kirigami.ApplicationWindow {
 
                 Controls.Menu {
                     id: appMenu
+                    font.family: root.monoFamily
+                    background: Rectangle {
+                        implicitWidth: Math.round(Kirigami.Units.gridUnit * 13)
+                        color: ThemeEngine.bgPanelColor(Kirigami.Theme.alternateBackgroundColor)
+                        border.width: 1
+                        border.color: ThemeEngine.ruleColorValue(Kirigami.Theme.textColor)
+                    }
 
-                    Controls.MenuItem {
+                    TermMenuItem {
                         text: root.bridge.connection_state === 0 ? qsTr("Connect") : qsTr("Disconnect")
                         icon.name: root.bridge.connection_state === 0 ? "network-connect" : "network-disconnect"
                         onTriggered: {
@@ -702,7 +739,7 @@ Kirigami.ApplicationWindow {
                         }
                     }
 
-                    Controls.MenuItem {
+                    TermMenuItem {
                         text: qsTr("Join channel…")
                         icon.name: "list-add"
                         enabled: root.pageStack.depth > 1 && root.bridge.connection_state === 2
@@ -711,14 +748,14 @@ Kirigami.ApplicationWindow {
 
                     Controls.MenuSeparator {}
 
-                    Controls.MenuItem {
+                    TermMenuItem {
                         text: root.trayVisibleLabel()
                         icon.name: root.visible ? "window-minimize" : "window-restore"
                         enabled: root.trayAvailable
                         onTriggered: root.toggleToTray()
                     }
 
-                    Controls.MenuItem {
+                    TermMenuItem {
                         text: qsTr("Minimize to tray on close")
                         checkable: true
                         checked: root.minimizeToTray
@@ -726,13 +763,13 @@ Kirigami.ApplicationWindow {
                         onToggled: root.setMinimizeToTray(checked)
                     }
 
-                    Controls.MenuItem {
+                    TermMenuItem {
                         text: qsTr("Settings")
                         icon.name: "configure"
                         onTriggered: root.openSettings()
                     }
 
-                    Controls.MenuItem {
+                    TermMenuItem {
                         text: qsTr("About kIRC")
                         icon.name: "help-about"
                         onTriggered: root.openAbout()
@@ -740,7 +777,7 @@ Kirigami.ApplicationWindow {
 
                     Controls.MenuSeparator {}
 
-                    Controls.MenuItem {
+                    TermMenuItem {
                         text: qsTr("Quit kIRC")
                         icon.name: "application-exit"
                         // Qt.quit() ends the application without going through

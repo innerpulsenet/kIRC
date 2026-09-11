@@ -22,22 +22,21 @@ What it covers:
 * Messages arrive as `message_received` / `history_batch_received`, the model is
   reloaded, and `MessageDelegate` is created **from the model roles** (this is
   the check that catches role-name drift on the C++ side).
-* The delegate defaults to bubble mode, maps the highlight / self roles, and
-  **groups two consecutive messages from the same nick** — the neighbour's
-  `continuesNext` and the follower's `continuesPrevious` must both be set
-  (regression guard: this silently failed while the delegate resolved its row
-  position through the view's `index`, which Qt 6.11 does not expose).
-* Switching to `breeze-classic` flips the delegate to dense rendering, switching
-  to `neon` flips it back to bubble.
+* The delegate renders one dense console line per row (no bubbles, no avatars,
+  no grouping): every row is its own line and the highlight / self roles map
+  through. Grouping (`continuesPrevious` / `continuesNext`, neighbour lookups,
+  `settle()`) was removed with the bubbles — `tst_perf.qml` proves no delegate
+  scans the view any more.
+* Switching to `amber` and back to `tui` repaints the log in the terminal
+  palettes (every built-in theme is a dense monospace palette).
 * `disconnect_server()` / `state_changed(0)` falls back to the connection form.
-* Theme engine units: built-in loading (bubble default, dense classic, neon),
-  the legacy `breeze-dark-default` id alias, unknown-id errors, malformed JSON
-  does not clobber the active theme, partial JSON merges over defaults,
-  out-of-range knobs are clamped, nick-colour determinism/range/distinctness,
-  dark-vs-light variance, avatar initial / contrasting colour / grid-derived
-  sizes, the grouping window (including day rollover and unparseable
-  timestamps), HTML escaping, linkifying, accent-tinted links and luminance
-  detection.
+* Theme engine units: built-in loading (the `tui` default and the rest of the
+  terminal palettes), retired-id aliases (`oxygen`/`neon`/… resolve to `tui`),
+  unknown-id errors, malformed JSON does not clobber the active theme, partial
+  JSON merges over defaults, out-of-range knobs are clamped, nick-colour
+  determinism/range/distinctness, dark-vs-light variance, the padded nick
+  column, the font-family override, HTML escaping, linkifying, accent-tinted
+  links and luminance detection.
 
 Caveats:
 
@@ -60,5 +59,18 @@ against N `append_message` inserts, counting the model's real
 `rowsInserted` / `rowsRemoved` / `modelReset` emissions and the wall-clock cost
 of each path. It also pins down `append_message`'s contract (no-op for a
 non-loaded buffer, case-insensitive target match, correct insert into an empty
-model and after a reload). Exit code 0 = all checks passed. The numbers it
-produced are recorded in `.hermes/implementation/p2-perf.md`.
+model and after a reload).
+
+The same run exercises the render side — the channel-switch pause. A tall
+`ListView` hosts the real `MessageDelegate` over a second model instance, every
+row of a 500-row transcript is instantiated, and the harness reports the
+wall-clock cost of `load_channel` + full delegate creation and the number of
+`ListView.itemAtIndex()` calls the delegates made. `perf.sh` greps the delegate
+for `itemAtIndex` call sites and instruments the throwaway copy with a counter
+when any are found, so the same harness reports the pre-fix scan count (about
+3.5 full view scans per delegate, i.e. O(n²)) and the current 0. It also checks
+the model-computed `isEvent`/`showDay`/`dayLabel` roles reach the delegate, that
+no delegate exposes the removed grouping machinery, and that wrapped rows render
+from those roles. Exit code 0 = all checks passed. The numbers it produced are
+recorded in `.hermes/implementation/p3-render.md` (and `p2-perf.md` for the
+incremental path).

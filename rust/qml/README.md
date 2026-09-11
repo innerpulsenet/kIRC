@@ -4,10 +4,10 @@ Kirigami 6 / Qt 6 QML front end for kIRC. Everything here is pure QML/JS — no
 IRC logic, no sockets, no file I/O. The Rust side owns protocol state and
 exposes it through two cxx-qt QML elements; this module renders it.
 
-The look is deliberately *modern chat client* (NeoChat/Telegram territory,
-themed with Breeze) rather than retro IRC: nick-coloured avatars, message
-grouping, rounded bubbles with the sender's own accent on the right, a rounded
-card sidebar and a floating composer.
+The look is deliberately *retro terminal*: monospace everywhere, one line per
+message with a fixed time gutter and a padded nick column, flat square
+surfaces, box-drawing rules, no avatars and no bubbles. Dense IRC rendering is
+the only rendering (`mode` is always `dense`).
 
 ## Files
 
@@ -19,7 +19,7 @@ card sidebar and a floating composer.
 | `MessageDelegate.qml` | One message. Bubble mode (default) with avatar, name, grouped consecutive messages, highlight wash + accent bar, links tinted with the accent; dense mode (classic one-line IRC log) is the secondary style. |
 | `ThemeEngine.qml` | `pragma Singleton` theme manager: active theme, flat bindable properties, `applyThemeJson()`, `applyBuiltinTheme()`, deterministic nick colours, avatar/link/alpha helpers, text escaping/linkifying, grouping helpers. |
 | `Theme.js` | `.pragma library` — theme data (built-ins + defaults), djb2 hashing, HSL derivation, message grouping maths, HTML escaping/linkifying. No Qt globals available here. |
-| `themes/*.json` | Built-in themes: `breeze.json` (the default), `breeze-classic.json`, `oxygen.json`, `neon.json`. Canonical schema (see below). |
+| `themes/*.json` | Built-in themes: `tui.json` (the default), `phosphor.json`, `amber.json`, `ice.json`, `breeze.json`. Canonical schema (see below). |
 | `qmldir` | Module registration for `qmllint`/`qmlls` and for the `ThemeEngine` singleton. |
 
 `Theme.js` is the *only* JS module shipped next to the QML (see
@@ -99,9 +99,9 @@ MessageListModel {          // QAbstractListModel
 
 ## Message grouping
 
-Consecutive messages from the same sender are merged into one visual group:
-one avatar and one name, tighter spacing, and the bubble corner facing the
-neighbour flattened (the "connected tail").
+Dense rendering shows one line per message, so nothing is merged: the grouping
+helpers survive for the harnesses and for the day-boundary maths, but the
+delegate does not hide a repeated sender any more.
 
 * A group continues while the next row has the same nick (case-insensitive),
   the same `isSelf` side, and a timestamp no more than
@@ -127,7 +127,7 @@ pushes them into the singleton; QML itself cannot touch the filesystem.
 ```qml
 // load ~/.config/kIRC/themes/mytheme.json (C++), then:
 ThemeEngine.applyThemeJson(rawJsonText)   // or a parsed object
-ThemeEngine.applyBuiltinTheme("breeze")   // "breeze" | "breeze-classic" | "oxygen" | "neon"
+ThemeEngine.applyBuiltinTheme("tui")      // "tui" | "phosphor" | "amber" | "ice" | "breeze"
 ThemeEngine.reset()
 ```
 
@@ -135,7 +135,33 @@ ThemeEngine.reset()
 string and leaves the active theme untouched (`ThemeEngine.configError`).
 Missing keys fall back to the defaults, unknown keys are preserved, and the
 numeric knobs are clamped to sane ranges so a bad theme file cannot make the
-chat view unreadable.
+chat view unreadable — a theme file written against the old bubble schema
+still loads, it just inherits the dense geometry.
+
+### Terminal look (schema 3)
+
+Bubbles are cancelled: the output is a console. Every built-in theme is
+`mode: "dense"` — one monospace line per message with a fixed `[HH:MM]` time
+gutter, a padded nick column and flat surfaces. `ThemeEngine.mode` can never
+return `"bubble"` any more (the merge coerces it), and the delegate has no
+bubble branch.
+
+| Id | Look |
+| --- | --- |
+| `tui` | **default** — near-black log, grey text, cyan accent |
+| `phosphor` | green on black (P1 tube) |
+| `amber` | amber on black (classic CRT) |
+| `ice` | light text on dark blue (C64-ish) |
+| `breeze` | dense geometry with **empty colour tokens**: every colour follows `Kirigami.Theme`, so it matches Breeze Light / Breeze Dark / a custom scheme |
+
+Schema 3 also added `[UI] FontFamily` (a monospace family; empty = the theme's
+own default) and `[UI] ThemeSchemaVersion` is now **3**. `KircConfig::load()`
+migrates a config below version 3 exactly once: ids that used to be built-in
+bubble/glass themes (`breeze`, `breeze-classic`, `oxygen`, `neon`, `fluent`,
+`fluent-light`) are rewritten to `tui` — including a config already stamped
+version 2, which is how the phase-2 `oxygen` config finally migrates — while
+any other id (a user's own theme file) is left alone. Retired ids also alias
+to `tui` at runtime, so a stale config can never leave the window unstyled.
 
 Built-in themes are compiled into `Theme.js` (QML cannot read
 `qml/themes/*.json` at runtime), so a change to the JSON must be mirrored
@@ -146,55 +172,76 @@ id `breeze-dark-default` is still accepted and resolves to `breeze`.
 
 ```json
 {
-    "id": "breeze",
-    "name": "Breeze",
-    "mode": "bubble",
-    "bubble": {
-        "radius": 12,
-        "spacing": 6,
-        "groupSpacing": 2,
-        "tailRadius": 5,
-        "maxWidthFraction": 0.78,
-        "selfColor": "",
-        "otherColor": ""
-    },
-    "dense": { "lineSpacing": 3 },
-    "avatar": { "enabled": true, "size": 0 },
+    "id": "tui",
+    "name": "TUI",
+    "mode": "dense",
+    "bubble": { "radius": 0, "spacing": 0, "groupSpacing": 0, "tailRadius": 0,
+                "maxWidthFraction": 1.0, "selfColor": "", "otherColor": "" },
+    "dense": { "lineSpacing": 2 },
+    "avatar": { "enabled": false, "size": 0 },
     "grouping": { "enabled": true, "windowMinutes": 5 },
-    "motion": { "enabled": true, "duration": 140 },
+    "motion": { "enabled": true, "duration": 90 },
     "sidebar": { "width": 0 },
     "fonts": { "messageSize": 0, "timestampSize": 0, "nickSize": 0 },
     "colors": {
-        "nickSatMin": 0.55,
-        "nickSatMax": 0.70,
-        "nickLightnessDark": 0.62,
-        "nickLightnessLight": 0.35,
+        "nickSatMin": 0.50,
+        "nickSatMax": 0.80,
+        "nickLightnessDark": 0.70,
+        "nickLightnessLight": 0.34,
         "linkify": true,
         "highlightIsBold": true,
         "linkColor": ""
+    },
+    "surfaces": {
+        "surface": "#0b0d0f", "surfaceAlt": "#101417", "sidebarSurface": "#0e1215",
+        "cardBackground": "#101417", "cardBorder": "#262e34",
+        "cardRadius": 0, "cardPadding": 8, "rowRadius": 0,
+        "rowHover": "#171d22", "rowSelected": "#1e272e", "rowHeight": 24,
+        "accent": "#4cc9dd", "accentText": "#0b0d0f", "mutedText": "#7c858c",
+        "sectionHeader": "#7c858c", "sectionHeaderSize": 0,
+        "eventText": "#7c858c", "eventSize": 0,
+        "statusOnline": "#63c47a", "statusAway": "#d8b25e", "statusOffline": "#6d757b",
+        "unreadBadge": "#4cc9dd", "unreadBadgeText": "#0b0d0f",
+        "inputRadius": 0, "shadowOpacity": 0, "headerHeight": 40
+    },
+    "terminal": {
+        "fontFamily": "monospace",
+        "gutterWidth": 64,
+        "nickColumn": 9,
+        "ruleColor": "#2b3238",
+        "fgPrimary": "#c9ced3",
+        "fgDim": "#7c858c",
+        "fgAccent": "#4cc9dd",
+        "fgWarn": "#ff6b5f",
+        "bgPanel": "#101417",
+        "bgLog": "#0b0d0f",
+        "bgInput": "#0e1215"
     }
 }
 ```
 
 | Field | Type | Default | Meaning |
 | --- | --- | --- | --- |
-| `id` | string | `"breeze"` | Stable identifier; also what `ThemeEngine.themeId` exposes. |
-| `name` | string | `"Breeze"` | Human label (theme menu). |
-| `mode` | `"bubble"` \| `"dense"` | `"bubble"` | Anything else falls back to `bubble`. Drives `MessageDelegate.styleMode`. |
-| `bubble.radius` | number | `12` | Bubble corner radius (px), clamped 0–64. |
-| `bubble.spacing` | number | `6` | Vertical gap between *groups*, clamped 0–64. |
-| `bubble.groupSpacing` | number | `2` | Vertical gap *inside* a group, clamped 0–64. |
-| `bubble.tailRadius` | number | `5` | Radius of the corner(s) joined to a grouped neighbour, clamped 0–64. |
-| `bubble.maxWidthFraction` | number | `0.78` | Widest a bubble may get, as a fraction of the log width, clamped 0.3–1.0. |
-| `bubble.selfColor` | string | `""` | Own-message bubble background. Empty = `Kirigami.Theme.highlightColor` (keeps the KDE palette coherent, and inverts correctly with the colour scheme). |
-| `bubble.otherColor` | string | `""` | Others' bubble background. Empty = `Kirigami.Theme.alternateBackgroundColor`. |
-| `dense.lineSpacing` | number | `3` | Extra gap between lines in dense mode. |
-| `avatar.enabled` | bool | `true` | Show nick-coloured initial avatars (`false` for the dense/classic themes). |
-| `avatar.size` | number | `0` | Avatar diameter in px. `0` = derived from `Kirigami.Units.gridUnit` (~1.9×). |
-| `grouping.enabled` | bool | `true` | Merge consecutive same-sender messages. |
-| `grouping.windowMinutes` | number | `5` | Longest gap (minutes) that still counts as one group. |
+| `id` | string | `"tui"` | Stable identifier; also what `ThemeEngine.themeId` exposes. |
+| `name` | string | `"TUI"` | Human label (theme menu). |
+| `mode` | string | `"dense"` | Frozen to dense; anything else (including `"bubble"`) is coerced. |
+| `terminal.fontFamily` | string | `"monospace"` | Monospace family for every surface. The user's `[UI] FontFamily` overrides it (`ThemeEngine.fontFamilyOverride`). |
+| `terminal.gutterWidth` | number | `64` | Fixed px width of the `[HH:MM]` time gutter; `0` = derive from the font metrics (`ThemeEngine.resolveGutterWidth()`). |
+| `terminal.nickColumn` | number | `9` | Characters to pad the nick to (`ThemeEngine.paddedNick(nick)`); the nick column itself. `0` = no padding. |
+| `terminal.ruleColor` | color | `"#2b3238"` | Box-drawing / separator rules. |
+| `terminal.fgPrimary` | color | `"#c9ced3"` | Main text. |
+| `terminal.fgDim` | color | `"#7c858c"` | Timestamps, events, secondary text. |
+| `terminal.fgAccent` | color | `"#4cc9dd"` | Highlights, selection marker, prompt. |
+| `terminal.fgWarn` | color | `"#ff6b5f"` | Errors, join failures, disconnects. |
+| `terminal.bgPanel` | color | `"#101417"` | Sidebar / people panel surface. |
+| `terminal.bgLog` | color | `"#0b0d0f"` | Message log surface (and the page background). |
+| `terminal.bgInput` | color | `"#0e1215"` | Input bar / field surface. |
+| `dense.lineSpacing` | number | `2` | Extra gap between lines. |
+| `bubble.*` | — | flat | Legacy bubble knobs. Kept, clamped, and never rendered (no bubble branch exists); old theme files must still load. |
+| `avatar.enabled` | bool | `false` | Avatars are gone with the bubbles; kept so old files load. |
+| `grouping.*` | — | `true` / `5` | Kept for the harness helpers; dense rendering shows one line per message. |
 | `motion.enabled` | bool | `true` | Allow the UI's short transitions. |
-| `motion.duration` | number | `140` | Base transition length (ms); `0` disables animation. |
+| `motion.duration` | number | `90` | Base transition length (ms); `0` disables animation. |
 | `sidebar.width` | number | `0` | Sidebar width in px. `0` = `Kirigami.Units.gridUnit * 13`. |
 | `fonts.messageSize` | int | `0` | Absolute point size for message text. `0` (or negative) = inherit `Kirigami.Theme.defaultFont.pointSize`. |
 | `fonts.timestampSize` | int | `0` | Same, for timestamps (default inherits one point smaller). |
@@ -207,7 +254,7 @@ id `breeze-dark-default` is still accepted and resolves to `breeze`.
 | `colors.highlightIsBold` | bool | `true` | Bold text for highlight (nick mention) messages. |
 | `colors.linkColor` | string | `""` | Link colour. Empty = `Kirigami.Theme.highlightColor`, baked into the rich-text anchor so it works on every widget. |
 
-### Nick colours and avatars
+### Nick colours
 
 Deterministic, no state: `hue = djb2(nick.toLowerCase()) % 360`, saturation
 drawn deterministically from `[nickSatMin, nickSatMax]`, lightness picked from
@@ -220,15 +267,21 @@ readonly property bool darkTheme: ThemeEngine.isDark(Kirigami.Theme.backgroundCo
 readonly property color nickColor: ThemeEngine.nickColor(nick, darkTheme)
 ```
 
-The avatar circle painted from that colour uses
-`ThemeEngine.contrastingTextColor(color)` for its initial, so the letter stays
-readable in both schemes. `ThemeEngine.initial(nick)` returns the first
-letter/uppercase digit (or `"?"`).
+Avatar circles went away with the bubbles; `ThemeEngine.initial(nick)` and
+`ThemeEngine.contrastingTextColor(color)` stay because the channel tiles and
+the person panel still draw a glyph with them.
 
 Other helpers used across the UI: `ThemeEngine.withAlpha(color, a)`,
 `ThemeEngine.cssColor(color)` → `"#rrggbb"` (for rich text),
 `ThemeEngine.avatarSizeFor(gridUnit)`, `ThemeEngine.sidebarWidthFor(gridUnit)`,
-`ThemeEngine.formatMessage(text, linkCss)`.
+`ThemeEngine.formatMessage(text, linkCss)`, `ThemeEngine.paddedNick(nick)`,
+`ThemeEngine.monospaceFamilies()` (the settings font-family list).
+
+Every terminal token has a resolver that takes the caller's `Kirigami.Theme`
+fallback, so a theme with empty colours (`breeze`) still follows the desktop:
+`ThemeEngine.fgPrimaryColor(fallback)`, `fgDimColor`, `fgAccentColor`,
+`fgWarnColor`, `bgPanelColor`, `bgLogColor`, `bgInputColor`, `ruleColorValue`,
+`resolveGutterWidth(fallback)`.
 
 Custom themes are applied by the C++ side; to make them appear in the window's
 theme menu, extend `ThemeEngine.availableThemeIds` (the menu builds itself from
@@ -298,9 +351,9 @@ expected and the exit status is 0.
 `qml-tests/` (outside this module directory, so it is never compiled into it)
 contains a real runtime smoke test with doubles for `IrcBridge` and
 `MessageListModel`; `qml-tests/run.sh` builds the stub module and runs it
-headless. It exercises connect → chat → delegate creation → grouping → dense
-theme switch → bubble theme switch → disconnect, and unit-checks the theme
-engine (including the grouping window).
+headless. It exercises connect → chat → delegate creation → terminal theme switches →
+disconnect, and unit-checks the theme engine (terminal tokens, retired-id
+migration aliases, clamping, font-family override).
 
 > `qml-tests/` is development tooling only. Exclude it from the CMake target
 > (or delete it) when wiring the build.

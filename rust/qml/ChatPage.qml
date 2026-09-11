@@ -19,10 +19,11 @@
 //                                 insert for the live path; no-op unless
 //                                 `target` is the loaded buffer
 //
-// Layout (left to right): sidebar (header actions + Server / Messages /
-// Channels sections), hairline, message column (topic bar, log with a
-// new-messages pill, input bar with an inline server-console hint), and an
-// optional people panel for channels.
+// Layout (left to right): sidebar (box-drawing section rules + flat buffer
+// rows + the `[+]` join control), 1px rule, message column (topic line framed
+// by rules, flat log, boxed `> ` composer with a `[send]` control), and an
+// optional people panel (rule header, `@nick` rows, ASCII sub-rules) for
+// channels. Everything is monospace and flat — see the token block below.
 
 import QtQuick
 import QtQuick.Controls as Controls
@@ -43,9 +44,58 @@ Kirigami.Page {
     property var hostWindow: null
 
     readonly property int timestampPointSize: ThemeEngine.resolvePointSize(ThemeEngine.timestampSize, Kirigami.Theme.defaultFont.pointSize)
-    readonly property bool darkTheme: ThemeEngine.isDark(Kirigami.Theme.backgroundColor)
     readonly property bool connected: page.bridge !== null && page.bridge.connection_state === 2
     readonly property color hairline: ThemeEngine.withAlpha(Kirigami.Theme.textColor, 0.12)
+
+    // ---------------------------------------------------------------------- //
+    // Retro-terminal chrome. Every colour comes from the frozen ThemeEngine
+    // tokens via their resolvers (an empty token means "use the desktop
+    // palette"); nothing on this page hardcodes a colour. `monoFamily` is the
+    // theme's monospace family and drives the whole page through `font.family`
+    // (controls inherit it).
+    // ---------------------------------------------------------------------- //
+    readonly property string monoFamily: ThemeEngine.fontFamily
+    readonly property color fgPrimary: ThemeEngine.fgPrimaryColor(Kirigami.Theme.textColor)
+    readonly property color fgDim: ThemeEngine.fgDimColor(Kirigami.Theme.disabledTextColor)
+    readonly property color fgAccent: ThemeEngine.fgAccentColor(Kirigami.Theme.highlightColor)
+    readonly property color fgWarn: ThemeEngine.fgWarnColor(Kirigami.Theme.negativeTextColor)
+    readonly property color bgPanel: ThemeEngine.bgPanelColor(Kirigami.Theme.alternateBackgroundColor)
+    readonly property color bgLog: ThemeEngine.bgLogColor(Kirigami.Theme.backgroundColor)
+    readonly property color bgInput: ThemeEngine.bgInputColor(Kirigami.Theme.alternateBackgroundColor)
+    readonly property color ruleC: ThemeEngine.ruleColorValue(page.hairline)
+    // Flat interaction tints (terminal selection band / hover), never rounded.
+    readonly property color hoverFill: ThemeEngine.withAlpha(page.fgPrimary, 0.07)
+    readonly property color selectionFill: ThemeEngine.withAlpha(page.fgAccent, 0.18)
+    readonly property color pressFill: ThemeEngine.withAlpha(page.fgPrimary, 0.16)
+
+    /// `── channels ───────── [5]` — the sidebar's section rule: a box-drawing
+    /// run sized to `availableWidth` (via the mono font's metrics) with the
+    /// count in brackets. `count` <= 0 drops the bracket.
+    function sectionRule(title, count, availableWidth, metrics)
+    {
+        var suffix = count > 0 ? (" [" + count + "]") : ""
+        var head = "── " + title + " "
+        var dash = metrics.advanceWidth("─")
+        var used = metrics.advanceWidth(head) + metrics.advanceWidth(suffix)
+        var run = 2
+        if (dash > 0) {
+            run = Math.floor((availableWidth - used) / dash)
+            if (run < 2) {
+                run = 2
+            }
+        }
+        var out = head
+        for (var i = 0; i < run; ++i) {
+            out += "─"
+        }
+        return out + suffix
+    }
+
+    /// `── Operators (2)` — the people panel's ASCII sub-rules.
+    function subRule(title, count)
+    {
+        return "── " + title + " (" + count + ")"
+    }
 
     // Label of the "*server*" buffer row: the network we are actually on when
     // connected, so it never just repeats the "Server" section header.
@@ -82,6 +132,9 @@ Kirigami.Page {
 
     title: page.channelLabel(page.currentChannel)
     padding: 0
+    // One monospace family for the whole page: every control inherits this
+    // unless it sets its own (the frozen `fontFamily` token).
+    font.family: page.monoFamily
 
     /// "*server*" is a buffer name, not something to show the user verbatim.
     function channelLabel(target)
@@ -93,29 +146,15 @@ Kirigami.Page {
     }
 
     // ---------------------------------------------------------------------- //
-    // Theme surfaces (via ThemeEngine's flat tokens + resolvers; empty theme
-    // strings fall back to the Kirigami palette at the call site).
+    // Geometry + legacy theme tokens still in use (see the retro-terminal
+    // token block at the top of the page for the colours).
     // ---------------------------------------------------------------------- //
     readonly property real sideWidth: ThemeEngine.sidebarWidth > 0 ? ThemeEngine.sidebarWidth : 250
-    readonly property color sideBg: ThemeEngine.sidebarSurfaceColor(Kirigami.Theme.alternateBackgroundColor)
-    readonly property color panelBg: ThemeEngine.surfaceAltColor(Kirigami.Theme.alternateBackgroundColor)
     readonly property real rowHt: ThemeEngine.rowHeight
-    readonly property real rowRad: ThemeEngine.rowRadius
-    readonly property color rowHv: ThemeEngine.rowHoverColor(ThemeEngine.withAlpha(Kirigami.Theme.textColor, 0.08))
-    readonly property color rowSel: ThemeEngine.rowSelectedColor(ThemeEngine.withAlpha(Kirigami.Theme.highlightColor, 0.28))
-    readonly property color accentC: ThemeEngine.accentColor(Kirigami.Theme.highlightColor)
-    readonly property color accentTxt: ThemeEngine.accentTextColor(Kirigami.Theme.highlightedTextColor)
     readonly property color mutedTxt: ThemeEngine.mutedTextColor(Kirigami.Theme.disabledTextColor)
     readonly property color sectionTxt: ThemeEngine.sectionHeaderColor(Kirigami.Theme.textColor)
     readonly property int sectionSz: ThemeEngine.resolveSectionHeaderSize(Kirigami.Theme.defaultFont.pointSize)
-    readonly property color eventTxt: ThemeEngine.eventTextColor(Kirigami.Theme.disabledTextColor)
     readonly property int eventSz: ThemeEngine.resolveEventSize(Kirigami.Theme.defaultFont.pointSize)
-    readonly property color onlineC: ThemeEngine.statusOnlineColor(Kirigami.Theme.positiveTextColor)
-    readonly property color awayC: ThemeEngine.statusAwayColor(Kirigami.Theme.neutralTextColor)
-    readonly property color offlineC: ThemeEngine.statusOfflineColor(Kirigami.Theme.disabledTextColor)
-    readonly property color unreadBg: ThemeEngine.unreadBadgeColor(Kirigami.Theme.highlightColor)
-    readonly property color unreadTxt: ThemeEngine.unreadBadgeTextColor(Kirigami.Theme.highlightedTextColor)
-    readonly property real inputRad: ThemeEngine.inputRadius
 
     // ---------------------------------------------------------------------- //
     // Model
@@ -312,10 +351,11 @@ Kirigami.Page {
         ops.sort(byBare)
         voiced.sort(byBare)
         others.sort(byBare)
-        function label(base, n) { return base + " (" + n + ")" }
-        for (var o = 0; o < ops.length; ++o) { ops[o].group = label(qsTr("Operators"), ops.length) }
-        for (var v = 0; v < voiced.length; ++v) { voiced[v].group = label(qsTr("Voiced"), voiced.length) }
-        for (var r = 0; r < others.length; ++r) { others[r].group = label(qsTr("Others"), others.length) }
+        // ASCII sub-rules (`── Operators (2)`) instead of a messenger-style
+        // section caption; the delegate renders `group` verbatim.
+        for (var o = 0; o < ops.length; ++o) { ops[o].group = page.subRule(qsTr("Operators"), ops.length) }
+        for (var v = 0; v < voiced.length; ++v) { voiced[v].group = page.subRule(qsTr("Voiced"), voiced.length) }
+        for (var r = 0; r < others.length; ++r) { others[r].group = page.subRule(qsTr("Others"), others.length) }
         return ops.concat(voiced, others)
     }
 
@@ -327,12 +367,16 @@ Kirigami.Page {
         spacing: 0
 
         // ---------------- sidebar ---------------- //
+        // Flat terminal list: full-bleed rows, box-drawing section rules with
+        // the count in brackets, a `▌` marker + flat accent band for the open
+        // buffer, an ASCII `*` for unread. No pills, no tiles, no avatars; the
+        // hover-revealed close stays inside its row's reserved slot.
         Rectangle {
             id: sidebar
             Layout.preferredWidth: page.sideWidth
             Layout.minimumWidth: Kirigami.Units.gridUnit * 9
             Layout.fillHeight: true
-            color: page.sideBg
+            color: page.bgPanel
 
             ColumnLayout {
                 anchors.fill: parent
@@ -351,9 +395,9 @@ Kirigami.Page {
                     cacheBuffer: Kirigami.Units.gridUnit * 20
 
                     // One delegate per buffer: the "*server*" console plus the
-                    // joined channels and query windows. Section headers are
-                    // part of the model, so a single flat list still renders
-                    // as "Server" / "Messages" / "Channels".
+                    // joined channels and query windows. Section rules are part
+                    // of the model, so a single flat list still renders as
+                    // "Server" / "Messages" / "Channels".
                     delegate: Controls.ItemDelegate {
                         id: bufferDelegate
                         required property string target
@@ -368,22 +412,25 @@ Kirigami.Page {
                         readonly property bool active: page.sameTarget(bufferDelegate.target, page.currentChannel)
                         readonly property bool hasUnread: !bufferDelegate.active && !bufferDelegate.isServer
                             && page.bridge !== null && page.bridge.unread_count > 0
-                        // Tile colour for channels: the channel's own hash
-                        // colour (same colour as that channel's nicks).
-                        readonly property color tileColor: bufferDelegate.isServer
-                            ? ThemeEngine.withAlpha(Kirigami.Theme.textColor, 0.14)
-                            : ThemeEngine.nickColor(bufferDelegate.target, page.darkTheme)
-                        // Queries show the nick initial; the presence dot is
-                        // connection-based (the core exposes no per-nick
-                        // presence): online while connected, offline otherwise.
-                        readonly property color presenceColor: page.connected ? page.onlineC : page.offlineC
+                        // Plain buffer name as it is typed (`#pain`, a query
+                        // nick); the console row shows the network it is on.
+                        readonly property string rowLabel: bufferDelegate.isServer
+                            ? page.serverBufferLabel : bufferDelegate.target
+                        // Width the section rule may occupy: the row minus its
+                        // margins, minus the `[+]` join control's slot on the
+                        // Channels rule.
+                        readonly property real ruleWidth: Math.max(0, bufferDelegate.width
+                            - Kirigami.Units.smallSpacing * 4
+                            - (bufferDelegate.sectionKind === "channel"
+                               ? Math.round(Kirigami.Units.gridUnit * 1.9) : 0))
 
                         width: bufferList.width
                         hoverEnabled: true
                         padding: 0
-                        // The close button, accent bar and tile must never
-                        // paint outside this row's bounds.
+                        // The close control is overlaid inside this row: it
+                        // must never paint outside the row's bounds.
                         clip: true
+                        font.family: page.monoFamily
 
                         onClicked: page.openChannel(bufferDelegate.target)
 
@@ -392,111 +439,85 @@ Kirigami.Page {
                             ? qsTr("Server messages and notices")
                             : bufferDelegate.target
 
-                        background: Item {
-                            Rectangle {
-                                id: rowPill
-                                anchors.fill: parent
-                                anchors.leftMargin: Kirigami.Units.smallSpacing
-                                anchors.rightMargin: Kirigami.Units.smallSpacing
-                                anchors.topMargin: 1
-                                anchors.bottomMargin: 1
-                                radius: page.rowRad
-                                color: bufferDelegate.active
-                                    ? page.rowSel
-                                    : (bufferDelegate.hovered ? page.rowHv : "transparent")
-                                Behavior on color {
-                                    ColorAnimation { duration: ThemeEngine.motionDuration }
-                                }
-                            }
+                        FontMetrics {
+                            id: bufferMetrics
+                            font.family: page.monoFamily
+                            font.pointSize: page.sectionSz
+                        }
 
-                            // 3px accent bar overlaid on the selected pill's
-                            // leading edge (inside the delegate): the
-                            // selected row keeps every other row's margins.
-                            Rectangle {
-                                visible: bufferDelegate.active
-                                anchors.left: rowPill.left
-                                anchors.leftMargin: 2
-                                anchors.top: rowPill.top
-                                anchors.topMargin: Math.round(rowPill.height * 0.22)
-                                anchors.bottom: rowPill.bottom
-                                anchors.bottomMargin: Math.round(rowPill.height * 0.22)
-                                implicitWidth: 3
-                                radius: 1.5
-                                color: page.accentC
+                        background: Rectangle {
+                            // Full-bleed flat band: accent tint for the open
+                            // buffer, a faint wash on hover. Never rounded.
+                            color: bufferDelegate.active
+                                ? page.selectionFill
+                                : (bufferDelegate.hovered ? page.hoverFill : "transparent")
+                            Behavior on color {
+                                ColorAnimation { duration: ThemeEngine.motionDuration }
                             }
                         }
 
                         contentItem: ColumnLayout {
                             spacing: 0
 
+                            // Section rule: `── channels ────────── [5]`
                             RowLayout {
                                 visible: bufferDelegate.sectionStart
                                 Layout.fillWidth: true
                                 Layout.leftMargin: Kirigami.Units.smallSpacing * 2
                                 Layout.rightMargin: Kirigami.Units.smallSpacing * 2
-                                Layout.topMargin: bufferDelegate.isServer ? 0 : Kirigami.Units.smallSpacing
+                                Layout.topMargin: bufferDelegate.isServer
+                                                 ? Kirigami.Units.smallSpacing / 2
+                                                 : Kirigami.Units.smallSpacing
                                 Layout.bottomMargin: Kirigami.Units.smallSpacing / 2
-                                // The count and the join action sit in the
-                                // same row, so they need real breathing room
-                                // rather than a hairline gap.
                                 spacing: Kirigami.Units.smallSpacing
 
                                 Controls.Label {
                                     Layout.fillWidth: true
-                                    text: bufferDelegate.sectionTitle
+                                    Layout.alignment: Qt.AlignVCenter
+                                    text: page.sectionRule(bufferDelegate.sectionTitle,
+                                                           bufferDelegate.sectionCount,
+                                                           bufferDelegate.ruleWidth,
+                                                           bufferMetrics)
                                     color: page.sectionTxt
-                                    opacity: 0.8
-                                    font.bold: true
+                                    opacity: 0.85
+                                    font.family: page.monoFamily
                                     font.pointSize: page.sectionSz
                                     elide: Text.ElideRight
                                 }
 
-                                Controls.Label {
-                                    visible: bufferDelegate.sectionCount > 0
-                                    text: bufferDelegate.sectionCount
-                                    color: page.mutedTxt
-                                    font.pointSize: page.sectionSz
-                                }
-
-                                // Join action: lives in the Channels header
-                                // row (next to the count), not beside any
-                                // buffer's close control.
+                                // Join action: lives in the Channels rule row
+                                // (next to the count), not beside any buffer's
+                                // close control. Flat `[+]`, no surface box.
                                 Controls.ToolButton {
                                     id: joinAddButton
                                     visible: bufferDelegate.sectionKind === "channel"
-                                    display: Controls.AbstractButton.IconOnly
-                                    // `icon.name` does not resolve in this
-                                    // control's style (renders an empty box),
-                                    // so draw the glyph directly.
-                                    contentItem: Controls.Label {
-                                        text: "+"
-                                        color: Kirigami.Theme.textColor
-                                        font.bold: true
-                                        font.pointSize: Math.round(Kirigami.Theme.defaultFont.pointSize * 1.2)
-                                        horizontalAlignment: Text.AlignHCenter
-                                        verticalAlignment: Text.AlignVCenter
-                                    }
-                                    Layout.preferredWidth: Math.round(Kirigami.Units.gridUnit * 1.25)
+                                    display: Controls.AbstractButton.TextOnly
+                                    text: qsTr("[+]")
+                                    Layout.preferredWidth: Math.round(Kirigami.Units.gridUnit * 1.9)
                                     Layout.preferredHeight: Math.round(Kirigami.Units.gridUnit * 1.25)
                                     onClicked: page.openJoinDialog()
 
-                                    // A bare glyph reads as decoration: give
-                                    // it a resting surface so it is obviously
-                                    // the join action.
-                                    background: Rectangle {
-                                        radius: page.rowRad
+                                    Controls.ToolTip.visible: hovered
+                                    Controls.ToolTip.text: qsTr("Join a channel (Ctrl+J)")
+
+                                    contentItem: Controls.Label {
+                                        text: joinAddButton.text
                                         color: joinAddButton.hovered || joinAddButton.activeFocus
-                                               ? page.rowHv
-                                               : ThemeEngine.withAlpha(Kirigami.Theme.textColor, 0.06)
-                                        border.width: 1
-                                        border.color: ThemeEngine.withAlpha(Kirigami.Theme.textColor, 0.12)
+                                               ? page.fgAccent : page.fgPrimary
+                                        font.family: page.monoFamily
+                                        font.bold: true
+                                        font.pointSize: page.sectionSz
+                                        horizontalAlignment: Text.AlignHCenter
+                                        verticalAlignment: Text.AlignVCenter
+                                    }
+
+                                    background: Rectangle {
+                                        color: joinAddButton.hovered || joinAddButton.activeFocus
+                                               ? page.hoverFill : "transparent"
                                         Behavior on color {
                                             ColorAnimation { duration: ThemeEngine.motionDuration }
                                         }
                                     }
-
-                                    Controls.ToolTip.visible: hovered
-                                    Controls.ToolTip.text: qsTr("Join a channel (Ctrl+J)")
                                 }
                             }
 
@@ -512,82 +533,44 @@ Kirigami.Page {
                                     // Right padding reserves the close
                                     // control's slot INSIDE the row, so it
                                     // never overlaps the label or paints
-                                    // outside the pill.
+                                    // outside the row.
                                     anchors.rightMargin: Math.round(Kirigami.Units.gridUnit * 1.25) + Kirigami.Units.smallSpacing
-                                    spacing: Kirigami.Units.smallSpacing
+                                    spacing: Kirigami.Units.smallSpacing / 2
 
-                                    // Leading element per row kind: a server
-                                    // glyph for the console, a rounded "#"
-                                    // tile for channels, the nick initial
-                                    // for queries.
-                                    Rectangle {
+                                    // Leading selection marker: a `▌` bar on
+                                    // the open buffer, one blank cell on every
+                                    // other row so names stay in one column.
+                                    Controls.Label {
                                         Layout.alignment: Qt.AlignVCenter
-                                        Layout.preferredWidth: Math.round(Kirigami.Units.gridUnit * 1.2)
-                                        Layout.preferredHeight: Math.round(Kirigami.Units.gridUnit * 1.2)
-                                        radius: bufferDelegate.isQuery ? width / 2 : page.rowRad
-                                        color: bufferDelegate.tileColor
-
-                                        Kirigami.Icon {
-                                            anchors.centerIn: parent
-                                            visible: bufferDelegate.isServer
-                                            source: "network-server"
-                                            color: Kirigami.Theme.textColor
-                                            implicitWidth: Math.round(parent.width * 0.66)
-                                            implicitHeight: implicitWidth
-                                        }
-
-                                        Controls.Label {
-                                            anchors.centerIn: parent
-                                            visible: !bufferDelegate.isServer
-                                            text: bufferDelegate.isQuery
-                                                  ? ThemeEngine.initial(bufferDelegate.target)
-                                                  : "#"
-                                            color: ThemeEngine.contrastingTextColor(bufferDelegate.tileColor)
-                                            font.bold: true
-                                            font.pointSize: Math.max(1, Kirigami.Theme.defaultFont.pointSize)
-                                        }
-
-                                        // Presence dot for query windows
-                                        // (see presenceColor above).
-                                        Rectangle {
-                                            visible: bufferDelegate.isQuery
-                                            anchors.right: parent.right
-                                            anchors.bottom: parent.bottom
-                                            anchors.rightMargin: -1
-                                            anchors.bottomMargin: -1
-                                            implicitWidth: Math.round(parent.width * 0.38)
-                                            implicitHeight: implicitWidth
-                                            radius: width / 2
-                                            color: bufferDelegate.presenceColor
-                                            border.width: 1
-                                            border.color: page.sideBg
-                                        }
+                                        text: bufferDelegate.active ? "\u258c" : " "
+                                        color: page.fgAccent
+                                        font.family: page.monoFamily
                                     }
 
                                     Controls.Label {
                                         Layout.fillWidth: true
                                         Layout.alignment: Qt.AlignVCenter
-                                        text: bufferDelegate.isServer
-                                              ? page.serverBufferLabel
-                                              : (bufferDelegate.isQuery
-                                                 ? bufferDelegate.target
-                                                 : bufferDelegate.target.substring(1))
-                                        color: Kirigami.Theme.textColor
+                                        // Plain text: `#pain`, the query nick,
+                                        // or the console's network name. No
+                                        // tile, no avatar, no prefix stripping.
+                                        text: bufferDelegate.rowLabel
+                                        color: page.fgPrimary
+                                        font.family: page.monoFamily
                                         font.bold: bufferDelegate.active || bufferDelegate.hasUnread
                                         elide: Text.ElideRight
                                     }
 
-                                    // Per-row unread dot (the core only
+                                    // Unread marker: ASCII `*` (the core only
                                     // tracks a global counter, so every
-                                    // non-visible buffer carries the dot
+                                    // non-visible buffer carries the marker
                                     // while it is non-zero).
-                                    Rectangle {
+                                    Controls.Label {
                                         Layout.alignment: Qt.AlignVCenter
                                         visible: bufferDelegate.hasUnread
-                                        implicitWidth: 8
-                                        implicitHeight: 8
-                                        radius: width / 2
-                                        color: page.unreadBg
+                                        text: "*"
+                                        color: page.fgAccent
+                                        font.family: page.monoFamily
+                                        font.bold: true
 
                                         Controls.ToolTip.visible: unreadHover.hovered
                                         Controls.ToolTip.text: page.bridge !== null
@@ -599,13 +582,11 @@ Kirigami.Page {
                                     }
                                 }
 
-                                // The close control is OVERLAID top-right
-                                // inside the row (slot always reserved via
-                                // the inner row's right margin): it only
-                                // fades in on hover or keyboard focus, so it
-                                // can never shove the log, float outside the
-                                // pill, or sit beside the Channels "+" (which
-                                // now lives in the section header).
+                                // The close control is OVERLAID at the row's
+                                // right edge (slot always reserved via the
+                                // inner row's right margin): it only fades in
+                                // on hover or keyboard focus, so it can never
+                                // shove the log or float outside the row.
                                 Controls.ToolButton {
                                     id: closeButton
                                     anchors.right: parent.right
@@ -616,8 +597,8 @@ Kirigami.Page {
                                     // An invisible control must not swallow
                                     // clicks meant for opening the buffer.
                                     enabled: closeButton.opacity > 0
-                                    icon.name: "window-close"
-                                    display: Controls.AbstractButton.IconOnly
+                                    display: Controls.AbstractButton.TextOnly
+                                    text: "\u00d7"
                                     implicitWidth: Math.round(Kirigami.Units.gridUnit * 1.25)
                                     implicitHeight: Math.round(Kirigami.Units.gridUnit * 1.25)
                                     onClicked: page.closeBuffer(bufferDelegate.target)
@@ -630,6 +611,20 @@ Kirigami.Page {
                                     Controls.ToolTip.text: bufferDelegate.isQuery
                                                           ? qsTr("Close conversation")
                                                           : qsTr("Leave channel")
+
+                                    contentItem: Controls.Label {
+                                        text: closeButton.text
+                                        color: closeButton.hovered || closeButton.activeFocus
+                                               ? page.fgWarn : page.fgDim
+                                        font.family: page.monoFamily
+                                        horizontalAlignment: Text.AlignHCenter
+                                        verticalAlignment: Text.AlignVCenter
+                                    }
+
+                                    background: Rectangle {
+                                        color: closeButton.hovered || closeButton.activeFocus
+                                               ? page.hoverFill : "transparent"
+                                    }
                                 }
                             }
 
@@ -649,9 +644,8 @@ Kirigami.Page {
                         policy: Controls.ScrollBar.AsNeeded
                         contentItem: Rectangle {
                             implicitWidth: 6
-                            radius: width / 2
-                            color: ThemeEngine.withAlpha(Kirigami.Theme.textColor,
-                                                         channelScroll.pressed ? 0.45 : 0.22)
+                            color: ThemeEngine.withAlpha(page.fgDim,
+                                                         channelScroll.pressed ? 0.55 : 0.3)
                             opacity: channelScroll.active ? 1 : 0
                             Behavior on opacity {
                                 NumberAnimation { duration: ThemeEngine.motionDuration }
@@ -665,7 +659,7 @@ Kirigami.Page {
         Rectangle {
             Layout.preferredWidth: 1
             Layout.fillHeight: true
-            color: page.hairline
+            color: page.ruleC
         }
 
         // ---------------- message view ---------------- //
@@ -674,27 +668,91 @@ Kirigami.Page {
             Layout.fillHeight: true
             spacing: 0
 
-            Kirigami.InlineMessage {
+            // Join failure: a flat terminal error line (`[!] reason ×`) with a
+            // warn-coloured rule instead of a rounded inline message surface.
+            Rectangle {
+                id: joinErrorBar
                 Layout.fillWidth: true
-                Layout.margins: Kirigami.Units.smallSpacing
                 visible: page.joinError.length > 0
-                text: page.joinError
-                type: Kirigami.MessageType.Error
-                showCloseButton: true
-                onVisibleChanged: if (!visible) page.joinError = ""
+                implicitHeight: joinErrorRow.implicitHeight + Kirigami.Units.smallSpacing
+                color: page.bgPanel
+
+                Controls.ToolTip.visible: joinErrorHover.hovered
+                Controls.ToolTip.text: page.joinError
+
+                HoverHandler {
+                    id: joinErrorHover
+                }
+
+                Rectangle {
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.bottom: parent.bottom
+                    height: 1
+                    color: page.fgWarn
+                    opacity: 0.6
+                }
+
+                RowLayout {
+                    id: joinErrorRow
+                    anchors.fill: parent
+                    anchors.leftMargin: Kirigami.Units.smallSpacing * 2
+                    anchors.rightMargin: Kirigami.Units.smallSpacing
+                    spacing: Kirigami.Units.smallSpacing
+
+                    Controls.Label {
+                        Layout.alignment: Qt.AlignVCenter
+                        text: "[!]"
+                        color: page.fgWarn
+                        font.family: page.monoFamily
+                    }
+
+                    Controls.Label {
+                        Layout.fillWidth: true
+                        Layout.alignment: Qt.AlignVCenter
+                        text: page.joinError
+                        color: page.fgWarn
+                        font.family: page.monoFamily
+                        font.pointSize: page.eventSz
+                        elide: Text.ElideRight
+                    }
+
+                    Controls.ToolButton {
+                        id: joinErrorClose
+                        Layout.alignment: Qt.AlignVCenter
+                        display: Controls.AbstractButton.TextOnly
+                        text: "\u00d7"
+                        implicitWidth: Math.round(Kirigami.Units.gridUnit * 1.25)
+                        implicitHeight: Math.round(Kirigami.Units.gridUnit * 1.25)
+                        onClicked: page.joinError = ""
+                        Controls.ToolTip.visible: hovered
+                        Controls.ToolTip.text: qsTr("Dismiss")
+
+                        contentItem: Controls.Label {
+                            text: joinErrorClose.text
+                            color: joinErrorClose.hovered ? page.fgWarn : page.fgDim
+                            font.family: page.monoFamily
+                            horizontalAlignment: Text.AlignHCenter
+                            verticalAlignment: Text.AlignVCenter
+                        }
+
+                        background: Rectangle {
+                            color: joinErrorClose.hovered ? page.hoverFill : "transparent"
+                        }
+                    }
+                }
             }
 
-            // Topic bar: a real surface (not bare text floating over the log)
-            // carrying the channel tile + name + one-line topic (click to
-            // expand), with the people-panel toggle docked into its right end
-            // so it reads as part of the bar, not an unanchored square on the
-            // panel boundary.
+            // Topic bar: a terminal line — `#pain │ topic` — framed by
+            // box-drawing rules instead of a rounded surface, with the
+            // people-panel toggle docked at its right end as a small ASCII
+            // control.
             Rectangle {
                 id: topicBar
                 visible: page.isChannel(page.currentChannel)
                 Layout.fillWidth: true
                 implicitHeight: topicLayout.implicitHeight + Kirigami.Units.smallSpacing * 2
-                color: page.panelBg
+                color: page.bgPanel
 
                 HoverHandler {
                     id: topicHover
@@ -708,7 +766,7 @@ Kirigami.Page {
                     anchors.right: parent.right
                     anchors.top: parent.top
                     height: 1
-                    color: page.hairline
+                    color: page.ruleC
                 }
 
                 // Click-to-expand for the text zone. Declared before the row
@@ -723,34 +781,26 @@ Kirigami.Page {
                     id: topicLayout
                     anchors.fill: parent
                     anchors.margins: Kirigami.Units.smallSpacing
-                    spacing: Kirigami.Units.smallSpacing
+                    spacing: Kirigami.Units.smallSpacing / 2
 
-                    // Channel tile: the channel's own hash colour, same as its
-                    // sidebar row and the window header glyph.
-                    Rectangle {
-                        Layout.alignment: Qt.AlignVCenter
-                        implicitWidth: Math.round(Kirigami.Units.gridUnit * 1.1)
-                        implicitHeight: implicitWidth
-                        radius: page.rowRad
-                        color: ThemeEngine.nickColor(page.currentChannel, page.darkTheme)
-
-                        Controls.Label {
-                            anchors.centerIn: parent
-                            text: "#"
-                            color: ThemeEngine.contrastingTextColor(parent.color)
-                            font.bold: true
-                            font.pointSize: Math.max(1, Kirigami.Theme.defaultFont.pointSize)
-                        }
-                    }
-
+                    // `#pain` — the channel as it is typed (no colour tile).
                     Controls.Label {
                         id: topicName
                         Layout.alignment: Qt.AlignVCenter
                         Layout.maximumWidth: Math.round(topicBar.width * 0.45)
                         text: page.currentChannel
-                        color: Kirigami.Theme.textColor
+                        color: page.fgPrimary
+                        font.family: page.monoFamily
                         font.bold: true
                         elide: Text.ElideRight
+                    }
+
+                    // Dim `│` separator between the channel and its topic.
+                    Controls.Label {
+                        Layout.alignment: Qt.AlignVCenter
+                        text: "│"
+                        color: page.fgDim
+                        font.family: page.monoFamily
                     }
 
                     // Topic: one elided line by default; word-wrapped while
@@ -760,56 +810,47 @@ Kirigami.Page {
                         id: topicLabel
                         Layout.fillWidth: true
                         Layout.alignment: Qt.AlignVCenter
+                        Layout.leftMargin: Kirigami.Units.smallSpacing / 2
                         textFormat: Text.PlainText
                         text: page.currentTopic.length > 0 ? page.currentTopic : qsTr("No topic set")
+                        font.family: page.monoFamily
                         font.italic: page.currentTopic.length === 0
                         maximumLineCount: page.topicExpanded ? 6 : 1
                         elide: Text.ElideRight
                         wrapMode: page.topicExpanded ? Text.WordWrap : Text.NoWrap
-                        color: page.currentTopic.length > 0 ? Kirigami.Theme.textColor : page.mutedTxt
+                        color: page.currentTopic.length > 0 ? page.fgPrimary : page.mutedTxt
                         font.pointSize: page.eventSz
                     }
 
-                    // People-panel toggle, docked in the bar's right end with
-                    // a resting surface of its own (checked = the panel is
-                    // shown).  The glyph is drawn with Kirigami.Icon so it
-                    // follows the theme colours like the rest of the page.
+                    // People-panel toggle: a small ASCII control docked at the
+                    // bar's right end (accent while the panel is shown).
                     Controls.ToolButton {
                         id: peopleToggle
                         Layout.alignment: Qt.AlignVCenter
-                        display: Controls.AbstractButton.IconOnly
+                        display: Controls.AbstractButton.TextOnly
+                        text: "[" + qsTr("people") + "]"
                         checkable: true
                         checked: page.peopleVisible
                         onToggled: page.peopleVisible = checked
-                        implicitWidth: Math.round(Kirigami.Units.gridUnit * 1.35)
-                        implicitHeight: Math.round(Kirigami.Units.gridUnit * 1.35)
 
                         Controls.ToolTip.visible: hovered
                         Controls.ToolTip.text: checked ? qsTr("Hide people panel") : qsTr("Show people panel")
 
-                        background: Rectangle {
-                            radius: page.rowRad
-                            color: peopleToggle.checked
-                                ? page.rowSel
-                                : (peopleToggle.hovered || peopleToggle.activeFocus
-                                   ? page.rowHv
-                                   : ThemeEngine.withAlpha(Kirigami.Theme.textColor, 0.06))
-                            border.width: 1
-                            border.color: peopleToggle.checked
-                                ? page.accentC
-                                : ThemeEngine.withAlpha(Kirigami.Theme.textColor, 0.12)
-                            Behavior on color {
-                                ColorAnimation { duration: ThemeEngine.motionDuration }
-                            }
+                        contentItem: Controls.Label {
+                            text: peopleToggle.text
+                            color: peopleToggle.checked ? page.fgAccent
+                                   : (peopleToggle.hovered || peopleToggle.activeFocus ? page.fgPrimary : page.fgDim)
+                            font.family: page.monoFamily
+                            font.pointSize: page.eventSz
+                            horizontalAlignment: Text.AlignHCenter
+                            verticalAlignment: Text.AlignVCenter
                         }
 
-                        contentItem: Item {
-                            Kirigami.Icon {
-                                anchors.centerIn: parent
-                                source: "system-users"
-                                color: Kirigami.Theme.textColor
-                                width: Math.round(Kirigami.Units.gridUnit * 0.9)
-                                height: width
+                        background: Rectangle {
+                            color: peopleToggle.hovered || peopleToggle.activeFocus
+                                   ? page.hoverFill : "transparent"
+                            Behavior on color {
+                                ColorAnimation { duration: ThemeEngine.motionDuration }
                             }
                         }
                     }
@@ -820,13 +861,20 @@ Kirigami.Page {
                     anchors.right: parent.right
                     anchors.bottom: parent.bottom
                     height: 1
-                    color: page.hairline
+                    color: page.ruleC
                 }
             }
 
             Item {
                 Layout.fillWidth: true
                 Layout.fillHeight: true
+
+                // Flat log surface (the `bgLog` token); the delegate paints
+                // the text rows on top of it.
+                Rectangle {
+                    anchors.fill: parent
+                    color: page.bgLog
+                }
 
                 ListView {
                     id: messageView
@@ -838,7 +886,7 @@ Kirigami.Page {
                     spacing: 0
                     topMargin: Kirigami.Units.smallSpacing
                     bottomMargin: Kirigami.Units.smallSpacing
-                    // Keep self-message avatars out of the overlay scrollbar gutter.
+                    // Keep self-message rows out of the overlay scrollbar gutter.
                     rightMargin: Kirigami.Units.smallSpacing * 2
 
                     onAtYEndChanged: {
@@ -869,9 +917,8 @@ Kirigami.Page {
                         policy: Controls.ScrollBar.AsNeeded
                         contentItem: Rectangle {
                             implicitWidth: 6
-                            radius: width / 2
-                            color: ThemeEngine.withAlpha(Kirigami.Theme.textColor,
-                                                         messageScroll.pressed ? 0.45 : 0.22)
+                            color: ThemeEngine.withAlpha(page.fgDim,
+                                                         messageScroll.pressed ? 0.55 : 0.3)
                             opacity: messageScroll.active ? 1 : 0
                             Behavior on opacity {
                                 NumberAnimation { duration: ThemeEngine.motionDuration }
@@ -887,14 +934,15 @@ Kirigami.Page {
                         visible: messageView.count === 0
                         spacing: Kirigami.Units.smallSpacing
 
-                        Kirigami.Icon {
+                        // ASCII banner instead of a modern pictogram.
+                        Controls.Label {
                             Layout.alignment: Qt.AlignHCenter
-                            source: !page.connected ? "network-offline"
-                                                    : (page.currentChannel === "*server*" ? "utilities-terminal" : "dialog-messages")
-                            color: Kirigami.Theme.disabledTextColor
-                            implicitWidth: Kirigami.Units.iconSizes.huge
-                            implicitHeight: Kirigami.Units.iconSizes.huge
-                            opacity: 0.7
+                            text: !page.connected ? "[ offline ]"
+                                  : (page.currentChannel === "*server*" ? "[ server console ]"
+                                     : "[" + page.currentChannel + "]")
+                            color: page.fgDim
+                            font.family: page.monoFamily
+                            font.pointSize: page.eventSz
                         }
 
                         Controls.Label {
@@ -912,7 +960,8 @@ Kirigami.Page {
                                 }
                                 return qsTr("No messages in %1 yet").arg(page.currentChannel)
                             }
-                            color: Kirigami.Theme.textColor
+                            color: page.fgPrimary
+                            font.family: page.monoFamily
                             font.bold: true
                         }
 
@@ -932,12 +981,13 @@ Kirigami.Page {
                                 }
                                 return qsTr("Say hi!")
                             }
-                            color: Kirigami.Theme.disabledTextColor
+                            color: page.mutedTxt
+                            font.family: page.monoFamily
                         }
                     }
                 }
 
-                // Floating pill: traffic arrived while scrolled up.
+                // Flat ASCII control: traffic arrived while scrolled up.
                 Controls.Button {
                     id: newMessagesPill
                     anchors.bottom: parent.bottom
@@ -945,43 +995,31 @@ Kirigami.Page {
                     anchors.horizontalCenter: parent.horizontalCenter
                     visible: page.hasUnseenBelow
                     z: 2
-                    leftPadding: Kirigami.Units.smallSpacing * 2
-                    rightPadding: Kirigami.Units.smallSpacing * 2
-                    icon.name: "go-down"
-                    text: qsTr("New messages")
+                    text: "[ " + qsTr("new messages") + " ]"
                     onClicked: {
                         page.hasUnseenBelow = false
                         page.scrollToEnd()
                     }
 
                     background: Rectangle {
-                        radius: height / 2
-                        color: newMessagesPill.pressed
-                            ? Qt.darker(page.accentC, 1.2)
-                            : page.accentC
+                        color: newMessagesPill.pressed ? page.pressFill : page.bgPanel
+                        border.width: 1
+                        border.color: page.fgAccent
                         Behavior on color {
                             ColorAnimation { duration: ThemeEngine.motionDuration }
                         }
                     }
 
-                    contentItem: RowLayout {
-                        spacing: Kirigami.Units.smallSpacing
-
-                        Kirigami.Icon {
-                            Layout.alignment: Qt.AlignVCenter
-                            source: newMessagesPill.icon.name
-                            color: page.accentTxt
-                            implicitWidth: Math.round(Kirigami.Units.gridUnit * 0.8)
-                            implicitHeight: implicitWidth
-                        }
-
-                        Controls.Label {
-                            Layout.alignment: Qt.AlignVCenter
-                            text: newMessagesPill.text
-                            color: page.accentTxt
-                            font.bold: true
-                            font.pointSize: Math.max(1, Kirigami.Theme.defaultFont.pointSize - 1)
-                        }
+                    contentItem: Controls.Label {
+                        text: newMessagesPill.text
+                        color: page.fgAccent
+                        font.family: page.monoFamily
+                        font.bold: true
+                        font.pointSize: page.eventSz
+                        horizontalAlignment: Text.AlignHCenter
+                        verticalAlignment: Text.AlignVCenter
+                        leftPadding: Kirigami.Units.smallSpacing
+                        rightPadding: Kirigami.Units.smallSpacing
                     }
                 }
             }
@@ -989,21 +1027,25 @@ Kirigami.Page {
             // ---------------- input ---------------- //
             // The composer is the last row of the message column: the log
             // above it is Layout.fillHeight, so the list absorbs every resize
-            // and this bar keeps its implicit height (the "New messages" pill
-            // lives inside the log, so it can never push anything out either).
-            // The extra bottom inset keeps the input frame visibly clear of
-            // the window's bottom edge instead of running into it.
+            // and this bar keeps its implicit height (the "new messages"
+            // control lives inside the log, so it can never push anything out
+            // either).  The extra bottom inset keeps the input frame visibly
+            // clear of the window's bottom edge instead of running into it.
+            //
+            // Terminal composer: a flat 1px-boxed field with a `>` prompt
+            // prefix and a plain `[send]` control — no rounded pill, no round
+            // send button.
             Rectangle {
                 Layout.fillWidth: true
                 implicitHeight: inputColumn.implicitHeight + Kirigami.Units.smallSpacing * 3
-                color: Kirigami.Theme.backgroundColor
+                color: page.bgLog
 
                 Rectangle {
                     anchors.top: parent.top
                     anchors.left: parent.left
                     anchors.right: parent.right
                     height: 1
-                    color: page.hairline
+                    color: page.ruleC
                 }
 
                 FontMetrics {
@@ -1024,7 +1066,8 @@ Kirigami.Page {
                         visible: page.currentChannel === "*server*"
                         Layout.fillWidth: true
                         text: qsTr("Server console — slash commands only, e.g. /join #channel")
-                        color: page.mutedTxt
+                        color: page.fgDim
+                        font.family: page.monoFamily
                         font.pointSize: page.eventSz
                         elide: Text.ElideRight
                     }
@@ -1041,27 +1084,41 @@ Kirigami.Page {
 
                             Layout.fillWidth: true
                             implicitHeight: Math.min(inputFrame.maxFieldHeight, messageInput.implicitHeight) + inputFrame.pad * 2
-                            radius: page.inputRad
-                            color: Kirigami.Theme.alternateBackgroundColor
+                            radius: 0
+                            color: page.bgInput
                             border.width: 1
-                            border.color: messageInput.activeFocus ? page.accentC : page.hairline
+                            border.color: messageInput.activeFocus ? page.fgAccent : page.ruleC
                             Behavior on border.color {
                                 ColorAnimation { duration: ThemeEngine.motionDuration }
                             }
 
+                            // `> ` prompt: the terminal cursor line, ahead of
+                            // the editable text (never inside its content).
+                            Controls.Label {
+                                id: inputPrompt
+                                anchors.left: parent.left
+                                anchors.leftMargin: inputFrame.pad
+                                anchors.verticalCenter: parent.verticalCenter
+                                text: ">"
+                                color: messageInput.activeFocus ? page.fgAccent : page.fgDim
+                                font.family: page.monoFamily
+                            }
+
                             Controls.TextArea {
                                 id: messageInput
-                                anchors.left: parent.left
+                                anchors.left: inputPrompt.right
                                 anchors.right: parent.right
+                                anchors.leftMargin: Math.round(Kirigami.Units.smallSpacing / 2)
+                                anchors.rightMargin: inputFrame.pad
                                 anchors.verticalCenter: parent.verticalCenter
-                                anchors.margins: inputFrame.pad
                                 height: Math.min(inputFrame.maxFieldHeight, implicitHeight)
 
                                 background: null
-                                leftPadding: inputFrame.pad
-                                rightPadding: inputFrame.pad
+                                leftPadding: 0
+                                rightPadding: 0
                                 topPadding: 0
                                 bottomPadding: 0
+                                font.family: page.monoFamily
 
                                 enabled: page.connected
                                 placeholderText: {
@@ -1097,45 +1154,38 @@ Kirigami.Page {
                             }
                         }
 
+                        // Flat `[send]` control (disabled while the console is
+                        // active or the field is empty).
                         Controls.Button {
                             id: sendButton
                             Layout.alignment: Qt.AlignBottom
-                            Layout.preferredWidth: Math.round(Kirigami.Units.gridUnit * 1.9)
+                            Layout.preferredWidth: Math.round(Kirigami.Units.gridUnit * 2.5)
                             Layout.preferredHeight: Math.round(Kirigami.Units.gridUnit * 1.9)
                             enabled: page.connected && page.currentChannel !== "*server*" && messageInput.text.trim().length > 0
                             onClicked: page.sendCurrent()
+                            text: qsTr("[send]")
 
                             Controls.ToolTip.visible: hovered
                             Controls.ToolTip.text: qsTr("Send message")
 
                             background: Rectangle {
-                                radius: width / 2
-                                color: !sendButton.enabled
-                                    ? "transparent"
-                                    : (sendButton.pressed
-                                       ? Qt.darker(page.accentC, 1.2)
-                                       : page.accentC)
+                                radius: 0
+                                color: sendButton.pressed ? page.pressFill
+                                       : (sendButton.hovered ? page.hoverFill : "transparent")
                                 border.width: 1
-                                border.color: sendButton.enabled
-                                    ? "transparent"
-                                    : ThemeEngine.withAlpha(Kirigami.Theme.textColor, 0.5)
+                                border.color: sendButton.enabled ? page.fgAccent : page.ruleC
                                 Behavior on color {
                                     ColorAnimation { duration: ThemeEngine.motionDuration }
                                 }
                             }
 
-                            contentItem: Item {
-                                Kirigami.Icon {
-                                    anchors.centerIn: parent
-                                    source: "document-send"
-                                    // No extra alpha on top of the style's own
-                                    // disabled dimming.
-                                    color: sendButton.enabled
-                                        ? page.accentTxt
-                                        : Kirigami.Theme.disabledTextColor
-                                    width: Math.round(Kirigami.Units.gridUnit * 0.95)
-                                    height: width
-                                }
+                            contentItem: Controls.Label {
+                                text: sendButton.text
+                                color: sendButton.enabled ? page.fgAccent : page.mutedTxt
+                                font.family: page.monoFamily
+                                font.pointSize: page.eventSz
+                                horizontalAlignment: Text.AlignHCenter
+                                verticalAlignment: Text.AlignVCenter
                             }
                         }
                     }
@@ -1144,7 +1194,12 @@ Kirigami.Page {
         }
 
         // ---------------- people panel ---------------- //
+        // Plain monospace list: rule header with the count, one `@nick` /
+        // `+nick` row per person (the mode prefix is inline text), ASCII
+        // sub-rules per rank group, dim for anyone without a rank. No
+        // avatars, no badge column, no round surfaces.
         Rectangle {
+            id: peoplePanel
             // Auto-hide on a narrow window: with a 250px sidebar plus this
             // panel there is not enough room left for the log to stay
             // readable, and squeezing it pushed the panel past the window
@@ -1154,46 +1209,74 @@ Kirigami.Page {
             Layout.preferredWidth: Kirigami.Units.gridUnit * 11
             Layout.minimumWidth: Kirigami.Units.gridUnit * 8
             Layout.fillHeight: true
-            color: page.panelBg
+            color: page.bgPanel
 
             ColumnLayout {
                 anchors.fill: parent
                 spacing: 0
 
+                FontMetrics {
+                    id: peopleMetrics
+                    font.family: page.monoFamily
+                    font.pointSize: page.sectionSz
+                }
+
+                // `── People ──────── [5]`
                 Controls.Label {
-                    text: qsTr("People (%1)").arg(page.peopleEntries.length)
-                    font.bold: true
+                    text: page.sectionRule(qsTr("People"), page.peopleEntries.length,
+                                           Math.max(0, peoplePanel.width - Kirigami.Units.smallSpacing * 4),
+                                           peopleMetrics)
                     color: page.sectionTxt
+                    opacity: 0.85
+                    font.family: page.monoFamily
                     font.pointSize: page.sectionSz
                     leftPadding: Kirigami.Units.smallSpacing * 2
+                    rightPadding: Kirigami.Units.smallSpacing * 2
                     topPadding: Kirigami.Units.smallSpacing
                     bottomPadding: Kirigami.Units.smallSpacing / 2
                     Layout.fillWidth: true
                     elide: Text.ElideRight
                 }
 
+                // Flat boxed filter with a `>` prompt.
                 Rectangle {
                     Layout.fillWidth: true
                     Layout.leftMargin: Kirigami.Units.smallSpacing * 2
                     Layout.rightMargin: Kirigami.Units.smallSpacing * 2
                     Layout.bottomMargin: Kirigami.Units.smallSpacing
                     implicitHeight: peopleFilterField.implicitHeight + Kirigami.Units.smallSpacing
-                    radius: page.inputRad
-                    color: Kirigami.Theme.backgroundColor
+                    radius: 0
+                    color: page.bgInput
                     border.width: 1
-                    border.color: peopleFilterField.activeFocus ? page.accentC : page.hairline
+                    border.color: peopleFilterField.activeFocus ? page.fgAccent : page.ruleC
                     Behavior on border.color {
                         ColorAnimation { duration: ThemeEngine.motionDuration }
                     }
 
+                    Controls.Label {
+                        id: peopleFilterPrompt
+                        anchors.left: parent.left
+                        anchors.leftMargin: Kirigami.Units.smallSpacing
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: ">"
+                        color: peopleFilterField.activeFocus ? page.fgAccent : page.fgDim
+                        font.family: page.monoFamily
+                        font.pointSize: page.eventSz
+                    }
+
                     Controls.TextField {
                         id: peopleFilterField
-                        anchors.fill: parent
-                        anchors.margins: Kirigami.Units.smallSpacing / 2
-                        leftPadding: Kirigami.Units.smallSpacing
-                        rightPadding: Kirigami.Units.smallSpacing
+                        anchors.left: peopleFilterPrompt.right
+                        anchors.right: parent.right
+                        anchors.leftMargin: Kirigami.Units.smallSpacing / 2
+                        anchors.rightMargin: Kirigami.Units.smallSpacing
+                        anchors.verticalCenter: parent.verticalCenter
+                        leftPadding: 0
+                        rightPadding: 0
                         background: null
-                        placeholderText: qsTr("Filter…")
+                        font.family: page.monoFamily
+                        font.pointSize: page.eventSz
+                        placeholderText: qsTr("filter…")
                         onTextChanged: page.peopleFilter = text
                     }
                 }
@@ -1206,15 +1289,16 @@ Kirigami.Page {
                     model: page.peopleEntries
                     reuseItems: true
                     section.property: "group"
+                    // ASCII sub-rule per rank group: `── Operators (2)`.
                     section.delegate: Controls.Label {
                         required property string section
                         width: peopleList.width
                         text: section
-                        color: page.mutedTxt
-                        font.bold: true
+                        color: page.fgDim
+                        font.family: page.monoFamily
                         font.pointSize: page.eventSz
                         leftPadding: Kirigami.Units.smallSpacing * 2
-                        topPadding: Kirigami.Units.smallSpacing
+                        topPadding: Kirigami.Units.smallSpacing / 2
                         bottomPadding: Kirigami.Units.smallSpacing / 2
                         elide: Text.ElideRight
                     }
@@ -1225,107 +1309,41 @@ Kirigami.Page {
                         required property string bare
                         required property string prefix
 
-                        // Presence follows rank: operators read as online,
-                        // voiced as away, everyone else as offline.
-                        readonly property color presenceColor: personDelegate.prefix === "+"
-                            ? page.awayC
-                            : ((personDelegate.prefix.length > 0) ? page.onlineC : page.offlineC)
-                        readonly property color avatarColor: ThemeEngine.nickColor(personDelegate.bare, page.darkTheme)
+                        // Rank drives the weight: operators stay at full
+                        // foreground, everyone else (voiced included) is dim.
+                        readonly property bool isOp: personDelegate.prefix === "@"
+                            || personDelegate.prefix === "%"
+                            || personDelegate.prefix === "~"
+                            || personDelegate.prefix === "&"
 
                         width: peopleList.width
                         hoverEnabled: true
                         padding: 0
                         clip: true
+                        implicitHeight: page.rowHt
+                        font.family: page.monoFamily
 
                         Controls.ToolTip.visible: hovered
                         Controls.ToolTip.text: personDelegate.nick
 
                         background: Rectangle {
-                            anchors.fill: parent
-                            anchors.leftMargin: Kirigami.Units.smallSpacing
-                            anchors.rightMargin: Kirigami.Units.smallSpacing
-                            anchors.topMargin: 1
-                            anchors.bottomMargin: 1
-                            radius: page.rowRad
-                            color: personDelegate.hovered ? page.rowHv : "transparent"
+                            // Flat, full-bleed hover wash — never rounded.
+                            color: personDelegate.hovered ? page.hoverFill : "transparent"
                             Behavior on color {
                                 ColorAnimation { duration: ThemeEngine.motionDuration }
                             }
                         }
 
-                        contentItem: RowLayout {
-                            spacing: Kirigami.Units.smallSpacing
-
-                            Rectangle {
-                                Layout.alignment: Qt.AlignVCenter
-                                Layout.leftMargin: Kirigami.Units.smallSpacing
-                                Layout.preferredWidth: Math.round(Kirigami.Units.gridUnit * 1.1)
-                                Layout.preferredHeight: Layout.preferredWidth
-                                radius: width / 2
-                                color: personDelegate.avatarColor
-
-                                Controls.Label {
-                                    anchors.centerIn: parent
-                                    text: ThemeEngine.initial(personDelegate.bare)
-                                    color: ThemeEngine.contrastingTextColor(personDelegate.avatarColor)
-                                    font.bold: true
-                                    font.pointSize: Math.max(1, Kirigami.Theme.defaultFont.pointSize - 2)
-                                }
-
-                                Rectangle {
-                                    anchors.right: parent.right
-                                    anchors.bottom: parent.bottom
-                                    anchors.rightMargin: -1
-                                    anchors.bottomMargin: -1
-                                    implicitWidth: Math.round(parent.width * 0.36)
-                                    implicitHeight: implicitWidth
-                                    radius: width / 2
-                                    color: personDelegate.presenceColor
-                                    border.width: 1
-                                    border.color: page.panelBg
-                                }
-                            }
-
-                            Controls.Label {
-                                Layout.fillWidth: true
-                                Layout.alignment: Qt.AlignVCenter
-                                Layout.preferredHeight: page.rowHt
-                                verticalAlignment: Text.AlignVCenter
-                                text: personDelegate.bare
-                                elide: Text.ElideRight
-                                color: Kirigami.Theme.textColor
-                            }
-
-                            // Rank badge column: every row reserves the same
-                            // fixed-width slot, so the badges line up in one
-                            // right-hand column (and nicks truncate at the
-                            // same edge whether or not the row has a badge).
-                            // The glyph is a styled Label showing the ASCII
-                            // mode prefix (@ / + / % / ~ / &) — text, so it
-                            // always renders, never a missing icon.
-                            Item {
-                                Layout.alignment: Qt.AlignVCenter
-                                Layout.rightMargin: Kirigami.Units.smallSpacing
-                                Layout.preferredWidth: Math.round(Kirigami.Units.gridUnit * 1.15)
-                                Layout.preferredHeight: page.rowHt
-
-                                Rectangle {
-                                    anchors.centerIn: parent
-                                    visible: personDelegate.prefix.length > 0
-                                    implicitWidth: Math.round(Kirigami.Units.gridUnit)
-                                    implicitHeight: implicitWidth
-                                    radius: height / 3
-                                    color: ThemeEngine.withAlpha(Kirigami.Theme.textColor, 0.10)
-
-                                    Controls.Label {
-                                        anchors.centerIn: parent
-                                        text: personDelegate.prefix
-                                        color: page.mutedTxt
-                                        font.bold: true
-                                        font.pointSize: Math.max(1, Kirigami.Theme.defaultFont.pointSize - 2)
-                                    }
-                                }
-                            }
+                        contentItem: Controls.Label {
+                            leftPadding: Kirigami.Units.smallSpacing * 2
+                            rightPadding: Kirigami.Units.smallSpacing * 2
+                            verticalAlignment: Text.AlignVCenter
+                            // `@nick` / `+nick` inline: the mode prefix is
+                            // part of the text, never a separate badge column.
+                            text: personDelegate.nick
+                            color: personDelegate.isOp ? page.fgPrimary : page.mutedTxt
+                            font.family: page.monoFamily
+                            elide: Text.ElideRight
                         }
 
                         onClicked: {

@@ -11,17 +11,26 @@
 //
 // THEME SCHEMA MIGRATION — the [UI] group carries an integer
 // `ThemeSchemaVersion`:
-//   * version 1 (the implicit value when the key is absent, i.e. every config
-//     written before the Fluent pass) may hold a legacy *default* theme id.
-//   * version 2 means the user's theme choice was made — or was migrated —
-//     under the Fluent pass, and the stored id is authoritative.
-//   load() upgrades an existing version-1 file exactly once: the legacy
-//   default ids (`breeze`, `breeze-classic`) become `fluent`, every other id
-//   (`oxygen`, `neon`, `fluent`, `fluent-light`, custom) is kept verbatim, and
-//   the new version is persisted.  The version is bumped for non-legacy ids
-//   too, so a deliberately chosen theme is never rewritten on a later start.
-//   A fresh install (no kirc.conf at all) starts at the current version and
-//   nothing is written.
+//   * version 1 is the implicit value when the key is absent: the config was
+//     written before the Fluent pass and may hold any pre-schema theme id.
+//   * version 2 means the id was chosen (or migrated) under the Fluent pass.
+//   * version 3 is the current schema: dense monospace TUI palettes.  The
+//     bubble/glass themes that shipped under versions 1 and 2 are retired.
+//   load() upgrades an existing file below version 3 exactly once: any
+//   *previously shipped built-in* id (`breeze`, `breeze-classic`, `oxygen`,
+//   `neon`, `fluent`, `fluent-light` — everything that used to be a bubble or
+//   glass theme, including a config already stamped version 2 with one of
+//   them) is rewritten to the new default `tui`; a theme id that is not a
+//   known old built-in (a user's own file under ~/.config/kIRC/themes/) is
+//   left alone and only the version is bumped.  The new version is persisted
+//   immediately, so the migration cannot run twice; save() writes it too, so a
+//   later pick always sticks.  A fresh install (no kirc.conf at all) starts at
+//   the current version and nothing is written.
+//
+//   The version-2 quirk this fixes: phase 2 stamped version 2 *before*
+//   `oxygen` joined the legacy set, so a config holding `ThemeId=oxygen` +
+//   `ThemeSchemaVersion=2` could never be rewritten.  Version 3 re-examines
+//   every id below it, so that config now migrates to `tui`.
 //
 // SECURITY — no password is ever persisted to kirc.conf:
 //   kirc.conf is an ordinary world-readable plaintext INI file, so neither
@@ -59,6 +68,7 @@ class KircConfig : public QObject
     Q_PROPERTY(bool minimizeToTray READ minimizeToTray WRITE setMinimizeToTray NOTIFY minimizeToTrayChanged)
     Q_PROPERTY(bool showTimestamps READ showTimestamps WRITE setShowTimestamps NOTIFY showTimestampsChanged)
     Q_PROPERTY(QString themeId READ themeId WRITE setThemeId NOTIFY themeIdChanged)
+    Q_PROPERTY(QString fontFamily READ fontFamily WRITE setFontFamily NOTIFY fontFamilyChanged)
     Q_PROPERTY(QString autojoin READ autojoin WRITE setAutojoin NOTIFY autojoinChanged)
     Q_PROPERTY(bool reconnect READ reconnect WRITE setReconnect NOTIFY reconnectChanged)
     Q_PROPERTY(int fontDelta READ fontDelta WRITE setFontDelta NOTIFY fontDeltaChanged)
@@ -125,6 +135,11 @@ public:
     QString themeId() const;
     void setThemeId(const QString &themeId);
 
+    /// Monospace family for the terminal UI.  Empty = "let the theme decide"
+    /// (the built-in themes default to Qt's "monospace" generic).
+    QString fontFamily() const;
+    void setFontFamily(const QString &fontFamily);
+
     QString autojoin() const;
     void setAutojoin(const QString &autojoin);
 
@@ -172,6 +187,7 @@ Q_SIGNALS:
     void showTimestampsChanged();
     void minimizeToTrayChanged();
     void themeIdChanged();
+    void fontFamilyChanged();
     void autojoinChanged();
     void reconnectChanged();
     void fontDeltaChanged();
@@ -197,7 +213,8 @@ private:
     bool m_reconnectAfterAuthFailure = false;
     bool m_showTimestamps = true;
     bool m_minimizeToTray = true;
-    QString m_themeId = QStringLiteral("fluent");
+    QString m_themeId = QStringLiteral("tui");
+    QString m_fontFamily;
     QString m_autojoin;
     bool m_reconnect = true;
     int m_fontDelta = 0;

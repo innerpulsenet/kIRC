@@ -10,6 +10,14 @@
 // the parsed object into ThemeEngine.applyThemeJson(). QML cannot do file I/O
 // itself, so the built-ins are duplicated here as JS objects.
 //
+// TERMINAL LOOK (schema version 3): bubbles are cancelled. Every built-in is
+// `mode: "dense"` — monospace, one line per message, flat surfaces, no
+// avatars, no grouping pills. The retired bubble/glass themes (fluent,
+// fluent-light, oxygen, neon, breeze-classic) live on only as *aliases* to the
+// TUI default, so a stale config id can never leave the window unstyled; the
+// C++ migration (`ThemeSchemaVersion` 3, see cpp/kircconfig.cpp) rewrites them
+// on disk.
+//
 // NOTE: this file is the *only* JS module shipped next to the QML (see
 // EXTRA_RESOURCES in rust/build.rs), so every shared JS helper — theme maths,
 // text safety and message grouping — has to live here.
@@ -17,291 +25,359 @@
 .pragma library
 
 // --- built-in theme ids -----------------------------------------------------
-// Order matters: this is the order of the theme menu. "fluent" is first: it
-// is the default for fresh installs.
-var BUILTIN_IDS = ["fluent", "fluent-light", "breeze", "breeze-classic", "oxygen", "neon"]
+// Order matters: this is the order of the theme menu. "tui" is first: it is
+// the default for fresh installs and the migration target for every config
+// written before schema version 3.
+var BUILTIN_IDS = ["tui", "phosphor", "amber", "ice", "breeze"]
 
-// Older builds shipped the modern default under this id; keep it working for
-// anyone with it in kirc.conf.
-var ALIASES = {"breeze-dark-default": "breeze"}
+// Older builds shipped other default ids; keep them working. The retired
+// bubble/glass ids resolve to the TUI default so applying one can never leave
+// the UI without a theme (the C++ migration normally rewrites them first).
+var ALIASES = {
+    "breeze-dark-default": "breeze",
+    "fluent": "tui",
+    "fluent-light": "tui",
+    "oxygen": "tui",
+    "neon": "tui",
+    "breeze-classic": "tui"
+}
 
 // --- built-in themes (mirror of qml/themes/*.json) --------------------------
+// All five are dense terminal palettes: monospace, flat, one line per message.
+//  * tui       neutral terminal — near-black log, grey text, cyan accent
+//  * phosphor  green on black (P1 tube)
+//  * amber     amber on black (classic CRT)
+//  * ice       light text on dark blue (C64-ish)
+//  * breeze    dense geometry, Kirigami palette colours ("follows the desktop")
+// Colour tokens that are "" mean "fall back to the Kirigami palette at the
+// call site"; the geometry tokens carry the (flat) character.
 var builtins = {
-    // The default: Fluent-style layered surfaces, soft shadows, rounded
-    // cards, bubble chat with avatars and grouped messages. Colour tokens in
-    // `surfaces` are empty, which means "fall back to the Kirigami palette at
-    // the call site" — so Breeze Light, Breeze Dark and custom schemes all
-    // look right. Geometry (radii, shadow) carries the Fluent character.
-    "fluent": {
-        "id": "fluent",
-        "name": "Fluent",
-        "mode": "bubble",
-        "bubble": {
-            "radius": 12,
-            "spacing": 6,
-            "groupSpacing": 2,
-            "tailRadius": 5,
-            "maxWidthFraction": 0.78,
-            "selfColor": "",
-            "otherColor": ""
-        },
-        "dense": {"lineSpacing": 3},
-        "avatar": {"enabled": true, "size": 0},
-        "grouping": {"enabled": true, "windowMinutes": 5},
-        "motion": {"enabled": true, "duration": 140},
-        "sidebar": {"width": 0},
-        "fonts": {"messageSize": 0, "timestampSize": 0, "nickSize": 0},
-        "colors": {
-            "nickSatMin": 0.55,
-            "nickSatMax": 0.70,
-            "nickLightnessDark": 0.62,
-            "nickLightnessLight": 0.35,
-            "linkify": true,
-            "highlightIsBold": true,
-            "linkColor": ""
-        },
-        "surfaces": {
-            "surface": "",
-            "surfaceAlt": "",
-            "sidebarSurface": "",
-            "cardBackground": "",
-            "cardBorder": "",
-            "cardRadius": 8,
-            "cardPadding": 12,
-            "rowRadius": 6,
-            "rowHover": "",
-            "rowSelected": "",
-            "rowHeight": 36,
-            "accent": "",
-            "accentText": "",
-            "mutedText": "",
-            "sectionHeader": "",
-            "sectionHeaderSize": 0,
-            "eventText": "",
-            "eventSize": 0,
-            "statusOnline": "",
-            "statusAway": "",
-            "statusOffline": "",
-            "unreadBadge": "",
-            "unreadBadgeText": "",
-            "inputRadius": 4,
-            "shadowOpacity": 0.18,
-            "headerHeight": 48
-        }
-    },
-    // Same Fluent geometry, tuned for light schemes (softer shadow).
-    "fluent-light": {
-        "id": "fluent-light",
-        "name": "Fluent Light",
-        "mode": "bubble",
-        "bubble": {
-            "radius": 12,
-            "spacing": 6,
-            "groupSpacing": 2,
-            "tailRadius": 5,
-            "maxWidthFraction": 0.78,
-            "selfColor": "",
-            "otherColor": ""
-        },
-        "dense": {"lineSpacing": 3},
-        "avatar": {"enabled": true, "size": 0},
-        "grouping": {"enabled": true, "windowMinutes": 5},
-        "motion": {"enabled": true, "duration": 140},
-        "sidebar": {"width": 0},
-        "fonts": {"messageSize": 0, "timestampSize": 0, "nickSize": 0},
-        "colors": {
-            "nickSatMin": 0.55,
-            "nickSatMax": 0.70,
-            "nickLightnessDark": 0.62,
-            "nickLightnessLight": 0.35,
-            "linkify": true,
-            "highlightIsBold": true,
-            "linkColor": ""
-        },
-        "surfaces": {
-            "surface": "",
-            "surfaceAlt": "",
-            "sidebarSurface": "",
-            "cardBackground": "",
-            "cardBorder": "",
-            "cardRadius": 8,
-            "cardPadding": 12,
-            "rowRadius": 6,
-            "rowHover": "",
-            "rowSelected": "",
-            "rowHeight": 36,
-            "accent": "",
-            "accentText": "",
-            "mutedText": "",
-            "sectionHeader": "",
-            "sectionHeaderSize": 0,
-            "eventText": "",
-            "eventSize": 0,
-            "statusOnline": "",
-            "statusAway": "",
-            "statusOffline": "",
-            "unreadBadge": "",
-            "unreadBadgeText": "",
-            "inputRadius": 4,
-            "shadowOpacity": 0.12,
-            "headerHeight": 48
-        }
-    },
-    "breeze": {
-        "id": "breeze",
-        "name": "Breeze",
-        "mode": "bubble",
-        "bubble": {
-            "radius": 12,
-            "spacing": 6,
-            "groupSpacing": 2,
-            "tailRadius": 5,
-            "maxWidthFraction": 0.78,
-            "selfColor": "",
-            "otherColor": ""
-        },
-        "dense": {"lineSpacing": 3},
-        "avatar": {"enabled": true, "size": 0},
-        "grouping": {"enabled": true, "windowMinutes": 5},
-        "motion": {"enabled": true, "duration": 140},
-        "sidebar": {"width": 0},
-        "fonts": {"messageSize": 0, "timestampSize": 0, "nickSize": 0},
-        "colors": {
-            "nickSatMin": 0.55,
-            "nickSatMax": 0.70,
-            "nickLightnessDark": 0.62,
-            "nickLightnessLight": 0.35,
-            "linkify": true,
-            "highlightIsBold": true,
-            "linkColor": ""
-        },
-        "surfaces": {
-            "surface": "",
-            "surfaceAlt": "",
-            "sidebarSurface": "",
-            "cardBackground": "",
-            "cardBorder": "",
-            "cardRadius": 6,
-            "cardPadding": 12,
-            "rowRadius": 4,
-            "rowHover": "",
-            "rowSelected": "",
-            "rowHeight": 36,
-            "accent": "",
-            "accentText": "",
-            "mutedText": "",
-            "sectionHeader": "",
-            "sectionHeaderSize": 0,
-            "eventText": "",
-            "eventSize": 0,
-            "statusOnline": "",
-            "statusAway": "",
-            "statusOffline": "",
-            "unreadBadge": "",
-            "unreadBadgeText": "",
-            "inputRadius": 4,
-            "shadowOpacity": 0,
-            "headerHeight": 48
-        }
-    },
-    // The classic IRC look: one compact line per message, no avatars.
-    "breeze-classic": {
-        "id": "breeze-classic",
-        "name": "Breeze Classic",
+    "tui": {
+        "id": "tui",
+        "name": "TUI",
         "mode": "dense",
         "bubble": {
-            "radius": 8,
-            "spacing": 4,
-            "groupSpacing": 2,
-            "tailRadius": 4,
-            "maxWidthFraction": 0.78,
+            "radius": 0,
+            "spacing": 0,
+            "groupSpacing": 0,
+            "tailRadius": 0,
+            "maxWidthFraction": 1.0,
             "selfColor": "",
             "otherColor": ""
         },
         "dense": {"lineSpacing": 2},
         "avatar": {"enabled": false, "size": 0},
         "grouping": {"enabled": true, "windowMinutes": 5},
-        "motion": {"enabled": true, "duration": 120},
+        "motion": {"enabled": true, "duration": 90},
         "sidebar": {"width": 0},
         "fonts": {"messageSize": 0, "timestampSize": 0, "nickSize": 0},
         "colors": {
-            "nickSatMin": 0.55,
-            "nickSatMax": 0.70,
-            "nickLightnessDark": 0.62,
-            "nickLightnessLight": 0.35,
+            "nickSatMin": 0.50,
+            "nickSatMax": 0.80,
+            "nickLightnessDark": 0.70,
+            "nickLightnessLight": 0.34,
             "linkify": true,
             "highlightIsBold": true,
             "linkColor": ""
         },
         "surfaces": {
-            "surface": "",
-            "surfaceAlt": "",
-            "sidebarSurface": "",
-            "cardBackground": "",
-            "cardBorder": "",
-            "cardRadius": 6,
-            "cardPadding": 12,
-            "rowRadius": 4,
-            "rowHover": "",
-            "rowSelected": "",
-            "rowHeight": 36,
-            "accent": "",
-            "accentText": "",
-            "mutedText": "",
-            "sectionHeader": "",
+            "surface": "#0b0d0f",
+            "surfaceAlt": "#101417",
+            "sidebarSurface": "#0e1215",
+            "cardBackground": "#101417",
+            "cardBorder": "#262e34",
+            "cardRadius": 0,
+            "cardPadding": 8,
+            "rowRadius": 0,
+            "rowHover": "#171d22",
+            "rowSelected": "#1e272e",
+            "rowHeight": 24,
+            "accent": "#4cc9dd",
+            "accentText": "#0b0d0f",
+            "mutedText": "#7c858c",
+            "sectionHeader": "#7c858c",
             "sectionHeaderSize": 0,
-            "eventText": "",
+            "eventText": "#7c858c",
             "eventSize": 0,
-            "statusOnline": "",
-            "statusAway": "",
-            "statusOffline": "",
-            "unreadBadge": "",
-            "unreadBadgeText": "",
-            "inputRadius": 4,
+            "statusOnline": "#63c47a",
+            "statusAway": "#d8b25e",
+            "statusOffline": "#6d757b",
+            "unreadBadge": "#4cc9dd",
+            "unreadBadgeText": "#0b0d0f",
+            "inputRadius": 0,
             "shadowOpacity": 0,
-            "headerHeight": 48
+            "headerHeight": 40
+        },
+        "terminal": {
+            "fontFamily": "monospace",
+            "gutterWidth": 64,
+            "nickColumn": 9,
+            "ruleColor": "#2b3238",
+            "fgPrimary": "#c9ced3",
+            "fgDim": "#7c858c",
+            "fgAccent": "#4cc9dd",
+            "fgWarn": "#ff6b5f",
+            "bgPanel": "#101417",
+            "bgLog": "#0b0d0f",
+            "bgInput": "#0e1215"
         }
     },
-    "oxygen": {
-        "id": "oxygen",
-        "name": "Oxygen",
+    // Green on black — a P1 phosphor tube.
+    "phosphor": {
+        "id": "phosphor",
+        "name": "Phosphor",
         "mode": "dense",
         "bubble": {
-            "radius": 10,
-            "spacing": 6,
-            "groupSpacing": 2,
-            "tailRadius": 4,
-            "maxWidthFraction": 0.78,
+            "radius": 0,
+            "spacing": 0,
+            "groupSpacing": 0,
+            "tailRadius": 0,
+            "maxWidthFraction": 1.0,
             "selfColor": "",
             "otherColor": ""
         },
-        "dense": {"lineSpacing": 3},
+        "dense": {"lineSpacing": 2},
         "avatar": {"enabled": false, "size": 0},
         "grouping": {"enabled": true, "windowMinutes": 5},
-        "motion": {"enabled": true, "duration": 120},
+        "motion": {"enabled": true, "duration": 90},
         "sidebar": {"width": 0},
         "fonts": {"messageSize": 0, "timestampSize": 0, "nickSize": 0},
         "colors": {
-            "nickSatMin": 0.55,
-            "nickSatMax": 0.65,
-            "nickLightnessDark": 0.68,
+            "nickSatMin": 0.45,
+            "nickSatMax": 0.75,
+            "nickLightnessDark": 0.72,
+            "nickLightnessLight": 0.30,
+            "linkify": true,
+            "highlightIsBold": true,
+            "linkColor": ""
+        },
+        "surfaces": {
+            "surface": "#030803",
+            "surfaceAlt": "#061006",
+            "sidebarSurface": "#040b04",
+            "cardBackground": "#061006",
+            "cardBorder": "#124020",
+            "cardRadius": 0,
+            "cardPadding": 8,
+            "rowRadius": 0,
+            "rowHover": "#07170c",
+            "rowSelected": "#0b2413",
+            "rowHeight": 24,
+            "accent": "#3fe05f",
+            "accentText": "#030803",
+            "mutedText": "#1f9e46",
+            "sectionHeader": "#1f9e46",
+            "sectionHeaderSize": 0,
+            "eventText": "#1f9e46",
+            "eventSize": 0,
+            "statusOnline": "#3fe05f",
+            "statusAway": "#cfc25a",
+            "statusOffline": "#16512d",
+            "unreadBadge": "#3fe05f",
+            "unreadBadgeText": "#030803",
+            "inputRadius": 0,
+            "shadowOpacity": 0,
+            "headerHeight": 40
+        },
+        "terminal": {
+            "fontFamily": "monospace",
+            "gutterWidth": 64,
+            "nickColumn": 9,
+            "ruleColor": "#14421f",
+            "fgPrimary": "#3fe05f",
+            "fgDim": "#1f9e46",
+            "fgAccent": "#a8ffb8",
+            "fgWarn": "#ff6359",
+            "bgPanel": "#061006",
+            "bgLog": "#030803",
+            "bgInput": "#040b04"
+        }
+    },
+    // Amber on black — the classic CRT terminal.
+    "amber": {
+        "id": "amber",
+        "name": "Amber",
+        "mode": "dense",
+        "bubble": {
+            "radius": 0,
+            "spacing": 0,
+            "groupSpacing": 0,
+            "tailRadius": 0,
+            "maxWidthFraction": 1.0,
+            "selfColor": "",
+            "otherColor": ""
+        },
+        "dense": {"lineSpacing": 2},
+        "avatar": {"enabled": false, "size": 0},
+        "grouping": {"enabled": true, "windowMinutes": 5},
+        "motion": {"enabled": true, "duration": 90},
+        "sidebar": {"width": 0},
+        "fonts": {"messageSize": 0, "timestampSize": 0, "nickSize": 0},
+        "colors": {
+            "nickSatMin": 0.50,
+            "nickSatMax": 0.80,
+            "nickLightnessDark": 0.72,
             "nickLightnessLight": 0.32,
             "linkify": true,
             "highlightIsBold": true,
             "linkColor": ""
         },
         "surfaces": {
+            "surface": "#0c0700",
+            "surfaceAlt": "#120c02",
+            "sidebarSurface": "#0f0a02",
+            "cardBackground": "#120c02",
+            "cardBorder": "#3c2a08",
+            "cardRadius": 0,
+            "cardPadding": 8,
+            "rowRadius": 0,
+            "rowHover": "#1c1304",
+            "rowSelected": "#291c06",
+            "rowHeight": 24,
+            "accent": "#ffb000",
+            "accentText": "#0c0700",
+            "mutedText": "#9a6a1a",
+            "sectionHeader": "#9a6a1a",
+            "sectionHeaderSize": 0,
+            "eventText": "#9a6a1a",
+            "eventSize": 0,
+            "statusOnline": "#b8cf4e",
+            "statusAway": "#d9a12b",
+            "statusOffline": "#5c4a24",
+            "unreadBadge": "#ffb000",
+            "unreadBadgeText": "#0c0700",
+            "inputRadius": 0,
+            "shadowOpacity": 0,
+            "headerHeight": 40
+        },
+        "terminal": {
+            "fontFamily": "monospace",
+            "gutterWidth": 64,
+            "nickColumn": 9,
+            "ruleColor": "#402d0a",
+            "fgPrimary": "#ffb000",
+            "fgDim": "#9a6a1a",
+            "fgAccent": "#ffd27a",
+            "fgWarn": "#ff5f52",
+            "bgPanel": "#120c02",
+            "bgLog": "#0c0700",
+            "bgInput": "#0f0a02"
+        }
+    },
+    // Light text on dark blue — C64-ish.
+    "ice": {
+        "id": "ice",
+        "name": "Ice",
+        "mode": "dense",
+        "bubble": {
+            "radius": 0,
+            "spacing": 0,
+            "groupSpacing": 0,
+            "tailRadius": 0,
+            "maxWidthFraction": 1.0,
+            "selfColor": "",
+            "otherColor": ""
+        },
+        "dense": {"lineSpacing": 2},
+        "avatar": {"enabled": false, "size": 0},
+        "grouping": {"enabled": true, "windowMinutes": 5},
+        "motion": {"enabled": true, "duration": 90},
+        "sidebar": {"width": 0},
+        "fonts": {"messageSize": 0, "timestampSize": 0, "nickSize": 0},
+        "colors": {
+            "nickSatMin": 0.45,
+            "nickSatMax": 0.75,
+            "nickLightnessDark": 0.76,
+            "nickLightnessLight": 0.32,
+            "linkify": true,
+            "highlightIsBold": true,
+            "linkColor": ""
+        },
+        "surfaces": {
+            "surface": "#101134",
+            "surfaceAlt": "#151645",
+            "sidebarSurface": "#121339",
+            "cardBackground": "#151645",
+            "cardBorder": "#34377a",
+            "cardRadius": 0,
+            "cardPadding": 8,
+            "rowRadius": 0,
+            "rowHover": "#1a1b4e",
+            "rowSelected": "#232565",
+            "rowHeight": 24,
+            "accent": "#67b6bd",
+            "accentText": "#101134",
+            "mutedText": "#8ea0d8",
+            "sectionHeader": "#9fb0e8",
+            "sectionHeaderSize": 0,
+            "eventText": "#8ea0d8",
+            "eventSize": 0,
+            "statusOnline": "#94e089",
+            "statusAway": "#bfce72",
+            "statusOffline": "#5a5f9e",
+            "unreadBadge": "#67b6bd",
+            "unreadBadgeText": "#101134",
+            "inputRadius": 0,
+            "shadowOpacity": 0,
+            "headerHeight": 40
+        },
+        "terminal": {
+            "fontFamily": "monospace",
+            "gutterWidth": 64,
+            "nickColumn": 9,
+            "ruleColor": "#2c2f6b",
+            "fgPrimary": "#d7e2ff",
+            "fgDim": "#8ea0d8",
+            "fgAccent": "#67b6bd",
+            "fgWarn": "#e08a80",
+            "bgPanel": "#151645",
+            "bgLog": "#101134",
+            "bgInput": "#121339"
+        }
+    },
+    // Dense geometry, Kirigami palette colours: the same console layout as the
+    // others, but every colour is "" = "use the desktop scheme", so it matches
+    // Breeze Light, Breeze Dark and any custom colour scheme.
+    "breeze": {
+        "id": "breeze",
+        "name": "Breeze",
+        "mode": "dense",
+        "bubble": {
+            "radius": 0,
+            "spacing": 0,
+            "groupSpacing": 0,
+            "tailRadius": 0,
+            "maxWidthFraction": 1.0,
+            "selfColor": "",
+            "otherColor": ""
+        },
+        "dense": {"lineSpacing": 2},
+        "avatar": {"enabled": false, "size": 0},
+        "grouping": {"enabled": true, "windowMinutes": 5},
+        "motion": {"enabled": true, "duration": 90},
+        "sidebar": {"width": 0},
+        "fonts": {"messageSize": 0, "timestampSize": 0, "nickSize": 0},
+        "colors": {
+            "nickSatMin": 0.55,
+            "nickSatMax": 0.70,
+            "nickLightnessDark": 0.62,
+            "nickLightnessLight": 0.35,
+            "linkify": true,
+            "highlightIsBold": true,
+            "linkColor": ""
+        },
+        "surfaces": {
             "surface": "",
             "surfaceAlt": "",
             "sidebarSurface": "",
             "cardBackground": "",
             "cardBorder": "",
-            "cardRadius": 8,
-            "cardPadding": 12,
-            "rowRadius": 6,
+            "cardRadius": 0,
+            "cardPadding": 8,
+            "rowRadius": 0,
             "rowHover": "",
             "rowSelected": "",
-            "rowHeight": 36,
+            "rowHeight": 26,
             "accent": "",
             "accentText": "",
             "mutedText": "",
@@ -314,74 +390,29 @@ var builtins = {
             "statusOffline": "",
             "unreadBadge": "",
             "unreadBadgeText": "",
-            "inputRadius": 6,
+            "inputRadius": 0,
             "shadowOpacity": 0,
-            "headerHeight": 48
-        }
-    },
-    // Fixed dark look: explicit surfaces, neon accent.
-    "neon": {
-        "id": "neon",
-        "name": "Neon",
-        "mode": "bubble",
-        "bubble": {
-            "radius": 14,
-            "spacing": 8,
-            "groupSpacing": 3,
-            "tailRadius": 5,
-            "maxWidthFraction": 0.78,
-            "selfColor": "#2b0f4d",
-            "otherColor": "#101820"
+            "headerHeight": 40
         },
-        "dense": {"lineSpacing": 2},
-        "avatar": {"enabled": true, "size": 0},
-        "grouping": {"enabled": true, "windowMinutes": 5},
-        "motion": {"enabled": true, "duration": 160},
-        "sidebar": {"width": 0},
-        "fonts": {"messageSize": 0, "timestampSize": 0, "nickSize": 0},
-        "colors": {
-            "nickSatMin": 0.70,
-            "nickSatMax": 0.95,
-            "nickLightnessDark": 0.70,
-            "nickLightnessLight": 0.40,
-            "linkify": true,
-            "highlightIsBold": true,
-            "linkColor": ""
-        },
-        "surfaces": {
-            "surface": "#12161b",
-            "surfaceAlt": "#1a2129",
-            "sidebarSurface": "#0d1116",
-            "cardBackground": "#1a2129",
-            "cardBorder": "#2e3d4d",
-            "cardRadius": 10,
-            "cardPadding": 12,
-            "rowRadius": 6,
-            "rowHover": "#222d38",
-            "rowSelected": "#27374a",
-            "rowHeight": 36,
-            "accent": "#35d0ff",
-            "accentText": "#0b0e11",
-            "mutedText": "#8b98a5",
-            "sectionHeader": "#8b98a5",
-            "sectionHeaderSize": 0,
-            "eventText": "#8b98a5",
-            "eventSize": 0,
-            "statusOnline": "#3ddc84",
-            "statusAway": "#ffb020",
-            "statusOffline": "#5b6b7a",
-            "unreadBadge": "#35d0ff",
-            "unreadBadgeText": "#0b0e11",
-            "inputRadius": 6,
-            "shadowOpacity": 0.35,
-            "headerHeight": 48
+        "terminal": {
+            "fontFamily": "monospace",
+            "gutterWidth": 60,
+            "nickColumn": 9,
+            "ruleColor": "",
+            "fgPrimary": "",
+            "fgDim": "",
+            "fgAccent": "",
+            "fgWarn": "",
+            "bgPanel": "",
+            "bgLog": "",
+            "bgInput": ""
         }
     }
 }
 
 // --- defaults for anything the JSON does not (or wrongly) specify ----------
-// The default theme *is* the modern Fluent look.
-var DEFAULTS = builtins["fluent"]
+// The default theme *is* the terminal look.
+var DEFAULTS = builtins["tui"]
 
 // Resolve a legacy/aliased theme id.
 function canonicalId(id)
@@ -390,6 +421,19 @@ function canonicalId(id)
         return ALIASES[id]
     }
     return id
+}
+
+// True for ids that used to ship as built-in bubble/glass themes (schema < 3).
+// The C++ migration rewrites these to "tui"; ThemeEngine keeps the list too so
+// a picker or the harness can reason about them.
+var RETIRED_IDS = ["breeze-classic", "oxygen", "neon", "fluent", "fluent-light"]
+
+function isRetiredId(id)
+{
+    if (typeof id !== "string") {
+        return false
+    }
+    return RETIRED_IDS.indexOf(id.toLowerCase()) >= 0
 }
 
 // ---------------------------------------------------------------------------
@@ -424,7 +468,7 @@ function saturationForNick(nick, minSat, maxSat)
 
 // Returns { hue: 0..1, sat: 0..1, light: 0..1 } — Qt.hsla() arguments.
 // The spec's baseline lightness is 45% on dark backgrounds and 35% on light
-// ones; themes override it (breeze/oxygen are tuned brighter for readability).
+// ones; themes override it (the terminal palettes are tuned brighter).
 function nickColorParams(nick, dark, theme)
 {
     var c = (theme && theme.colors) ? theme.colors : DEFAULTS.colors
@@ -439,8 +483,8 @@ function nickColorParams(nick, dark, theme)
     return {"hue": hue, "sat": sat, "light": light}
 }
 
-// First meaningful character of a nick, upper-cased — the letter drawn inside
-// an avatar circle. Falls back to "?" for empty/decorative nicks.
+// First meaningful character of a nick, upper-cased. Kept for the person
+// panel / channel tiles that still draw a glyph.
 function nickInitial(nick)
 {
     var s = String(nick === undefined || nick === null ? "" : nick).trim()
@@ -453,12 +497,29 @@ function nickInitial(nick)
     return "?"
 }
 
+// Pad `nick` to `width` characters with spaces (dense IRC nick column). A nick
+// that is already at least `width` characters long is returned unchanged —
+// truncating a nick would misattribute messages.
+function padNick(nick, width)
+{
+    var n = String(nick === undefined || nick === null ? "" : nick)
+    var w = Number(width)
+    if (!isFinite(w) || w <= 0 || n.length >= w) {
+        return n
+    }
+    var pad = ""
+    while (pad.length < w - n.length) {
+        pad += " "
+    }
+    return n + pad
+}
+
 // ---------------------------------------------------------------------------
 // Event rows + day separators.
 //
 // The bridge synthesizes join/part/quit/mode/topic lines with nick "*" (and
 // server-console lines use "*" too). Those are not chat: they render as muted
-// compact event rows and they always break message groups.
+// compact event rows (classic `* nick did a thing`).
 // ---------------------------------------------------------------------------
 
 // True for the decorative nicks ("*" or empty) that mark an event row.
@@ -479,13 +540,12 @@ function isEventRow(row)
 }
 
 // ---------------------------------------------------------------------------
-// Message grouping.
+// Message spanning (kept for compatibility).
 //
-// The model only exposes a preformatted local time ("HH:MM", optionally
-// "HH:MM:SS"), so two messages belong to the same group when they are from the
-// same person (same self/other side too) and no more than `windowMinutes`
-// apart. Anything unparseable is *not* grouped — a wrong avatar is worse than
-// a duplicated one. Event rows never group, with anything.
+// Older builds collapsed a repeated sender into one visual group (a messenger
+// idea). Dense IRC rendering shows one line per message, so nothing decides to
+// "continue" a previous row any more — but the helpers stay: MessageDelegate
+// and the harnesses call them, and they are harmless.
 // ---------------------------------------------------------------------------
 
 // "HH:MM[:SS]" -> minutes since midnight, or -1 when not understood.
@@ -507,7 +567,7 @@ function parseTimestampMinutes(ts)
 }
 
 // True when `nick`/`ts` continues the group started by prevNick/prevTs.
-// A timestamp that goes backwards is a day rollover: never group across it.
+// A timestamp that goes backwards is a day rollover: never continue across it.
 function sameGroup(prevNick, prevTs, prevSelf, nick, ts, isSelf, windowMinutes)
 {
     if (prevNick === undefined || prevNick === null) {
@@ -537,7 +597,7 @@ function sameGroup(prevNick, prevTs, prevSelf, nick, ts, isSelf, windowMinutes)
     return delta >= 0 && delta <= win
 }
 
-// Convenience wrapper used by MessageDelegate: a "row" is any object exposing
+// Convenience wrapper used by callers: a "row" is any object exposing
 // nick/timestamp/isSelf.
 function rowsAreGrouped(prev, row, windowMinutes)
 {
@@ -552,8 +612,7 @@ function rowsAreGrouped(prev, row, windowMinutes)
 // Day separators.
 //
 // Timestamps carry no date, so a clock running backwards (23:59 -> 00:01) is
-// the only day signal. The delegate computes this once per row at settle time
-// (never per frame) and renders a small centred pill above the row.
+// the only day signal.
 // ---------------------------------------------------------------------------
 
 // "HH:MM" clock strings -> true when `ts` is earlier than `prevTs`, i.e. the
@@ -568,7 +627,7 @@ function dayBoundaryMinutes(prevTs, ts)
     return t2 < t1
 }
 
-// Row-object wrapper for the delegate's neighbour lookups.
+// Row-object wrapper for neighbour lookups.
 function dayBoundaryRows(prev, row)
 {
     if (prev === undefined || prev === null || row === undefined || row === null) {
@@ -577,9 +636,7 @@ function dayBoundaryRows(prev, row)
     return dayBoundaryMinutes(prev.timestamp, row.timestamp)
 }
 
-// True when no later rollover follows `row` — its day is the latest one shown,
-// so the pill reads "Today", otherwise "Yesterday". (With HH:MM stamps the
-// exact calendar date is unknowable; relative labels stay honest.)
+// True when no later rollover follows `row` — its day is the latest one shown.
 function latestDayRows(row, next)
 {
     if (row === undefined || row === null) {
@@ -635,7 +692,9 @@ function linkify(s, cssColor)
 // ---------------------------------------------------------------------------
 // Deep-ish merge of a user theme over DEFAULTS.
 // Unknown keys are preserved (forward compatible), missing keys get defaults,
-// wrong-typed sections fall back instead of crashing the UI.
+// wrong-typed sections fall back instead of crashing the UI. A theme written
+// against the old bubble schema (radius/avatar/grouping keys) therefore still
+// loads — it simply inherits the dense geometry.
 // ---------------------------------------------------------------------------
 function isPlainObject(v)
 {
@@ -673,12 +732,13 @@ function mergeTheme(override)
             out[key] = val
         }
     }
-    // Coerce mode to the two supported values.
-    if (out.mode !== "dense" && out.mode !== "bubble") {
-        out.mode = DEFAULTS.mode
-    }
+    // Mode is dense, always: bubbles are gone, so an old theme file that says
+    // "mode": "bubble" (or anything else) still renders the console layout.
+    out.mode = "dense"
     // Clamp the numeric knobs that drive geometry so a bad theme file cannot
-    // produce an unreadable (or unusable) chat view.
+    // produce an unreadable (or unusable) chat view. The old bubble keys are
+    // still tolerated (and still clamped) because old JSON in
+    // ~/.config/kIRC/themes/ must never break loading.
     out.bubble.maxWidthFraction = clampNumber(out.bubble.maxWidthFraction, 0.3, 1.0, DEFAULTS.bubble.maxWidthFraction)
     out.bubble.radius = clampNumber(out.bubble.radius, 0, 64, DEFAULTS.bubble.radius)
     out.bubble.tailRadius = clampNumber(out.bubble.tailRadius, 0, 64, DEFAULTS.bubble.tailRadius)
@@ -699,6 +759,9 @@ function mergeTheme(override)
     surf.headerHeight = clampNumber(surf.headerHeight, 0, 512, DEFAULTS.surfaces.headerHeight)
     surf.sectionHeaderSize = clampNumber(surf.sectionHeaderSize, 0, 64, DEFAULTS.surfaces.sectionHeaderSize)
     surf.eventSize = clampNumber(surf.eventSize, 0, 64, DEFAULTS.surfaces.eventSize)
+    var term = out.terminal
+    term.gutterWidth = clampNumber(term.gutterWidth, 0, 512, DEFAULTS.terminal.gutterWidth)
+    term.nickColumn = clampNumber(term.nickColumn, 0, 64, DEFAULTS.terminal.nickColumn)
     return out
 }
 

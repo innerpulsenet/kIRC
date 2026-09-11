@@ -20,6 +20,7 @@
 #include <QList>
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
+#include <QQmlEngine>
 #include <QQmlError>
 #include <QQuickStyle>
 #include <QQuickWindow>
@@ -80,6 +81,18 @@ int main(int argc, char *argv[])
         Qt::QueuedConnection);
 
     engine.load(url);
+
+    // The terminal font family is a ThemeEngine-level override (the theme file
+    // only carries its default). main.qml restores the theme id and the font
+    // delta on its own; the family is applied here because the singleton is
+    // reachable from C++ and this keeps the choice effective from the first
+    // frame. A harness or a build without the singleton simply skips this.
+    if (QObject *themeEngine = engine.singletonInstance<QObject *>(
+            QStringLiteral("org.kde.kirc"), QStringLiteral("ThemeEngine"))) {
+        if (themeEngine->property("fontFamilyOverride").isValid()) {
+            themeEngine->setProperty("fontFamilyOverride", config.fontFamily());
+        }
+    }
 
     // The bridge is instantiated by QML, so the only handle C++ has on it is
     // the objectName it sets (main.qml: `IrcBridge { objectName: "ircBridge" }`).

@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 //
-// ConnectPage — first-run / reconnect form.
+// ConnectPage — first-run / reconnect form, terminal style.
+//
+// Flat fields on the input surface, square corners, monospace labels in a
+// fixed column so the controls line up; no rounded hero card, no icon circles.
 //
 // Pure UI: it never touches IrcBridge itself. It emits connectRequested() and
 // main.qml calls the bridge. It *does* listen to `error_occurred` so a failed
@@ -25,6 +28,12 @@ import QtQuick.Controls as Controls
 import QtQuick.Layouts
 
 import org.kde.kirigami as Kirigami
+
+import org.kde.kirc
+
+// Delegates reference the page's properties; bound component behaviour
+// resolves those statically instead of through the dynamic context.
+pragma ComponentBehavior: Bound
 
 Kirigami.Page {
     id: page
@@ -73,11 +82,23 @@ Kirigami.Page {
                                       && parsedPort > 0 && parsedPort <= 65535
                                       && (!saslSwitch.checked || saslUserField.text.length > 0)
 
-    // Shared geometry, so every field lines up on one grid.
-    readonly property int fieldHeight: Math.round(Kirigami.Units.gridUnit * 2.3)
-    readonly property int fieldIconInset: Kirigami.Units.iconSizes.smallMedium + Kirigami.Units.smallSpacing * 2
-    readonly property color hairline: ThemeEngine.withAlpha(Kirigami.Theme.textColor, 0.12)
-    readonly property color fieldColor: Kirigami.Theme.alternateBackgroundColor
+    // --- terminal type scale + colours (theme tokens, Kirigami fallbacks) ---
+    readonly property string mono: ThemeEngine.fontFamily
+    readonly property int pt: Math.max(7, Kirigami.Theme.defaultFont.pointSize)
+    readonly property int ptSmall: Math.max(7, page.pt - 1)
+    readonly property int labelCol: Math.round(Kirigami.Units.gridUnit * 7)
+    readonly property int rowGap: Math.round(Kirigami.Units.gridUnit * 1.6)
+
+    function fgMain() { return ThemeEngine.fgPrimaryColor(Kirigami.Theme.textColor) }
+    function fgDim() { return ThemeEngine.fgDimColor(Kirigami.Theme.disabledTextColor) }
+    function fgAccent() { return ThemeEngine.fgAccentColor(Kirigami.Theme.highlightColor) }
+    function fgWarn() { return ThemeEngine.fgWarnColor(Kirigami.Theme.negativeTextColor) }
+    function bgLogC() { return ThemeEngine.bgLogColor(Kirigami.Theme.backgroundColor) }
+    function bgPanelC() { return ThemeEngine.bgPanelColor(Kirigami.Theme.alternateBackgroundColor) }
+    function bgInputC() { return ThemeEngine.bgInputColor(Kirigami.Theme.alternateBackgroundColor) }
+    function ruleC() { return ThemeEngine.ruleColorValue(ThemeEngine.withAlpha(Kirigami.Theme.textColor, 0.20)) }
+    function selC() { return ThemeEngine.rowSelectedColor(ThemeEngine.withAlpha(Kirigami.Theme.highlightColor, 0.20)) }
+    function hoverC() { return ThemeEngine.rowHoverColor(ThemeEngine.withAlpha(Kirigami.Theme.textColor, 0.07)) }
 
     signal connectRequested(string host, int port, bool tls, string nickname, string saslUser, string saslPass, int saslMechanism)
 
@@ -91,10 +112,179 @@ Kirigami.Page {
 
     title: qsTr("Connect to IRC")
 
-    // Kirigami.Page owns the content padding; the scroll view below fills the
-    // resulting (inset) content area, so the form can never touch the window
-    // border.
-    padding: Kirigami.Units.largeSpacing
+    // The terminal surface owns its own margins.
+    padding: 0
+
+    // Page surface: the theme's log colour. A theme with empty colours
+    // (`breeze`) falls back to the desktop background, so it still matches the
+    // user's scheme; the fixed palettes stop floating on a white page.
+    background: Rectangle {
+        color: page.bgLogC()
+    }
+
+    // ---------------------------------------------------------------------- //
+    // Inline components — flat, monospace, square. (A nested Repeater inside a
+    // control's custom contentItem SIGSEGVs Qt 6.11; these keep it plain.)
+    // ---------------------------------------------------------------------- //
+
+    component TermLabel: Text {
+        Layout.preferredWidth: page.labelCol
+        Layout.alignment: Qt.AlignVCenter
+        color: page.fgDim()
+        font.family: page.mono
+        font.pointSize: page.ptSmall
+        elide: Text.ElideRight
+    }
+
+    component TermField: Controls.TextField {
+        id: termField
+
+        Layout.fillWidth: true
+        font.family: page.mono
+        font.pointSize: page.ptSmall
+        color: page.fgMain()
+        placeholderTextColor: page.fgDim()
+        selectionColor: page.fgAccent()
+        selectedTextColor: page.bgLogC()
+        leftPadding: 6
+        rightPadding: 6
+
+        background: Rectangle {
+            implicitWidth: 100
+            implicitHeight: Math.round(Kirigami.Units.gridUnit * 1.6)
+            radius: 0
+            color: page.bgInputC()
+            border.width: 1
+            border.color: termField.activeFocus ? page.fgAccent() : page.ruleC()
+        }
+    }
+
+    component TermToggle: Controls.CheckBox {
+        id: termToggle
+
+        Layout.fillWidth: true
+        font.family: page.mono
+        font.pointSize: page.ptSmall
+        spacing: 8
+        rightPadding: 0
+
+        indicator: Text {
+            x: termToggle.leftPadding
+            y: termToggle.topPadding + (termToggle.availableHeight - height) / 2
+            text: termToggle.checked ? "[x]" : "[ ]"
+            color: termToggle.checked ? page.fgAccent() : page.fgDim()
+            font.family: page.mono
+            font.pointSize: page.ptSmall
+        }
+
+        contentItem: Text {
+            leftPadding: termToggle.leftPadding + termToggle.indicator.width + termToggle.spacing
+            text: termToggle.text
+            color: termToggle.enabled ? page.fgMain() : page.fgDim()
+            font.family: page.mono
+            font.pointSize: page.ptSmall
+            verticalAlignment: Text.AlignVCenter
+            elide: Text.ElideRight
+        }
+    }
+
+    component TermButton: Controls.Button {
+        id: termButton
+
+        property string prompt: ""
+
+        font.family: page.mono
+        font.pointSize: page.ptSmall
+        implicitHeight: Math.round(Kirigami.Units.gridUnit * 1.6)
+        implicitWidth: contentItem.implicitWidth + 16
+        text: termButton.prompt
+
+        background: Rectangle {
+            radius: 0
+            color: termButton.down ? page.selC() : (termButton.hovered ? page.hoverC() : page.bgInputC())
+            border.width: 1
+            border.color: termButton.enabled ? page.ruleC() : page.bgInputC()
+        }
+
+        contentItem: Text {
+            text: termButton.text
+            color: termButton.enabled ? page.fgMain() : page.fgDim()
+            font.family: page.mono
+            font.pointSize: page.ptSmall
+            horizontalAlignment: Text.AlignHCenter
+            verticalAlignment: Text.AlignVCenter
+        }
+    }
+
+    /// Flat square combo box.  The text and the arrow are drawn inside the flat
+    /// background on purpose: the desktop style draws a non-editable combo's
+    /// text in its StyleItem background, and its contentItem (an invisible
+    /// TextField) is what the style's mobile-cursor binding targets — replacing
+    /// either used to log a TypeError and hide the selected text.
+    component TermCombo: Controls.ComboBox {
+        id: termCombo
+
+        font.family: page.mono
+        font.pointSize: page.ptSmall
+
+        background: Rectangle {
+            implicitWidth: 80
+            implicitHeight: Math.round(Kirigami.Units.gridUnit * 1.6)
+            radius: 0
+            color: page.bgInputC()
+            border.width: 1
+            border.color: (termCombo.activeFocus || termCombo.popup.visible) ? page.fgAccent() : page.ruleC()
+
+            Text {
+                anchors.left: parent.left
+                anchors.leftMargin: 6
+                anchors.right: comboArrow.left
+                anchors.rightMargin: 4
+                anchors.verticalCenter: parent.verticalCenter
+                text: termCombo.displayText
+                color: page.fgMain()
+                font.family: page.mono
+                font.pointSize: page.ptSmall
+                elide: Text.ElideRight
+            }
+
+            Text {
+                id: comboArrow
+                anchors.right: parent.right
+                anchors.rightMargin: 6
+                anchors.verticalCenter: parent.verticalCenter
+                text: "▾"
+                color: page.fgDim()
+                font.family: page.mono
+                font.pointSize: page.ptSmall
+            }
+        }
+
+        delegate: Controls.ItemDelegate {
+            id: termComboItem
+
+            required property var modelData
+            required property int index
+
+            width: termCombo.width
+            highlighted: termCombo.highlightedIndex === termComboItem.index
+
+            contentItem: Text {
+                leftPadding: 6
+                text: page.saslMechanismLabel(termComboItem.modelData)
+                color: page.fgMain()
+                font.family: page.mono
+                font.pointSize: page.ptSmall
+                verticalAlignment: Text.AlignVCenter
+                elide: Text.ElideRight
+            }
+
+            background: Rectangle {
+                radius: 0
+                color: termComboItem.highlighted ? page.selC() : page.bgInputC()
+            }
+        }
+    }
 
     // Prefill from the persisted profile once every field exists.  The SASL
     // password is never persisted (see cpp/kircconfig.h), so it stays empty.
@@ -128,6 +318,7 @@ Kirigami.Page {
         // Vertical scrolling only: the form is width-constrained below, so
         // there is nothing to scroll horizontally.
         contentWidth: availableWidth
+        Controls.ScrollBar.horizontal.policy: Controls.ScrollBar.AlwaysOff
 
         // Sizes itself from the ScrollView (i.e. the real viewport) rather
         // than from the flickable's content item — see the layout note above.
@@ -141,432 +332,264 @@ Kirigami.Page {
                 id: form
                 // Capped for readability, but never wider than the viewport,
                 // so the centring below can never push the form off-screen.
-                width: Math.min(viewport.width, Kirigami.Units.gridUnit * 28)
+                width: Math.min(viewport.width, Kirigami.Units.gridUnit * 26)
                 anchors.top: parent.top
                 anchors.horizontalCenter: parent.horizontalCenter
-                spacing: Kirigami.Units.smallSpacing
+                spacing: 6
 
                 Item { Layout.preferredHeight: Kirigami.Units.largeSpacing }
 
-                // ---------------- hero ---------------- //
-                Rectangle {
-                    Layout.alignment: Qt.AlignHCenter
-                    Layout.preferredWidth: Math.round(Kirigami.Units.gridUnit * 3.4)
-                    Layout.preferredHeight: Math.round(Kirigami.Units.gridUnit * 3.4)
-                    radius: Math.round(width * 0.3)
-                    color: Kirigami.Theme.highlightColor
+                // ---------------- header ----------------
+                RowLayout {
+                    Layout.fillWidth: true
+                    Layout.leftMargin: 4
+                    spacing: 0
 
-                    Controls.Label {
-                        anchors.centerIn: parent
-                        text: "#"
-                        color: Kirigami.Theme.highlightedTextColor
-                        font.bold: true
-                        font.pointSize: Math.round(Kirigami.Theme.defaultFont.pointSize * 1.9)
+                    Text {
+                        text: "── " + qsTr("connect") + " "
+                        color: page.fgAccent()
+                        font.family: page.mono
+                        font.pointSize: page.ptSmall
+                    }
+
+                    Rectangle {
+                        Layout.fillWidth: true
+                        Layout.alignment: Qt.AlignVCenter
+                        implicitHeight: 1
+                        color: page.ruleC()
                     }
                 }
 
-                Controls.Label {
+                Text {
                     Layout.fillWidth: true
-                    Layout.topMargin: Kirigami.Units.smallSpacing
-                    horizontalAlignment: Text.AlignHCenter
-                    text: qsTr("Connect to your IRC network")
-                    font.bold: true
-                    font.pointSize: Kirigami.Theme.defaultFont.pointSize + 3
-                    wrapMode: Text.WordWrap
+                    Layout.leftMargin: 4
+                    Layout.bottomMargin: 4
+                    text: qsTr("TLS, SASL and IRCv3 included")
+                    color: page.fgDim()
+                    font.family: page.mono
+                    font.pointSize: page.ptSmall
+                    elide: Text.ElideRight
+                    maximumLineCount: 1
                 }
 
-                Controls.Label {
+                // ---------------- host ----------------
+                RowLayout {
                     Layout.fillWidth: true
-                    Layout.bottomMargin: Kirigami.Units.largeSpacing
-                    horizontalAlignment: Text.AlignHCenter
-                    text: qsTr("Sign in to a server and start chatting — TLS, SASL and IRCv3 included.")
-                    color: Kirigami.Theme.disabledTextColor
-                    wrapMode: Text.WordWrap
+                    spacing: 8
+
+                    TermLabel {
+                        text: qsTr("host:")
+                    }
+
+                    TermField {
+                        id: hostField
+                        text: "irc.libera.chat"
+                        placeholderText: qsTr("irc.example.org")
+                        onAccepted: page.tryConnect()
+                        onTextEdited: page.lastError = ""
+                    }
                 }
 
-                // ---------------- form card ---------------- //
-                Rectangle {
+                // ---------------- port + TLS ----------------
+                RowLayout {
                     Layout.fillWidth: true
-                    implicitHeight: cardColumn.implicitHeight + Kirigami.Units.largeSpacing * 2
-                    radius: Kirigami.Units.cornerRadius + 6
-                    color: ThemeEngine.withAlpha(Kirigami.Theme.textColor, 0.04)
-                    border.width: 1
-                    border.color: page.hairline
+                    spacing: 8
+
+                    TermLabel {
+                        text: qsTr("port:")
+                    }
+
+                    TermField {
+                        id: portField
+                        Layout.fillWidth: false
+                        Layout.preferredWidth: Math.round(Kirigami.Units.gridUnit * 5)
+                        text: "6697"
+                        inputMethodHints: Qt.ImhDigitsOnly
+                        validator: IntValidator { bottom: 1; top: 65535 }
+                        onAccepted: page.tryConnect()
+                        onTextEdited: page.lastError = ""
+                    }
+
+                    Item { Layout.fillWidth: true }
+
+                    TermToggle {
+                        id: tlsSwitch
+                        Layout.fillWidth: false
+                        text: qsTr("TLS")
+                        checked: true
+
+                        Controls.ToolTip.visible: hovered
+                        Controls.ToolTip.text: qsTr("Encrypt the connection with TLS")
+                    }
+                }
+
+                // ---------------- nickname ----------------
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 8
+
+                    TermLabel {
+                        text: qsTr("nick:")
+                    }
+
+                    TermField {
+                        id: nickField
+                        text: "kircuser"
+                        placeholderText: qsTr("yournick")
+                        onAccepted: page.tryConnect()
+                        onTextEdited: page.lastError = ""
+                    }
+                }
+
+                // ---------------- SASL ----------------
+                TermToggle {
+                    id: saslSwitch
+                    Layout.topMargin: 4
+                    text: qsTr("authenticate with SASL")
+
+                    Controls.ToolTip.visible: hovered
+                    Controls.ToolTip.text: qsTr("Send SASL credentials when connecting")
+                }
+
+                // Expands instead of popping in.
+                Item {
+                    Layout.fillWidth: true
+                    clip: true
+                    implicitHeight: saslSwitch.checked ? saslColumn.implicitHeight : 0
+                    opacity: saslSwitch.checked ? 1 : 0
+                    Behavior on implicitHeight {
+                        NumberAnimation {
+                            duration: ThemeEngine.motionDuration * 2
+                            easing.type: Easing.OutCubic
+                        }
+                    }
+                    Behavior on opacity {
+                        NumberAnimation { duration: ThemeEngine.motionDuration * 2 }
+                    }
 
                     ColumnLayout {
-                        id: cardColumn
+                        id: saslColumn
                         anchors.left: parent.left
                         anchors.right: parent.right
-                        anchors.verticalCenter: parent.verticalCenter
-                        anchors.margins: Kirigami.Units.largeSpacing
-                        spacing: Kirigami.Units.smallSpacing
+                        anchors.top: parent.top
+                        spacing: 6
 
-                        Controls.Label {
+                        RowLayout {
                             Layout.fillWidth: true
-                            text: qsTr("Server address")
-                            color: Kirigami.Theme.textColor
-                            opacity: 0.75
-                            font.bold: true
-                            font.pointSize: Math.max(1, Kirigami.Theme.defaultFont.pointSize - 1)
-                        }
+                            spacing: 8
 
-                        // ---- host ----
-                        Rectangle {
-                            id: hostWrapper
-                            Layout.fillWidth: true
-                            implicitHeight: page.fieldHeight
-                            radius: Kirigami.Units.cornerRadius + 4
-                            color: page.fieldColor
-                            border.width: 1
-                            border.color: hostField.activeFocus ? Kirigami.Theme.highlightColor : page.hairline
-
-                            Behavior on border.color {
-                                ColorAnimation { duration: ThemeEngine.motionDuration }
+                            TermLabel {
+                                text: qsTr("user:")
                             }
 
-                            Kirigami.Icon {
-                                anchors.left: parent.left
-                                anchors.leftMargin: Kirigami.Units.smallSpacing * 2
-                                anchors.verticalCenter: parent.verticalCenter
-                                source: "network-server"
-                                color: hostField.activeFocus ? Kirigami.Theme.highlightColor : Kirigami.Theme.disabledTextColor
-                                implicitWidth: Kirigami.Units.iconSizes.smallMedium
-                                implicitHeight: Kirigami.Units.iconSizes.smallMedium
-                            }
-
-                            Controls.TextField {
-                                id: hostField
-                                anchors.fill: parent
-                                text: "irc.libera.chat"
-                                placeholderText: qsTr("irc.example.org")
-                                background: null
-                                leftPadding: page.fieldIconInset
-                                rightPadding: Kirigami.Units.smallSpacing * 2
+                            TermField {
+                                id: saslUserField
+                                placeholderText: qsTr("SASL account name")
                                 onAccepted: page.tryConnect()
                                 onTextEdited: page.lastError = ""
                             }
                         }
 
-                        // ---- port + TLS ----
-                        Controls.Label {
-                            Layout.fillWidth: true
-                            Layout.topMargin: Kirigami.Units.smallSpacing
-                            text: qsTr("Port")
-                            color: Kirigami.Theme.textColor
-                            opacity: 0.75
-                            font.bold: true
-                            font.pointSize: Math.max(1, Kirigami.Theme.defaultFont.pointSize - 1)
-                        }
-
                         RowLayout {
                             Layout.fillWidth: true
-                            Layout.topMargin: Kirigami.Units.smallSpacing / 2
-                            spacing: Kirigami.Units.smallSpacing
+                            spacing: 8
 
-                            Rectangle {
-                                id: portWrapper
-                                Layout.preferredWidth: Math.round(Kirigami.Units.gridUnit * 5.5)
-                                implicitHeight: page.fieldHeight
-                                radius: Kirigami.Units.cornerRadius + 4
-                                color: page.fieldColor
-                                border.width: 1
-                                border.color: portField.activeFocus ? Kirigami.Theme.highlightColor : page.hairline
-
-                                Behavior on border.color {
-                                    ColorAnimation { duration: ThemeEngine.motionDuration }
-                                }
-
-                                Kirigami.Icon {
-                                    anchors.left: parent.left
-                                    anchors.leftMargin: Kirigami.Units.smallSpacing * 2
-                                    anchors.verticalCenter: parent.verticalCenter
-                                    source: "security-high"
-                                    color: portField.activeFocus ? Kirigami.Theme.highlightColor : Kirigami.Theme.disabledTextColor
-                                    implicitWidth: Kirigami.Units.iconSizes.smallMedium
-                                    implicitHeight: Kirigami.Units.iconSizes.smallMedium
-                                }
-
-                                Controls.TextField {
-                                    id: portField
-                                    anchors.fill: parent
-                                    text: "6697"
-                                    inputMethodHints: Qt.ImhDigitsOnly
-                                    validator: IntValidator { bottom: 1; top: 65535 }
-                                    background: null
-                                    leftPadding: page.fieldIconInset
-                                    rightPadding: Kirigami.Units.smallSpacing * 2
-                                    onAccepted: page.tryConnect()
-                                    onTextEdited: page.lastError = ""
-                                }
+                            TermLabel {
+                                text: qsTr("pass:")
                             }
 
-                            Item { Layout.fillWidth: true }
-
-                            Controls.Label {
-                                text: qsTr("TLS")
-                                color: tlsSwitch.checked ? Kirigami.Theme.textColor : Kirigami.Theme.disabledTextColor
-                                Layout.alignment: Qt.AlignVCenter
-                            }
-
-                            Controls.Switch {
-                                id: tlsSwitch
-                                checked: true
-                                Layout.preferredWidth: Math.round(Kirigami.Units.gridUnit * 1.8)
-                                Layout.alignment: Qt.AlignVCenter
-                                Controls.ToolTip.visible: hovered
-                                Controls.ToolTip.text: qsTr("Encrypt the connection with TLS")
-                            }
-                        }
-
-                        // ---- nickname ----
-                        Controls.Label {
-                            Layout.fillWidth: true
-                            Layout.topMargin: Kirigami.Units.smallSpacing
-                            text: qsTr("Nickname")
-                            color: Kirigami.Theme.textColor
-                            opacity: 0.75
-                            font.bold: true
-                            font.pointSize: Math.max(1, Kirigami.Theme.defaultFont.pointSize - 1)
-                        }
-
-                        Rectangle {
-                            id: nickWrapper
-                            Layout.fillWidth: true
-                            Layout.topMargin: Kirigami.Units.smallSpacing / 2
-                            implicitHeight: page.fieldHeight
-                            radius: Kirigami.Units.cornerRadius + 4
-                            color: page.fieldColor
-                            border.width: 1
-                            border.color: nickField.activeFocus ? Kirigami.Theme.highlightColor : page.hairline
-
-                            Behavior on border.color {
-                                ColorAnimation { duration: ThemeEngine.motionDuration }
-                            }
-
-                            Kirigami.Icon {
-                                anchors.left: parent.left
-                                anchors.leftMargin: Kirigami.Units.smallSpacing * 2
-                                anchors.verticalCenter: parent.verticalCenter
-                                source: "im-user"
-                                color: nickField.activeFocus ? Kirigami.Theme.highlightColor : Kirigami.Theme.disabledTextColor
-                                implicitWidth: Kirigami.Units.iconSizes.smallMedium
-                                implicitHeight: Kirigami.Units.iconSizes.smallMedium
-                            }
-
-                            Controls.TextField {
-                                id: nickField
-                                anchors.fill: parent
-                                text: "kircuser"
-                                placeholderText: qsTr("yournick")
-                                background: null
-                                leftPadding: page.fieldIconInset
-                                rightPadding: Kirigami.Units.smallSpacing * 2
+                            TermField {
+                                id: saslPassField
+                                // Never written to disk: kirc.conf is plaintext.
+                                placeholderText: qsTr("SASL password (not saved)")
+                                echoMode: showSaslPass.checked ? TextInput.Normal : TextInput.Password
                                 onAccepted: page.tryConnect()
                                 onTextEdited: page.lastError = ""
                             }
+
+                            TermButton {
+                                id: showSaslPass
+                                checkable: true
+                                prompt: checked ? qsTr("[hide]") : qsTr("[show]")
+
+                                Controls.ToolTip.visible: hovered
+                                Controls.ToolTip.text: checked ? qsTr("Hide password") : qsTr("Show password")
+                            }
                         }
 
-                        // ---- SASL ----
+                        // ---- SASL mechanism ----
                         RowLayout {
                             Layout.fillWidth: true
-                            Layout.topMargin: Kirigami.Units.smallSpacing
-                            spacing: Kirigami.Units.smallSpacing
+                            spacing: 8
 
-                            Controls.Label {
-                                Layout.fillWidth: true
-                                text: qsTr("Authenticate with SASL")
-                                color: saslSwitch.checked ? Kirigami.Theme.textColor : Kirigami.Theme.disabledTextColor
+                            TermLabel {
+                                text: qsTr("mech:")
                             }
 
-                            Controls.Switch {
-                                id: saslSwitch
-                                Layout.preferredWidth: Math.round(Kirigami.Units.gridUnit * 1.8)
-                                Layout.alignment: Qt.AlignVCenter
+                            TermCombo {
+                                id: saslMechBox
+                                Layout.fillWidth: false
+                                implicitWidth: Math.round(Kirigami.Units.gridUnit * 13)
+                                model: [0, 1, 2]
+                                currentIndex: Math.max(0, Math.min(2, page.saslMechanism))
+                                textRole: ""
+                                displayText: page.saslMechanismLabel(currentValue !== undefined ? currentValue : page.saslMechanism)
+                                onActivated: (index) => {
+                                    page.saslMechanism = model[index]
+                                }
+
                                 Controls.ToolTip.visible: hovered
-                                Controls.ToolTip.text: qsTr("Send SASL credentials when connecting")
-                            }
-                        }
-
-                        // Expands smoothly instead of popping in.
-                        Item {
-                            Layout.fillWidth: true
-                            clip: true
-                            implicitHeight: saslSwitch.checked ? saslColumn.implicitHeight : 0
-                            opacity: saslSwitch.checked ? 1 : 0
-                            Behavior on implicitHeight {
-                                NumberAnimation {
-                                    duration: ThemeEngine.motionDuration * 2
-                                    easing.type: Easing.OutCubic
-                                }
-                            }
-                            Behavior on opacity {
-                                NumberAnimation { duration: ThemeEngine.motionDuration * 2 }
-                            }
-
-                            ColumnLayout {
-                                id: saslColumn
-                                anchors.left: parent.left
-                                anchors.right: parent.right
-                                anchors.top: parent.top
-                                spacing: Kirigami.Units.smallSpacing
-
-                                Rectangle {
-                                    id: saslUserWrapper
-                                    Layout.fillWidth: true
-                                    implicitHeight: page.fieldHeight
-                                    radius: Kirigami.Units.cornerRadius + 4
-                                    color: page.fieldColor
-                                    border.width: 1
-                                    border.color: saslUserField.activeFocus ? Kirigami.Theme.highlightColor : page.hairline
-
-                                    Behavior on border.color {
-                                        ColorAnimation { duration: ThemeEngine.motionDuration }
-                                    }
-
-                                    Kirigami.Icon {
-                                        anchors.left: parent.left
-                                        anchors.leftMargin: Kirigami.Units.smallSpacing * 2
-                                        anchors.verticalCenter: parent.verticalCenter
-                                        source: "user-identity"
-                                        color: saslUserField.activeFocus ? Kirigami.Theme.highlightColor : Kirigami.Theme.disabledTextColor
-                                        implicitWidth: Kirigami.Units.iconSizes.smallMedium
-                                        implicitHeight: Kirigami.Units.iconSizes.smallMedium
-                                    }
-
-                                    Controls.TextField {
-                                        id: saslUserField
-                                        anchors.fill: parent
-                                        placeholderText: qsTr("SASL account name")
-                                        background: null
-                                        leftPadding: page.fieldIconInset
-                                        rightPadding: Kirigami.Units.smallSpacing * 2
-                                        onAccepted: page.tryConnect()
-                                        onTextEdited: page.lastError = ""
-                                    }
-                                }
-
-                                Rectangle {
-                                    id: saslPassWrapper
-                                    Layout.fillWidth: true
-                                    implicitHeight: page.fieldHeight
-                                    radius: Kirigami.Units.cornerRadius + 4
-                                    color: page.fieldColor
-                                    border.width: 1
-                                    border.color: saslPassField.activeFocus ? Kirigami.Theme.highlightColor : page.hairline
-
-                                    Behavior on border.color {
-                                        ColorAnimation { duration: ThemeEngine.motionDuration }
-                                    }
-
-                                    Kirigami.Icon {
-                                        anchors.left: parent.left
-                                        anchors.leftMargin: Kirigami.Units.smallSpacing * 2
-                                        anchors.verticalCenter: parent.verticalCenter
-                                        source: "dialog-password"
-                                        color: saslPassField.activeFocus ? Kirigami.Theme.highlightColor : Kirigami.Theme.disabledTextColor
-                                        implicitWidth: Kirigami.Units.iconSizes.smallMedium
-                                        implicitHeight: Kirigami.Units.iconSizes.smallMedium
-                                    }
-
-                                    Controls.TextField {
-                                        id: saslPassField
-                                        anchors.fill: parent
-                                        // Never written to disk: kirc.conf is plaintext.
-                                        placeholderText: qsTr("SASL password (not saved)")
-                                        echoMode: showSaslPass.checked ? TextInput.Normal : TextInput.Password
-                                        background: null
-                                        leftPadding: page.fieldIconInset
-                                        rightPadding: showSaslPass.width + Kirigami.Units.smallSpacing * 3
-                                        onAccepted: page.tryConnect()
-                                        onTextEdited: page.lastError = ""
-                                    }
-
-                                    Controls.ToolButton {
-                                        id: showSaslPass
-                                        anchors.right: parent.right
-                                        anchors.rightMargin: Kirigami.Units.smallSpacing
-                                        anchors.verticalCenter: parent.verticalCenter
-                                        checkable: true
-                                        icon.name: checked ? "password-show-off" : "password-show-on"
-                                        text: qsTr("Show password")
-
-                                        Controls.ToolTip.visible: hovered
-                                        Controls.ToolTip.text: checked ? qsTr("Hide password") : qsTr("Show password")
-                                    }
-                                }
-
-                                // ---- SASL mechanism ----
-                                RowLayout {
-                                    Layout.fillWidth: true
-                                    spacing: Kirigami.Units.smallSpacing
-
-                                    Controls.Label {
-                                        text: qsTr("Mechanism")
-                                        color: Kirigami.Theme.textColor
-                                        opacity: 0.75
-                                        font.bold: true
-                                        font.pointSize: Math.max(1, Kirigami.Theme.defaultFont.pointSize - 1)
-                                        Layout.alignment: Qt.AlignVCenter
-                                    }
-
-                                    Item { Layout.fillWidth: true }
-
-                                    Controls.ComboBox {
-                                        id: saslMechBox
-                                        Layout.preferredWidth: Math.round(Kirigami.Units.gridUnit * 11)
-                                        model: [0, 1, 2]
-                                        currentIndex: Math.max(0, Math.min(2, page.saslMechanism))
-                                        textRole: ""
-                                        displayText: page.saslMechanismLabel(currentValue !== undefined ? currentValue : page.saslMechanism)
-                                        onActivated: (index) => {
-                                            page.saslMechanism = model[index]
-                                        }
-                                        delegate: Controls.ItemDelegate {
-                                            required property var modelData
-                                            width: saslMechBox.width
-                                            text: page.saslMechanismLabel(modelData)
-                                            highlighted: saslMechBox.currentValue === modelData
-                                        }
-
-                                        Controls.ToolTip.visible: hovered
-                                        Controls.ToolTip.text: qsTr("Auto negotiates SCRAM-SHA-256 when advertised, else PLAIN")
-                                    }
-                                }
+                                Controls.ToolTip.text: qsTr("Auto negotiates SCRAM-SHA-256 when advertised, else PLAIN")
                             }
                         }
                     }
                 }
 
-                // ---------------- error hint ---------------- //
-                Kirigami.InlineMessage {
+                // ---------------- flat hints ----------------
+                Text {
                     Layout.fillWidth: true
+                    Layout.leftMargin: 4
                     visible: page.lastError.length > 0
-                    type: Kirigami.MessageType.Error
-                    text: page.lastError
+                    text: "! " + page.lastError
+                    color: page.fgWarn()
+                    font.family: page.mono
+                    font.pointSize: page.ptSmall
+                    elide: Text.ElideRight
+                    maximumLineCount: 1
                 }
 
-                Kirigami.InlineMessage {
+                Text {
                     Layout.fillWidth: true
+                    Layout.leftMargin: 4
                     visible: portField.text.length > 0 && page.parsedPort === 0
-                    type: Kirigami.MessageType.Error
-                    text: qsTr("Port must be a number between 1 and 65535.")
+                    text: qsTr("! port must be a number between 1 and 65535")
+                    color: page.fgWarn()
+                    font.family: page.mono
+                    font.pointSize: page.ptSmall
+                    elide: Text.ElideRight
+                    maximumLineCount: 1
                 }
 
-                Kirigami.InlineMessage {
+                Text {
                     Layout.fillWidth: true
+                    Layout.leftMargin: 4
                     visible: !page.formValid && !page.connecting && page.parsedPort !== 0
-                    type: Kirigami.MessageType.Warning
-                    text: qsTr("Enter a server host and a nickname to continue.")
+                    text: qsTr("! enter a server host and a nickname to continue")
+                    color: page.fgDim()
+                    font.family: page.mono
+                    font.pointSize: page.ptSmall
+                    elide: Text.ElideRight
+                    maximumLineCount: 1
                 }
 
-                // ---------------- primary action ---------------- //
+                // ---------------- primary action ----------------
                 Controls.Button {
                     id: connectButton
-                    text: page.connecting ? qsTr("Cancel") : qsTr("Connect")
+                    text: page.connecting ? qsTr("cancel") : qsTr("connect")
                     enabled: page.connecting || page.formValid
                     Layout.fillWidth: true
-                    Layout.topMargin: Kirigami.Units.smallSpacing
-                    Layout.preferredHeight: Math.round(Kirigami.Units.gridUnit * 2.4)
+                    Layout.topMargin: 6
+                    implicitHeight: Math.round(Kirigami.Units.gridUnit * 2)
                     onClicked: {
                         if (page.connecting) {
                             var win = applicationWindow()
@@ -582,48 +605,36 @@ Kirigami.Page {
                     }
 
                     background: Rectangle {
-                        radius: Kirigami.Units.cornerRadius + 4
+                        radius: 0
                         color: !connectButton.enabled
-                            ? ThemeEngine.withAlpha(Kirigami.Theme.textColor, 0.14)
-                            : (connectButton.pressed
-                               ? Qt.darker(Kirigami.Theme.highlightColor, 1.2)
-                               : Kirigami.Theme.highlightColor)
-                        Behavior on color {
-                            ColorAnimation { duration: ThemeEngine.motionDuration }
-                        }
+                            ? page.bgInputC()
+                            : (connectButton.down ? page.selC()
+                               : (connectButton.hovered ? page.hoverC() : page.bgPanelC()))
+                        border.width: 1
+                        border.color: connectButton.enabled ? page.fgAccent() : page.ruleC()
                     }
 
-                    contentItem: RowLayout {
-                        spacing: Kirigami.Units.smallSpacing
-
-                        Item { Layout.fillWidth: true }
-
-                        Controls.BusyIndicator {
-                            visible: page.connecting
-                            running: page.connecting
-                            Layout.preferredWidth: Kirigami.Units.iconSizes.smallMedium
-                            Layout.preferredHeight: Kirigami.Units.iconSizes.smallMedium
-                            Layout.alignment: Qt.AlignVCenter
-                        }
-
-                        Kirigami.Icon {
-                            visible: !page.connecting
-                            source: "network-connect"
-                            color: connectButton.enabled ? Kirigami.Theme.highlightedTextColor : Kirigami.Theme.disabledTextColor
-                            implicitWidth: Kirigami.Units.iconSizes.smallMedium
-                            implicitHeight: Kirigami.Units.iconSizes.smallMedium
-                            Layout.alignment: Qt.AlignVCenter
-                        }
-
-                        Controls.Label {
-                            text: connectButton.text
-                            color: connectButton.enabled ? Kirigami.Theme.highlightedTextColor : Kirigami.Theme.disabledTextColor
-                            font.bold: true
-                            Layout.alignment: Qt.AlignVCenter
-                        }
-
-                        Item { Layout.fillWidth: true }
+                    contentItem: Text {
+                        text: page.connecting ? qsTr("[ cancel ]") : qsTr("[ connect ]")
+                        color: connectButton.enabled ? page.fgAccent() : page.fgDim()
+                        font.family: page.mono
+                        font.pointSize: page.pt
+                        horizontalAlignment: Text.AlignHCenter
+                        verticalAlignment: Text.AlignVCenter
                     }
+                }
+
+                Text {
+                    Layout.fillWidth: true
+                    Layout.leftMargin: 4
+                    Layout.topMargin: 2
+                    visible: page.connecting
+                    text: qsTr("connecting…")
+                    color: page.fgDim()
+                    font.family: page.mono
+                    font.pointSize: page.ptSmall
+                    elide: Text.ElideRight
+                    maximumLineCount: 1
                 }
 
                 Item { Layout.preferredHeight: Kirigami.Units.largeSpacing }

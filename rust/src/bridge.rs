@@ -20,6 +20,7 @@ use std::sync::{Mutex, OnceLock};
 use cxx_qt::{CxxQtType, Threading};
 use cxx_qt_lib::{QByteArray, QHash, QHashPair_i32_QByteArray, QModelIndex, QString, QVariant};
 
+use chrono::Datelike;
 use kirc_core::{is_channel, ClientCommand, ConnectionConfig, IrcEvent, SaslConfig, SaslMechanism};
 
 // ---------------------------------------------------------------------------
@@ -27,6 +28,15 @@ use kirc_core::{is_channel, ClientCommand, ConnectionConfig, IrcEvent, SaslConfi
 // ---------------------------------------------------------------------------
 
 /// A single message as buffered for the QML models.
+///
+/// `nick`/`text`/`timestamp`/`is_self`/`is_highlight` are the raw row data.
+/// `day` is the local calendar date the row's timestamp fell on (`None` when
+/// the timestamp was unparseable); it is what the day-boundary roles are
+/// computed from, because the display stamp alone ("HH:MM") carries no date.
+/// `is_event`/`show_day`/`day_label` are DERIVED presentation flags: they are
+/// left at their defaults in the [`STORE`] and filled in by
+/// [`qobject::MessageListModel`] when a row is produced (single pass in
+/// `load_channel`, O(1) in `append_message`).
 #[derive(Clone, Debug, Default)]
 pub struct StoreMsg {
     pub nick: String,
@@ -34,6 +44,33 @@ pub struct StoreMsg {
     pub timestamp: String,
     pub is_self: bool,
     pub is_highlight: bool,
+    pub day: Option<chrono::NaiveDate>,
+    pub is_event: bool,
+    pub show_day: bool,
+    pub day_label: String,
+}
+
+impl StoreMsg {
+    /// A raw buffered row. The derived flags start false/empty; the list model
+    /// fills them in when the row is produced.
+    fn new(
+        nick: String,
+        text: String,
+        timestamp: String,
+        is_self: bool,
+        is_highlight: bool,
+        day: Option<chrono::NaiveDate>,
+    ) -> Self {
+        Self {
+            nick,
+            text,
+            timestamp,
+            is_self,
+            is_highlight,
+            day,
+            ..Self::default()
+        }
+    }
 }
 
 /// Global `target -> messages` buffer.
@@ -119,21 +156,73 @@ fn now_string() -> String {
     chrono::Local::now().format("%H:%M").to_string()
 }
 
-/// Format an IRCv3 `server-time` value as a local-time `HH:MM` string.
+/// Format an IRCv3 `server-time` value as a local-time `HH:MM` string, plus
+/// the local calendar date it fell on (`None` when the value is unparseable).
 ///
 /// The QML layer displays message timestamps verbatim (it does no date
 /// formatting of its own), so the bridge is responsible for the presentation.
-/// Anything unparseable is passed through untouched so no information is lost.
-fn fmt_timestamp(raw: Option<String>) -> String {
+/// Anything unparseable is passed through untouched so no information is lost
+/// — and, having no parseable date, can never start a day section.
+fn fmt_timestamp(raw: Option<String>) -> (String, Option<chrono::NaiveDate>) {
     match raw.as_deref() {
         Some(value) if !value.is_empty() => match chrono::DateTime::parse_from_rfc3339(value) {
-            Ok(datetime) => datetime
-                .with_timezone(&chrono::Local)
-                .format("%H:%M")
-                .to_string(),
-            Err(_) => value.to_owned(),
+            Ok(datetime) => {
+                let local = datetime.with_timezone(&chrono::Local);
+                (
+                    local.format("%H:%M").to_string(),
+                    Some(local.date_naive()),
+                )
+            }
+            Err(_) => (value.to_owned(), None),
         },
-        _ => now_string(),
+        _ => (now_string(), Some(now_day())),
+    }
+}
+
+/// Local calendar date `now`.
+fn now_day() -> chrono::NaiveDate {
+    chrono::Local::now().date_naive()
+}
+
+/// True when `nick` marks a synthesized event line (joins, parts, quits,
+/// modes, topics, server notices) — those are pushed with nick `"*"`.
+fn nick_is_event(nick: &str) -> bool {
+    nick.trim() == "*"
+}
+
+/// The model row's `dayLabel`: "Today", "Yesterday", else e.g. "Sep 11".
+fn day_label_for(day: chrono::NaiveDate, today: chrono::NaiveDate) -> String {
+    if day == today {
+        return "Today".to_owned();
+    }
+    if Some(day) == today.pred_opt() {
+        return "Yesterday".to_owned();
+    }
+    // chrono's %b is the English abbreviated month, so the label is stable
+    // regardless of the process locale (the rest of this program is English).
+    format!("{} {}", day.format("%b"), day.day())
+}
+
+/// Fill one row's derived presentation flags.
+///
+/// `prev_day` is the calendar day of the row *before* this one in the display
+/// sequence (`None` for the first row, and for rows whose predecessor had an
+/// unparseable timestamp). A day section starts only when both rows have a
+/// parseable date and the dates differ — an unparseable timestamp is never a
+/// day boundary.
+fn derive_row(prev_day: Option<chrono::NaiveDate>, row: &mut StoreMsg) {
+    row.is_event = nick_is_event(&row.nick);
+    row.show_day = matches!((prev_day, row.day), (Some(prev), Some(day)) if prev != day);
+    row.day_label = row.day.map(|day| day_label_for(day, now_day())).unwrap_or_default();
+}
+
+/// Derive every row's flags in ONE pass, front to back. Used by
+/// `load_channel`, which produces all rows of a buffer at once.
+fn derive_rows(rows: &mut [StoreMsg]) {
+    let mut prev_day: Option<chrono::NaiveDate> = None;
+    for row in rows.iter_mut() {
+        derive_row(prev_day, row);
+        prev_day = row.day;
     }
 }
 
@@ -188,6 +277,9 @@ pub mod qobject {
     }
 
     /// Roles of [`MessageListModel`].
+    ///
+    /// `isEvent`/`showDay`/`dayLabel` are computed in Rust when a row is
+    /// produced (see `derive_rows` / `derive_row`); QML binds them directly.
     #[qenum(MessageListModel)]
     enum Roles {
         Nick,
@@ -195,6 +287,9 @@ pub mod qobject {
         Timestamp,
         IsSelf,
         IsHighlight,
+        IsEvent,
+        ShowDay,
+        DayLabel,
     }
 
     // -----------------------------------------------------------------------
@@ -543,13 +638,14 @@ fn info_to_store(mut obj: Pin<&mut qobject::IrcBridge>, text: &str) {
         guard
             .entry(SERVER_BUFFER.to_owned())
             .or_default()
-            .push(StoreMsg {
-                nick: "*".to_owned(),
-                text: text.to_owned(),
-                timestamp: stamp.clone(),
-                is_self: false,
-                is_highlight: false,
-            });
+            .push(StoreMsg::new(
+                "*".to_owned(),
+                text.to_owned(),
+                stamp.clone(),
+                false,
+                false,
+                Some(now_day()),
+            ));
     }
     obj.as_mut().message_received(
         qs(SERVER_BUFFER),
@@ -572,13 +668,14 @@ fn push_channel_line(mut obj: Pin<&mut qobject::IrcBridge>, channel: &str, text:
         guard
             .entry(key.clone())
             .or_default()
-            .push(StoreMsg {
-                nick: "*".to_owned(),
-                text: text.to_owned(),
-                timestamp: stamp.clone(),
-                is_self: false,
-                is_highlight: false,
-            });
+            .push(StoreMsg::new(
+                "*".to_owned(),
+                text.to_owned(),
+                stamp.clone(),
+                false,
+                false,
+                Some(now_day()),
+            ));
         key
     };
     obj.as_mut().message_received(
@@ -697,19 +794,20 @@ fn handle_event(mut obj: Pin<&mut qobject::IrcBridge>, event: IrcEvent) {
             }
             // Format the stamp once — the STORE row and the QML row must show
             // the identical string (a second `now_string()` could tick over).
-            let stamp = fmt_timestamp(timestamp);
+            let (stamp, day) = fmt_timestamp(timestamp);
             // One lock, one fold: append to the buffer and keep the folded key
             // for the signal (this used to take the store lock twice per line).
             let target = {
                 let mut guard = store().lock().unwrap_or_else(|e| e.into_inner());
                 let key = canon_key(&guard, &target);
-                guard.entry(key.clone()).or_default().push(StoreMsg {
-                    nick: nick.clone(),
-                    text: text.clone(),
-                    timestamp: stamp.clone(),
+                guard.entry(key.clone()).or_default().push(StoreMsg::new(
+                    nick.clone(),
+                    text.clone(),
+                    stamp.clone(),
                     is_self,
                     is_highlight,
-                });
+                    day,
+                ));
                 key
             };
 
@@ -747,12 +845,9 @@ fn handle_event(mut obj: Pin<&mut qobject::IrcBridge>, event: IrcEvent) {
                 let key = canon_map_key(&guard, &target);
                 let rows: Vec<StoreMsg> = messages
                     .into_iter()
-                    .map(|msg| StoreMsg {
-                        nick: msg.nick,
-                        text: msg.text,
-                        timestamp: fmt_timestamp(msg.timestamp),
-                        is_self: false,
-                        is_highlight: false,
+                    .map(|msg| {
+                        let (timestamp, day) = fmt_timestamp(msg.timestamp);
+                        StoreMsg::new(msg.nick, msg.text, timestamp, false, false, day)
                     })
                     .collect();
                 let entry = guard.entry(key).or_default();
@@ -1220,14 +1315,18 @@ impl qobject::IrcBridge {
 
 impl qobject::MessageListModel {
     /// Replace the model contents with the buffered messages of `target`.
+    ///
+    /// The rows' derived presentation flags (`isEvent`/`showDay`/`dayLabel`)
+    /// are computed here in a single pass over the buffer.
     pub fn load_channel(mut self: Pin<&mut Self>, target: QString) {
         let target_s = rs(&target);
-        let (key, rows) = {
+        let (key, mut rows) = {
             let guard = store().lock().unwrap_or_else(|e| e.into_inner());
             let key = canon_key(&guard, &target_s);
             let rows = guard.get(&key).cloned().unwrap_or_default();
             (key, rows)
         };
+        derive_rows(&mut rows);
         // Remember which buffer the user is viewing (folded key) so incoming
         // lines for it do not inflate the unread badge.
         *visible_target()
@@ -1254,6 +1353,13 @@ impl qobject::MessageListModel {
     /// whole log (and every delegate) per line.  A `target` that does not
     /// match the loaded buffer (ASCII case-insensitive), including any call
     /// before the first `load_channel`, is a silent no-op.
+    ///
+    /// The row's derived flags are computed in O(1): `showDay`/`dayLabel` come
+    /// from comparing the new row against the previous row already in the
+    /// buffer. The live signal only carries the preformatted "HH:MM" stamp
+    /// (which has no date), so the row's calendar day is read from the STORE
+    /// row the bridge appended just before announcing it — the same buffer
+    /// `load_channel` serves from, so both paths agree.
     pub fn append_message(
         mut self: Pin<&mut Self>,
         target: QString,
@@ -1276,13 +1382,25 @@ impl qobject::MessageListModel {
             return;
         }
 
-        let row = StoreMsg {
-            nick: rs(&nick),
-            text: rs(&text),
-            timestamp: rs(&timestamp),
+        let loaded_key = self.as_ref().rust().target.clone();
+        let day = {
+            let guard = store().lock().unwrap_or_else(|e| e.into_inner());
+            guard
+                .get(&loaded_key)
+                .and_then(|rows| rows.last())
+                .and_then(|row| row.day)
+        };
+
+        let mut row = StoreMsg::new(
+            rs(&nick),
+            rs(&text),
+            rs(&timestamp),
             is_self,
             is_highlight,
-        };
+            day,
+        );
+        let prev_day = self.as_ref().rust().rows.last().and_then(|prev| prev.day);
+        derive_row(prev_day, &mut row);
 
         // Insert at the end.  When the model is empty (or was just reset by a
         // `load_channel`) this is row 0 and still a plain insert — no reset.
@@ -1330,6 +1448,12 @@ impl qobject::MessageListModel {
             }
             qobject::Roles::IsSelf => QVariant::from(&row.is_self),
             qobject::Roles::IsHighlight => QVariant::from(&row.is_highlight),
+            qobject::Roles::IsEvent => QVariant::from(&row.is_event),
+            qobject::Roles::ShowDay => QVariant::from(&row.show_day),
+            qobject::Roles::DayLabel => {
+                let value = qs(&row.day_label);
+                QVariant::from(&value)
+            }
             _ => QVariant::default(),
         }
     }
@@ -1353,6 +1477,107 @@ impl qobject::MessageListModel {
             qobject::Roles::IsHighlight.repr,
             QByteArray::from("isHighlight"),
         );
+        roles.insert(qobject::Roles::IsEvent.repr, QByteArray::from("isEvent"));
+        roles.insert(qobject::Roles::ShowDay.repr, QByteArray::from("showDay"));
+        roles.insert(qobject::Roles::DayLabel.repr, QByteArray::from("dayLabel"));
         roles
+    }
+}
+
+// ===========================================================================
+// Derived-role unit tests
+// ===========================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::NaiveDate;
+
+    fn date(y: i32, m: u32, d: u32) -> Option<NaiveDate> {
+        NaiveDate::from_ymd_opt(y, m, d)
+    }
+
+    fn row(nick: &str, day: Option<NaiveDate>) -> StoreMsg {
+        StoreMsg::new(nick.to_owned(), "text".to_owned(), "12:00".to_owned(), false, false, day)
+    }
+
+    #[test]
+    fn derive_rows_marks_day_sections() {
+        let mut rows = vec![
+            row("alice", date(2026, 9, 10)),
+            row("*", date(2026, 9, 10)),
+            row("bob", date(2026, 9, 11)),
+            row("carol", date(2026, 9, 11)),
+        ];
+        derive_rows(&mut rows);
+
+        // The first row has no predecessor: no day section.
+        assert!(!rows[0].show_day);
+        // Event rows are the synthesized `*` lines, on either day.
+        assert!(!rows[0].is_event);
+        assert!(rows[1].is_event);
+        assert!(!rows[2].is_event);
+        // The day rolls over exactly once, at the row whose date changed.
+        assert!(!rows[1].show_day);
+        assert!(rows[2].show_day);
+        assert!(!rows[3].show_day);
+        // Day labels are per-row, and every row carries one when parseable.
+        assert!(!rows[2].day_label.is_empty());
+    }
+
+    #[test]
+    fn day_labels_are_relative_to_today() {
+        let today = date(2026, 9, 11).unwrap();
+        assert_eq!(day_label_for(today, today), "Today");
+        assert_eq!(day_label_for(today.pred_opt().unwrap(), today), "Yesterday");
+        assert_eq!(day_label_for(date(2026, 9, 5).unwrap(), today), "Sep 5");
+        assert_eq!(day_label_for(date(2026, 8, 31).unwrap(), today), "Aug 31");
+        assert_eq!(day_label_for(date(2025, 12, 31).unwrap(), today), "Dec 31");
+    }
+
+    #[test]
+    fn unparseable_timestamps_never_start_a_day() {
+        let mut rows = vec![
+            row("a", None),
+            row("b", date(2026, 9, 10)),
+            row("c", None),
+            row("d", date(2026, 9, 11)),
+            row("e", date(2026, 9, 11)),
+            row("f", date(2026, 9, 12)),
+        ];
+        derive_rows(&mut rows);
+        assert!(!rows[0].show_day); // nothing before it
+        assert!(!rows[1].show_day); // predecessor had no parseable date
+        assert!(!rows[2].show_day); // this row has no parseable date
+        assert!(!rows[3].show_day); // predecessor (row "c") was unparseable
+        assert!(!rows[4].show_day); // same day, both parseable
+        assert!(rows[5].show_day); // 09-12 vs 09-11, both parseable
+        assert!(rows[0].day_label.is_empty());
+        assert!(rows[2].day_label.is_empty());
+    }
+
+    #[test]
+    fn append_path_derives_from_previous_row_only() {
+        // The O(1) append path: the new row's flags depend on its predecessor
+        // and nothing else — same result as the batch pass above.
+        let previous = row("alice", date(2026, 9, 10));
+        let mut next = row("bob", date(2026, 9, 11));
+        derive_row(previous.day, &mut next);
+        assert!(next.show_day);
+        assert!(!next.is_event);
+
+        let mut event = row("*", date(2026, 9, 11));
+        derive_row(date(2026, 9, 11), &mut event);
+        assert!(event.is_event);
+        assert!(!event.show_day);
+    }
+
+    #[test]
+    fn nick_is_event_only_for_the_star_marker() {
+        assert!(nick_is_event("*"));
+        assert!(nick_is_event(" * "));
+        assert!(!nick_is_event("bob"));
+        assert!(!nick_is_event("*bob"));
+        assert!(!nick_is_event(""));
     }
 }

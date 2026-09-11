@@ -22,11 +22,28 @@ constexpr auto kWalletFolder = "kIRC";
 constexpr auto kWalletKey = "nickserv-password";
 
 // Version of the [UI] theme-selection schema (see the header for the policy).
-// Version 1 is what every config written before the Fluent pass implies; the
-// current version is written back by load()'s one-time migration and by every
-// save(), so a later theme pick always sticks.
-constexpr int kThemeSchemaVersion = 2;
+// Version 1 is what every config written before the Fluent pass implies;
+// version 3 is the current schema — dense monospace TUI palettes.  The current
+// version is written back by load()'s one-time migration and by every save(),
+// so a later theme pick always sticks.
+constexpr int kThemeSchemaVersion = 3;
 constexpr int kThemeSchemaVersionLegacy = 1;
+
+// Built-in theme ids that shipped before the terminal reskin (schema < 3):
+// everything that used to be a bubble or glass theme.  A stored id from this
+// list is indistinguishable from "never chose" (it is either the old default
+// or a stock id the redesign replaced), so the migration rewrites it to the
+// new default.  Ids outside this list — including a user's own theme file —
+// are deliberate choices and are left alone.
+constexpr auto kNewDefaultThemeId = "tui";
+constexpr auto kRetiredBuiltinThemeIds = {
+    "breeze",
+    "breeze-classic",
+    "oxygen",
+    "neon",
+    "fluent",
+    "fluent-light",
+};
 
 } // namespace
 
@@ -328,6 +345,20 @@ void KircConfig::setThemeId(const QString &themeId)
     Q_EMIT themeIdChanged();
 }
 
+QString KircConfig::fontFamily() const
+{
+    return m_fontFamily;
+}
+
+void KircConfig::setFontFamily(const QString &fontFamily)
+{
+    if (m_fontFamily == fontFamily) {
+        return;
+    }
+    m_fontFamily = fontFamily;
+    Q_EMIT fontFamilyChanged();
+}
+
 QString KircConfig::autojoin() const
 {
     return m_autojoin;
@@ -441,6 +472,7 @@ void KircConfig::load()
     const KConfigGroup ui = config.group(QString::fromLatin1(kUiGroup));
     m_minimizeToTray = ui.readEntry(QStringLiteral("MinimizeToTrayOnClose"), m_minimizeToTray);
     m_themeId = ui.readEntry(QStringLiteral("ThemeId"), m_themeId);
+    m_fontFamily = ui.readEntry(QStringLiteral("FontFamily"), m_fontFamily);
     m_autojoin = ui.readEntry(QStringLiteral("Autojoin"), m_autojoin);
     m_reconnect = ui.readEntry(QStringLiteral("Reconnect"), m_reconnect);
     m_fontDelta = ui.readEntry(QStringLiteral("FontDelta"), m_fontDelta);
@@ -460,7 +492,7 @@ void KircConfig::load()
         ui.readEntry(QStringLiteral("ReconnectAfterAuthFailure"), m_reconnectAfterAuthFailure);
     m_showTimestamps = ui.readEntry(QStringLiteral("ShowTimestamps"), m_showTimestamps);
 
-    // ---- one-time theme-schema migration (v1 -> v2; policy in the header) --
+    // ---- one-time theme-schema migration (< 3 -> 3; policy in the header) --
     // A config file that predates the key is version 1 by definition; a fresh
     // install (no file at all) is born at the current version and has nothing
     // to migrate.  QFileInfo::exists() is checked *before* reading, because
@@ -469,20 +501,26 @@ void KircConfig::load()
         ? ui.readEntry(QStringLiteral("ThemeSchemaVersion"), kThemeSchemaVersionLegacy)
         : kThemeSchemaVersion;
     if (storedThemeSchema < kThemeSchemaVersion) {
-        // Only the legacy *defaults* migrate: a stored `breeze`,
-        // `breeze-classic` or `oxygen` is indistinguishable from "never chose"
-        // (all three are pre-polish stock ids, and two of them are the dense
-        // layout the redesign replaced), so they follow the new default.  Any
-        // other id (neon/fluent/fluent-light, or a custom one from
-        // ~/.config/kIRC/themes/) is a deliberate choice and is left
-        // untouched.  The version is persisted either way, so this runs
-        // exactly once — a later pick writes the version too and therefore
-        // sticks, including switching back to Oxygen.
+        // Only *previously shipped built-ins* migrate (breeze, breeze-classic,
+        // oxygen, neon, fluent, fluent-light): they are either the old default
+        // or one of the stock bubble/glass themes the terminal reskin
+        // replaced.  This deliberately re-examines configs already stamped
+        // version 2 — phase 2 stamped 2 before `oxygen` joined its legacy set,
+        // so a `ThemeId=oxygen` config could never have been rewritten.  Any
+        // other id (a user's own theme under ~/.config/kIRC/themes/) is a
+        // deliberate choice and is left untouched.  The version is persisted
+        // either way, so this runs exactly once — a later pick writes the
+        // version too and therefore sticks.
+        bool retired = false;
+        for (const char *candidate : kRetiredBuiltinThemeIds) {
+            if (m_themeId.compare(QString::fromLatin1(candidate), Qt::CaseInsensitive) == 0) {
+                retired = true;
+                break;
+            }
+        }
         KConfigGroup uiWrite = config.group(QString::fromLatin1(kUiGroup));
-        if (m_themeId.compare(QStringLiteral("breeze"), Qt::CaseInsensitive) == 0
-            || m_themeId.compare(QStringLiteral("breeze-classic"), Qt::CaseInsensitive) == 0
-            || m_themeId.compare(QStringLiteral("oxygen"), Qt::CaseInsensitive) == 0) {
-            m_themeId = QStringLiteral("fluent");
+        if (retired) {
+            m_themeId = QString::fromLatin1(kNewDefaultThemeId);
             uiWrite.writeEntry(QStringLiteral("ThemeId"), m_themeId);
         }
         uiWrite.writeEntry(QStringLiteral("ThemeSchemaVersion"), kThemeSchemaVersion);
@@ -525,6 +563,7 @@ void KircConfig::load()
     Q_EMIT showTimestampsChanged();
     Q_EMIT minimizeToTrayChanged();
     Q_EMIT themeIdChanged();
+    Q_EMIT fontFamilyChanged();
     Q_EMIT autojoinChanged();
     Q_EMIT reconnectChanged();
     Q_EMIT fontDeltaChanged();
@@ -553,7 +592,8 @@ void KircConfig::save()
     KConfigGroup ui = config.group(QString::fromLatin1(kUiGroup));
     ui.writeEntry(QStringLiteral("MinimizeToTrayOnClose"), m_minimizeToTray);
     ui.writeEntry(QStringLiteral("ThemeId"), m_themeId);
-    // A theme picked (or migrated) by this build is a v2 choice; writing the
+    ui.writeEntry(QStringLiteral("FontFamily"), m_fontFamily);
+    // A theme picked (or migrated) by this build is a v3 choice; writing the
     // version here is what makes a later pick stick across restarts.
     ui.writeEntry(QStringLiteral("ThemeSchemaVersion"), kThemeSchemaVersion);
     ui.writeEntry(QStringLiteral("Autojoin"), m_autojoin);
