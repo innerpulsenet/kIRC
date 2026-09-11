@@ -69,6 +69,11 @@ pub struct CapState {
     pub acked: BTreeSet<String>,
     /// True once a non-multiline `CAP LS` has been fully received.
     pub ls_complete: bool,
+    /// Raw advertised tokens for the `sasl` capability (e.g.
+    /// `sasl=PLAIN,EXTERNAL`), kept verbatim so SASL auto-selection can see
+    /// which mechanisms the server offers. `available` only keeps the bare
+    /// name, so this separate list is needed.
+    pub raw_sasl_values: Vec<String>,
 }
 
 impl CapState {
@@ -78,6 +83,9 @@ impl CapState {
     /// bare capability name is retained so lookups work.
     pub fn add_available(&mut self, caps: &[String]) {
         for c in caps {
+            if normalize_cap(c).eq_ignore_ascii_case("sasl") {
+                self.raw_sasl_values.push(c.clone());
+            }
             self.available.insert(normalize_cap(c));
         }
     }
@@ -97,6 +105,26 @@ impl CapState {
     /// Whether `cap` was requested and acknowledged.
     pub fn has(&self, cap: &str) -> bool {
         self.acked.contains(cap)
+    }
+
+    /// Values the server advertised for the `sasl` capability
+    /// (`sasl=PLAIN,EXTERNAL` → `["PLAIN", "EXTERNAL"]`), upper-cased for
+    /// comparison. Empty when not advertised or advertised bare.
+    pub fn sasl_mechanisms_offered(&self) -> Vec<String> {
+        self.raw_sasl_values
+            .iter()
+            .flat_map(|token| {
+                token
+                    .split('=')
+                    .nth(1)
+                    .unwrap_or_default()
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|m| !m.is_empty())
+                    .map(|m| m.to_ascii_uppercase())
+                    .collect::<Vec<_>>()
+            })
+            .collect()
     }
 }
 

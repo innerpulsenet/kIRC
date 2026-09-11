@@ -68,6 +68,37 @@ QtObject {
     readonly property bool highlightIsBold: theme.colors.highlightIsBold
     readonly property string linkColor: theme.colors.linkColor
 
+    // --- surfaces (Fluent layered look) ------------------------------------
+    // Colour tokens are strings and may be "" meaning "fall back to the
+    // Kirigami palette at the call site" (see the *Color() resolvers below).
+    // Geometry tokens carry the theme character and always have a real value.
+    readonly property string surface: theme.surfaces.surface
+    readonly property string surfaceAlt: theme.surfaces.surfaceAlt
+    readonly property string sidebarSurface: theme.surfaces.sidebarSurface
+    readonly property string cardBackground: theme.surfaces.cardBackground
+    readonly property string cardBorder: theme.surfaces.cardBorder
+    readonly property real cardRadius: theme.surfaces.cardRadius
+    readonly property real cardPadding: theme.surfaces.cardPadding
+    readonly property real rowRadius: theme.surfaces.rowRadius
+    readonly property string rowHover: theme.surfaces.rowHover
+    readonly property string rowSelected: theme.surfaces.rowSelected
+    readonly property real rowHeight: theme.surfaces.rowHeight
+    readonly property string accent: theme.surfaces.accent
+    readonly property string accentText: theme.surfaces.accentText
+    readonly property string mutedText: theme.surfaces.mutedText
+    readonly property string sectionHeader: theme.surfaces.sectionHeader
+    readonly property int sectionHeaderSize: theme.surfaces.sectionHeaderSize
+    readonly property string eventText: theme.surfaces.eventText
+    readonly property int eventSize: theme.surfaces.eventSize
+    readonly property string statusOnline: theme.surfaces.statusOnline
+    readonly property string statusAway: theme.surfaces.statusAway
+    readonly property string statusOffline: theme.surfaces.statusOffline
+    readonly property string unreadBadge: theme.surfaces.unreadBadge
+    readonly property string unreadBadgeText: theme.surfaces.unreadBadgeText
+    readonly property real inputRadius: theme.surfaces.inputRadius
+    readonly property real shadowOpacity: theme.surfaces.shadowOpacity
+    readonly property real headerHeight: theme.surfaces.headerHeight
+
     // Ids the app can offer in a theme picker (built-ins + anything C++ adds).
     property var availableThemeIds: ThemeLib.BUILTIN_IDS.slice()
     property string configError: ""
@@ -296,6 +327,110 @@ QtObject {
         return engine.linkColor !== "" ? engine.linkColor : fallback
     }
 
+    // --- surface resolvers --------------------------------------------------
+    // Every colour token above may be "" (theme says "use the desktop
+    // palette"). The delegate/pages pass their Kirigami fallback in; a fixed
+    // theme colour (neon) wins when set. Geometry tokens need no resolver.
+    function surfaceColor(fallback)
+    {
+        return engine.surface !== "" ? engine.surface : fallback
+    }
+
+    function surfaceAltColor(fallback)
+    {
+        return engine.surfaceAlt !== "" ? engine.surfaceAlt : fallback
+    }
+
+    function sidebarSurfaceColor(fallback)
+    {
+        return engine.sidebarSurface !== "" ? engine.sidebarSurface : fallback
+    }
+
+    function cardBackgroundColor(fallback)
+    {
+        return engine.cardBackground !== "" ? engine.cardBackground : fallback
+    }
+
+    function cardBorderColor(fallback)
+    {
+        return engine.cardBorder !== "" ? engine.cardBorder : fallback
+    }
+
+    function rowHoverColor(fallback)
+    {
+        return engine.rowHover !== "" ? engine.rowHover : fallback
+    }
+
+    function rowSelectedColor(fallback)
+    {
+        return engine.rowSelected !== "" ? engine.rowSelected : fallback
+    }
+
+    function accentColor(fallback)
+    {
+        return engine.accent !== "" ? engine.accent : fallback
+    }
+
+    function accentTextColor(fallback)
+    {
+        return engine.accentText !== "" ? engine.accentText : fallback
+    }
+
+    function mutedTextColor(fallback)
+    {
+        return engine.mutedText !== "" ? engine.mutedText : fallback
+    }
+
+    function sectionHeaderColor(fallback)
+    {
+        return engine.sectionHeader !== "" ? engine.sectionHeader : fallback
+    }
+
+    function eventTextColor(fallback)
+    {
+        return engine.eventText !== "" ? engine.eventText : fallback
+    }
+
+    function statusOnlineColor(fallback)
+    {
+        return engine.statusOnline !== "" ? engine.statusOnline : fallback
+    }
+
+    function statusAwayColor(fallback)
+    {
+        return engine.statusAway !== "" ? engine.statusAway : fallback
+    }
+
+    function statusOfflineColor(fallback)
+    {
+        return engine.statusOffline !== "" ? engine.statusOffline : fallback
+    }
+
+    function unreadBadgeColor(fallback)
+    {
+        return engine.unreadBadge !== "" ? engine.unreadBadge : fallback
+    }
+
+    function unreadBadgeTextColor(fallback)
+    {
+        return engine.unreadBadgeText !== "" ? engine.unreadBadgeText : fallback
+    }
+
+    // Absolute point size for the section headers / event rows: the theme
+    // can pin one, otherwise it derives from the platform default handed in
+    // by the caller. 0 / negative => derive.
+    function resolveSectionHeaderSize(basePointSize)
+    {
+        var base = (engine.sectionHeaderSize > 0) ? engine.sectionHeaderSize : Math.max(1, basePointSize - 1)
+        return Math.max(6, base + engine.fontDelta)
+    }
+
+    function resolveEventSize(basePointSize)
+    {
+        var base = (engine.eventSize > 0) ? engine.eventSize : Math.max(1, basePointSize - 1)
+        return Math.max(6, base + engine.fontDelta)
+    }
+
     // --- message grouping / hashing ----------------------------------------
 
     // Exposed for tests / debugging.
@@ -308,6 +443,13 @@ QtObject {
     function parseTimestamp(ts)
     {
         return ThemeLib.parseTimestampMinutes(ts)
+    }
+
+    // True when the clock runs backwards between the two preformatted "HH:MM"
+    // stamps (day rollover). Drives the centred day-separator pill.
+    function dayBoundary(prevTs, ts)
+    {
+        return ThemeLib.dayBoundaryMinutes(prevTs, ts)
     }
 
     // Do `row` and `prev` (objects with nick/timestamp/isSelf) belong to the

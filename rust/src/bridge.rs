@@ -273,6 +273,14 @@ pub mod qobject {
         #[qsignal]
         fn query_opened(self: Pin<&mut Self>, nick: QString);
 
+        /// Select the SASL mechanism for the next connection. Must be called
+        /// BEFORE `connect_server` (which snapshots it into the session
+        /// config): 0 = auto (SCRAM-SHA-256 when the server advertises it,
+        /// else PLAIN), 1 = PLAIN, 2 = EXTERNAL. Out-of-range ids fall back
+        /// to 0 (auto).
+        #[qinvokable]
+        fn set_sasl_mechanism(self: Pin<&mut Self>, mechanism: i32);
+
         /// Start a new IRC session (replacing any existing one).
         #[qinvokable]
         fn connect_server(
@@ -468,6 +476,10 @@ pub struct IrcBridgeRust {
     command_tx: Option<tokio::sync::mpsc::Sender<ClientCommand>>,
     /// Handle of the running `run_session` task, if any.
     session: Option<tokio::task::JoinHandle<()>>,
+    /// SASL mechanism id selected via `set_sasl_mechanism`, snapshotted by
+    /// the next `connect_server` call: 0 = auto (SCRAM-SHA-256 when the
+    /// server advertises it, else PLAIN), 1 = PLAIN, 2 = EXTERNAL.
+    sasl_mechanism: i32,
 }
 
 impl Default for IrcBridgeRust {
@@ -480,6 +492,7 @@ impl Default for IrcBridgeRust {
             history_target: QString::default(),
             command_tx: None,
             session: None,
+            sasl_mechanism: 0,
         }
     }
 }
@@ -925,6 +938,25 @@ fn handle_event(mut obj: Pin<&mut qobject::IrcBridge>, event: IrcEvent) {
 // ===========================================================================
 
 impl qobject::IrcBridge {
+    /// Select the SASL mechanism used by the NEXT `connect_server` call.
+    ///
+    /// 0 = auto: SCRAM-SHA-256 when the server advertises it, else PLAIN.
+    /// 1 = PLAIN. 2 = EXTERNAL. Out-of-range values fall back to 0.
+    ///
+    /// Auto is resolved at connect time: the bridge inspects the server's
+    /// `CAP LS` advertisement (`sasl=...` value) recorded in `CapState` and
+    /// picks SCRAM-SHA-256 only when present, otherwise PLAIN. EXTERNAL is
+    /// only attempted when the user explicitly selects it (2): it needs a
+    /// TLS client certificate, so auto must never pick it.
+    pub fn set_sasl_mechanism(mut self: Pin<&mut Self>, mechanism: i32) {
+        let normalized = if (0..=2).contains(&mechanism) {
+            mechanism
+        } else {
+            0
+        };
+        self.as_mut().rust_mut().sasl_mechanism = normalized;
+    }
+
     /// Start a fresh IRC session, replacing any existing one.
     pub fn connect_server(
         mut self: Pin<&mut Self>,
@@ -947,11 +979,27 @@ impl qobject::IrcBridge {
         let sasl_user_s = rs(&sasl_user);
         let sasl_pass_s = rs(&sasl_pass);
 
+        // Snapshot the mechanism id chosen via set_sasl_mechanism (0 = auto).
+        // The core resolves "auto" against the server's CAP LS advertisement
+        // at SASL start, so auto needs no advertisement data here — just the
+        // preference id plus the raw creds.
+        let mechanism_id = self.rust().sasl_mechanism;
+        let mechanism = match mechanism_id {
+            1 => SaslMechanism::Plain,
+            2 => SaslMechanism::External,
+            // Auto: pick SCRAM-SHA-256 when the server offers it, else PLAIN.
+            // The core re-resolves this against the live CAP LS at SASL
+            // start (see Session::start_sasl); defaulting the snapshot to
+            // SCRAM-SHA-256 is safe because the core overrides it when the
+            // advertisement lacks SCRAM.
+            _ => SaslMechanism::ScramSha256,
+        };
+
         let sasl = if sasl_user_s.is_empty() {
             None
         } else {
             Some(SaslConfig {
-                mechanism: SaslMechanism::Plain,
+                mechanism,
                 username: sasl_user_s,
                 password: sasl_pass_s,
             })
@@ -966,6 +1014,7 @@ impl qobject::IrcBridge {
             realname: nick_s.clone(),
             server_password: None,
             sasl,
+            sasl_mechanism: mechanism_id,
             request_caps: Vec::new(),
         };
 

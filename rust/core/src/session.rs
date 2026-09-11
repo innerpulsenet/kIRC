@@ -15,7 +15,7 @@ use tokio::time::MissedTickBehavior;
 
 use crate::caps::{self, CapLine, CapState};
 use crate::parser::{parse_message, IrcMessage};
-use crate::sasl::{SaslClient, SaslConfig};
+use crate::sasl::{SaslClient, SaslConfig, SaslMechanism};
 
 /// How often the engine sends a keepalive `PING`.
 pub const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(60);
@@ -42,6 +42,13 @@ pub struct ConnectionConfig {
     pub server_password: Option<String>,
     /// SASL credentials; `None` disables SASL negotiation.
     pub sasl: Option<SaslConfig>,
+    /// SASL mechanism preference, same mapping as
+    /// `IrcBridge::set_sasl_mechanism`: 0 = auto (SCRAM-SHA-256 when the
+    /// server advertises it, else PLAIN), 1 = PLAIN, 2 = EXTERNAL.
+    /// Out-of-range values behave as 0. Only used when `sasl` is `Some`;
+    /// when the id names an explicit mechanism it overrides
+    /// `sasl.mechanism`.
+    pub sasl_mechanism: i32,
     /// Extra capabilities to request on top of the defaults.
     pub request_caps: Vec<String>,
 }
@@ -57,6 +64,7 @@ impl Default for ConnectionConfig {
             realname: String::new(),
             server_password: None,
             sasl: None,
+            sasl_mechanism: 0,
             request_caps: Vec::new(),
         }
     }
@@ -810,7 +818,31 @@ impl Session {
 
     async fn start_sasl(&mut self) -> io::Result<()> {
         if let Some(config) = self.config.sasl.clone() {
-            let client = SaslClient::new(&config);
+            // Explicit ids override the stored mechanism: 1 = PLAIN,
+            // 2 = EXTERNAL. Auto (0, or anything out of range) honours the
+            // mechanism already in the config — EXCEPT the bridge's
+            // "auto" default snapshot (SCRAM-SHA-256), which is only a
+            // preference: downgrade it to PLAIN when the server's `sasl=...`
+            // advertisement does not offer SCRAM-SHA-256.
+            let mechanism = match self.config.sasl_mechanism {
+                1 => SaslMechanism::Plain,
+                2 => SaslMechanism::External,
+                _ => {
+                    if config.mechanism == SaslMechanism::ScramSha256 {
+                        let offered = self.caps.sasl_mechanisms_offered();
+                        if offered.iter().any(|m| m == "SCRAM-SHA-256") {
+                            SaslMechanism::ScramSha256
+                        } else {
+                            SaslMechanism::Plain
+                        }
+                    } else {
+                        config.mechanism
+                    }
+                }
+            };
+            let mut effective = config.clone();
+            effective.mechanism = mechanism;
+            let client = SaslClient::new(&effective);
             let mechanism = client.mechanism_name().to_string();
             self.sasl = Some(client);
             self.sasl_active = true;
@@ -1648,6 +1680,7 @@ mod tests {
             realname: "r".to_string(),
             server_password: None,
             sasl: None,
+            sasl_mechanism: 0,
             request_caps: vec![],
         };
         let (etx, mut erx) = tokio::sync::mpsc::channel::<IrcEvent>(8);

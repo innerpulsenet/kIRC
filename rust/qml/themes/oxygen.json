@@ -42,5 +42,33 @@
         "linkify": true,
         "highlightIsBold": true,
         "linkColor": ""
+    },
+    "surfaces": {
+        "surface": "",
+        "surfaceAlt": "",
+        "sidebarSurface": "",
+        "cardBackground": "",
+        "cardBorder": "",
+        "cardRadius": 8,
+        "cardPadding": 12,
+        "rowRadius": 6,
+        "rowHover": "",
+        "rowSelected": "",
+        "rowHeight": 36,
+        "accent": "",
+        "accentText": "",
+        "mutedText": "",
+        "sectionHeader": "",
+        "sectionHeaderSize": 0,
+        "eventText": "",
+        "eventSize": 0,
+        "statusOnline": "",
+        "statusAway": "",
+        "statusOffline": "",
+        "unreadBadge": "",
+        "unreadBadgeText": "",
+        "inputRadius": 6,
+        "shadowOpacity": 0,
+        "headerHeight": 48
     }
 }

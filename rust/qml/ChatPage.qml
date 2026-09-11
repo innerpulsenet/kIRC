@@ -13,9 +13,10 @@
 //   MessageListModel: roles nick, text, timestamp, isSelf, isHighlight
 //                     invokable load_channel(target)
 //
-// Layout (left to right): rounded-card sidebar (server entry + channels + join
-// field), hairline, message list with an empty-state placeholder, and a
-// floating input bar with an integrated accent send button.
+// Layout (left to right): sidebar (header actions + Server / Messages /
+// Channels sections), hairline, message column (topic bar, log with a
+// new-messages pill, input bar with an inline server-console hint), and an
+// optional people panel for channels.
 
 import QtQuick
 import QtQuick.Controls as Controls
@@ -66,6 +67,12 @@ Kirigami.Page {
     property bool reloadSelf: false
     // Guards the post-identify GHOST+NICK reclaim: once per connection.
     property bool ghostDone: false
+    // People panel visibility + live filter, and the topic bar's expand state.
+    property bool peopleVisible: true
+    property string peopleFilter: ""
+    property bool topicExpanded: false
+    // The user scrolled up and traffic arrived below: offer a way back down.
+    property bool hasUnseenBelow: false
 
     title: page.channelLabel(page.currentChannel)
     padding: 0
@@ -78,6 +85,31 @@ Kirigami.Page {
         }
         return target
     }
+
+    // ---------------------------------------------------------------------- //
+    // Theme surfaces (via ThemeEngine's flat tokens + resolvers; empty theme
+    // strings fall back to the Kirigami palette at the call site).
+    // ---------------------------------------------------------------------- //
+    readonly property real sideWidth: ThemeEngine.sidebarWidth > 0 ? ThemeEngine.sidebarWidth : 250
+    readonly property color sideBg: ThemeEngine.sidebarSurfaceColor(Kirigami.Theme.alternateBackgroundColor)
+    readonly property color panelBg: ThemeEngine.surfaceAltColor(Kirigami.Theme.alternateBackgroundColor)
+    readonly property real rowHt: ThemeEngine.rowHeight
+    readonly property real rowRad: ThemeEngine.rowRadius
+    readonly property color rowHv: ThemeEngine.rowHoverColor(ThemeEngine.withAlpha(Kirigami.Theme.textColor, 0.08))
+    readonly property color rowSel: ThemeEngine.rowSelectedColor(ThemeEngine.withAlpha(Kirigami.Theme.highlightColor, 0.28))
+    readonly property color accentC: ThemeEngine.accentColor(Kirigami.Theme.highlightColor)
+    readonly property color accentTxt: ThemeEngine.accentTextColor(Kirigami.Theme.highlightedTextColor)
+    readonly property color mutedTxt: ThemeEngine.mutedTextColor(Kirigami.Theme.disabledTextColor)
+    readonly property color sectionTxt: ThemeEngine.sectionHeaderColor(Kirigami.Theme.textColor)
+    readonly property int sectionSz: ThemeEngine.resolveSectionHeaderSize(Kirigami.Theme.defaultFont.pointSize)
+    readonly property color eventTxt: ThemeEngine.eventTextColor(Kirigami.Theme.disabledTextColor)
+    readonly property int eventSz: ThemeEngine.resolveEventSize(Kirigami.Theme.defaultFont.pointSize)
+    readonly property color onlineC: ThemeEngine.statusOnlineColor(Kirigami.Theme.positiveTextColor)
+    readonly property color awayC: ThemeEngine.statusAwayColor(Kirigami.Theme.neutralTextColor)
+    readonly property color offlineC: ThemeEngine.statusOfflineColor(Kirigami.Theme.disabledTextColor)
+    readonly property color unreadBg: ThemeEngine.unreadBadgeColor(Kirigami.Theme.highlightColor)
+    readonly property color unreadTxt: ThemeEngine.unreadBadgeTextColor(Kirigami.Theme.highlightedTextColor)
+    readonly property real inputRad: ThemeEngine.inputRadius
 
     // ---------------------------------------------------------------------- //
     // Model
@@ -108,6 +140,7 @@ Kirigami.Page {
             page.reloadSelf = false
             msgModel.load_channel(page.currentChannel)
             if (stick) {
+                page.hasUnseenBelow = false
                 page.scrollToEnd()
             }
         }
@@ -120,6 +153,8 @@ Kirigami.Page {
             if (page.sameTarget(target, page.currentChannel)) {
                 if (is_self) {
                     page.reloadSelf = true
+                } else if (!messageView.atYEnd) {
+                    page.hasUnseenBelow = true
                 }
                 if (!reloadTimer.running) {
                     reloadTimer.start()
@@ -209,24 +244,85 @@ Kirigami.Page {
     /// so no delegate has to look up its neighbours — the view's `index` is not
     /// readable through a delegate on Qt 6.11.
     readonly property var buffers: {
+        var channelCount = 0
+        var queryCount = 0
+        var k
+        for (k = 0; k < page.channels.length; ++k) {
+            var t = page.channels[k]
+            if (t === "*server*") {
+                continue
+            }
+            if (page.isChannel(t)) {
+                channelCount += 1
+            } else {
+                queryCount += 1
+            }
+        }
         var out = []
         var previousKind = ""
         for (var i = 0; i < page.channels.length; ++i) {
             var target = page.channels[i]
             var isServer = (target === "*server*")
-            var isQuery = !isServer && !page.isChannel(target)
+            var isChan = !isServer && page.isChannel(target)
+            var isQuery = !isServer && !isChan
             var kind = isServer ? "server" : (isQuery ? "query" : "channel")
             var title = isServer ? qsTr("Server") : (isQuery ? qsTr("Messages") : qsTr("Channels"))
             out.push({
                 "target": target,
                 "isServer": isServer,
                 "isQuery": isQuery,
+                "isChan": isChan,
+                "sectionKind": kind,
                 "sectionTitle": title,
-                "sectionStart": kind !== previousKind
+                "sectionStart": kind !== previousKind,
+                "sectionCount": kind === "channel" ? channelCount : (kind === "query" ? queryCount : 0)
             })
             previousKind = kind
         }
         return out
+    }
+
+    /// People panel model, derived from the channel's nick list: operators,
+    /// voiced, then everyone else, each sorted alphabetically and filtered
+    /// live by the panel's search field.
+    readonly property var peopleEntries: {
+        var filter = page.peopleFilter.trim().toLowerCase()
+        var ops = []
+        var voiced = []
+        var others = []
+        for (var i = 0; i < page.nickList.length; ++i) {
+            var raw = String(page.nickList[i])
+            var m = /^([@+%~&]?)(.*)$/.exec(raw)
+            var prefix = m ? m[1] : ""
+            var bare = m ? m[2] : raw
+            if (bare.length === 0) {
+                continue
+            }
+            if (filter.length > 0 && bare.toLowerCase().indexOf(filter) === -1) {
+                continue
+            }
+            var entry = {"nick": raw, "bare": bare, "prefix": prefix, "group": ""}
+            if (prefix === "@" || prefix === "%" || prefix === "~" || prefix === "&") {
+                ops.push(entry)
+            } else if (prefix === "+") {
+                voiced.push(entry)
+            } else {
+                others.push(entry)
+            }
+        }
+        function byBare(a, b) {
+            var x = String(a.bare).toLowerCase()
+            var y = String(b.bare).toLowerCase()
+            return x < y ? -1 : (x > y ? 1 : 0)
+        }
+        ops.sort(byBare)
+        voiced.sort(byBare)
+        others.sort(byBare)
+        function label(base, n) { return base + " (" + n + ")" }
+        for (var o = 0; o < ops.length; ++o) { ops[o].group = label(qsTr("Operators"), ops.length) }
+        for (var v = 0; v < voiced.length; ++v) { voiced[v].group = label(qsTr("Voiced"), voiced.length) }
+        for (var r = 0; r < others.length; ++r) { others[r].group = label(qsTr("Others"), others.length) }
+        return ops.concat(voiced, others)
     }
 
     // ---------------------------------------------------------------------- //
@@ -239,10 +335,10 @@ Kirigami.Page {
         // ---------------- sidebar ---------------- //
         Rectangle {
             id: sidebar
-            Layout.preferredWidth: ThemeEngine.sidebarWidthFor(Kirigami.Units.gridUnit)
+            Layout.preferredWidth: page.sideWidth
             Layout.minimumWidth: Kirigami.Units.gridUnit * 9
             Layout.fillHeight: true
-            color: Kirigami.Theme.alternateBackgroundColor
+            color: page.sideBg
 
             ColumnLayout {
                 anchors.fill: parent
@@ -261,25 +357,39 @@ Kirigami.Page {
                     cacheBuffer: Kirigami.Units.gridUnit * 20
 
                     // One delegate per buffer: the "*server*" console plus the
-                    // joined channels. Section headers are part of the model,
-                    // so a single flat list still renders as "Server" /
-                    // "Channels".
+                    // joined channels and query windows. Section headers are
+                    // part of the model, so a single flat list still renders
+                    // as "Server" / "Messages" / "Channels".
                     delegate: Controls.ItemDelegate {
                         id: bufferDelegate
                         required property string target
                         required property bool isServer
                         required property bool isQuery
+                        required property bool isChan
+                        required property string sectionKind
                         required property string sectionTitle
                         required property bool sectionStart
+                        required property int sectionCount
 
                         readonly property bool active: page.sameTarget(bufferDelegate.target, page.currentChannel)
+                        readonly property bool hasUnread: !bufferDelegate.active && !bufferDelegate.isServer
+                            && page.bridge !== null && page.bridge.unread_count > 0
+                        // Tile colour for channels: the channel's own hash
+                        // colour (same colour as that channel's nicks).
                         readonly property color tileColor: bufferDelegate.isServer
                             ? ThemeEngine.withAlpha(Kirigami.Theme.textColor, 0.14)
                             : ThemeEngine.nickColor(bufferDelegate.target, page.darkTheme)
+                        // Queries show the nick initial; the presence dot is
+                        // connection-based (the core exposes no per-nick
+                        // presence): online while connected, offline otherwise.
+                        readonly property color presenceColor: page.connected ? page.onlineC : page.offlineC
 
                         width: bufferList.width
                         hoverEnabled: true
                         padding: 0
+                        // The close button, accent bar and tile must never
+                        // paint outside this row's bounds.
+                        clip: true
 
                         onClicked: page.openChannel(bufferDelegate.target)
 
@@ -288,101 +398,240 @@ Kirigami.Page {
                             ? qsTr("Server messages and notices")
                             : bufferDelegate.target
 
-                        background: Rectangle {
-                            anchors.fill: parent
-                            anchors.leftMargin: Kirigami.Units.smallSpacing * 2
-                            anchors.rightMargin: Kirigami.Units.smallSpacing * 2
-                            anchors.topMargin: 1
-                            anchors.bottomMargin: 1
-                            radius: height / 2
-                            color: bufferDelegate.active
-                                ? ThemeEngine.withAlpha(Kirigami.Theme.highlightColor, 0.28)
-                                : (bufferDelegate.hovered
-                                   ? ThemeEngine.withAlpha(Kirigami.Theme.textColor, 0.08)
-                                   : "transparent")
-                            Behavior on color {
-                                ColorAnimation { duration: ThemeEngine.motionDuration }
+                        background: Item {
+                            Rectangle {
+                                id: rowPill
+                                anchors.fill: parent
+                                anchors.leftMargin: Kirigami.Units.smallSpacing
+                                anchors.rightMargin: Kirigami.Units.smallSpacing
+                                anchors.topMargin: 1
+                                anchors.bottomMargin: 1
+                                radius: page.rowRad
+                                color: bufferDelegate.active
+                                    ? page.rowSel
+                                    : (bufferDelegate.hovered ? page.rowHv : "transparent")
+                                Behavior on color {
+                                    ColorAnimation { duration: ThemeEngine.motionDuration }
+                                }
+                            }
+
+                            // 3px accent bar overlaid on the selected pill's
+                            // leading edge (inside the delegate): the
+                            // selected row keeps every other row's margins.
+                            Rectangle {
+                                visible: bufferDelegate.active
+                                anchors.left: rowPill.left
+                                anchors.leftMargin: 2
+                                anchors.top: rowPill.top
+                                anchors.topMargin: Math.round(rowPill.height * 0.22)
+                                anchors.bottom: rowPill.bottom
+                                anchors.bottomMargin: Math.round(rowPill.height * 0.22)
+                                implicitWidth: 3
+                                radius: 1.5
+                                color: page.accentC
                             }
                         }
 
                         contentItem: ColumnLayout {
                             spacing: 0
 
-                            Controls.Label {
-                                visible: bufferDelegate.sectionStart
-                                text: bufferDelegate.sectionTitle
-                                color: Kirigami.Theme.textColor
-                                opacity: 0.65
-                                font.bold: true
-                                font.pointSize: Math.max(1, Kirigami.Theme.defaultFont.pointSize - 1)
-                                font.letterSpacing: 0.6
-                                leftPadding: Kirigami.Units.smallSpacing * 2
-                                topPadding: bufferDelegate.isServer ? 0 : Kirigami.Units.smallSpacing
-                                bottomPadding: Kirigami.Units.smallSpacing
-                                Layout.fillWidth: true
-                            }
-
                             RowLayout {
+                                visible: bufferDelegate.sectionStart
                                 Layout.fillWidth: true
                                 Layout.leftMargin: Kirigami.Units.smallSpacing * 2
                                 Layout.rightMargin: Kirigami.Units.smallSpacing * 2
-                                Layout.topMargin: Kirigami.Units.smallSpacing / 2
+                                Layout.topMargin: bufferDelegate.isServer ? 0 : Kirigami.Units.smallSpacing
                                 Layout.bottomMargin: Kirigami.Units.smallSpacing / 2
+                                // The count and the join action sit in the
+                                // same row, so they need real breathing room
+                                // rather than a hairline gap.
                                 spacing: Kirigami.Units.smallSpacing
-
-                                // Rounded glyph tile: a server pictogram for the
-                                // console, the channel's own hash colour for a
-                                // channel (same colour as that channel's nicks).
-                                Rectangle {
-                                    Layout.preferredWidth: Math.round(Kirigami.Units.gridUnit * 1.2)
-                                    Layout.preferredHeight: Math.round(Kirigami.Units.gridUnit * 1.2)
-                                    radius: Kirigami.Units.cornerRadius
-
-                                    color: bufferDelegate.isServer
-                                        ? ThemeEngine.withAlpha(Kirigami.Theme.textColor, 0.12)
-                                        : bufferDelegate.tileColor
-
-                                    Kirigami.Icon {
-                                        anchors.centerIn: parent
-                                        visible: bufferDelegate.isServer
-                                        source: "network-server"
-                                        color: Kirigami.Theme.textColor
-                                        implicitWidth: Math.round(parent.width * 0.66)
-                                        implicitHeight: implicitWidth
-                                    }
-
-                                    Controls.Label {
-                                        anchors.centerIn: parent
-                                        visible: !bufferDelegate.isServer
-                                        text: bufferDelegate.isQuery
-                                              ? ThemeEngine.initial(bufferDelegate.target)
-                                              : "#"
-                                        color: ThemeEngine.contrastingTextColor(bufferDelegate.tileColor)
-                                        font.bold: true
-                                        font.pointSize: Math.max(1, Kirigami.Theme.defaultFont.pointSize)
-                                    }
-                                }
 
                                 Controls.Label {
                                     Layout.fillWidth: true
-                                    text: bufferDelegate.isServer
-                                          ? page.serverBufferLabel
-                                          : (bufferDelegate.isQuery
-                                             ? bufferDelegate.target
-                                             : bufferDelegate.target.substring(1))
-                                    color: Kirigami.Theme.textColor
-                                    font.bold: bufferDelegate.active
+                                    text: bufferDelegate.sectionTitle
+                                    color: page.sectionTxt
+                                    opacity: 0.8
+                                    font.bold: true
+                                    font.pointSize: page.sectionSz
                                     elide: Text.ElideRight
                                 }
 
+                                Controls.Label {
+                                    visible: bufferDelegate.sectionCount > 0
+                                    text: bufferDelegate.sectionCount
+                                    color: page.mutedTxt
+                                    font.pointSize: page.sectionSz
+                                }
+
+                                // Join action: lives in the Channels header
+                                // row (next to the count), not beside any
+                                // buffer's close control.
                                 Controls.ToolButton {
+                                    id: joinAddButton
+                                    visible: bufferDelegate.sectionKind === "channel"
+                                    display: Controls.AbstractButton.IconOnly
+                                    // `icon.name` does not resolve in this
+                                    // control's style (renders an empty box),
+                                    // so draw the glyph directly.
+                                    contentItem: Controls.Label {
+                                        text: "+"
+                                        color: Kirigami.Theme.textColor
+                                        font.bold: true
+                                        font.pointSize: Math.round(Kirigami.Theme.defaultFont.pointSize * 1.2)
+                                        horizontalAlignment: Text.AlignHCenter
+                                        verticalAlignment: Text.AlignVCenter
+                                    }
+                                    Layout.preferredWidth: Math.round(Kirigami.Units.gridUnit * 1.25)
+                                    Layout.preferredHeight: Math.round(Kirigami.Units.gridUnit * 1.25)
+                                    onClicked: page.openJoinDialog()
+
+                                    // A bare glyph reads as decoration: give
+                                    // it a resting surface so it is obviously
+                                    // the join action.
+                                    background: Rectangle {
+                                        radius: page.rowRad
+                                        color: joinAddButton.hovered || joinAddButton.activeFocus
+                                               ? page.rowHv
+                                               : ThemeEngine.withAlpha(Kirigami.Theme.textColor, 0.06)
+                                        border.width: 1
+                                        border.color: ThemeEngine.withAlpha(Kirigami.Theme.textColor, 0.12)
+                                        Behavior on color {
+                                            ColorAnimation { duration: ThemeEngine.motionDuration }
+                                        }
+                                    }
+
+                                    Controls.ToolTip.visible: hovered
+                                    Controls.ToolTip.text: qsTr("Join a channel (Ctrl+J)")
+                                }
+                            }
+
+                            Item {
+                                Layout.fillWidth: true
+                                Layout.preferredHeight: page.rowHt
+                                Layout.leftMargin: Kirigami.Units.smallSpacing * 2
+                                Layout.rightMargin: Kirigami.Units.smallSpacing * 2
+
+                                RowLayout {
+                                    id: bufferRowInner
+                                    anchors.fill: parent
+                                    // Right padding reserves the close
+                                    // control's slot INSIDE the row, so it
+                                    // never overlaps the label or paints
+                                    // outside the pill.
+                                    anchors.rightMargin: Math.round(Kirigami.Units.gridUnit * 1.25) + Kirigami.Units.smallSpacing
+                                    spacing: Kirigami.Units.smallSpacing
+
+                                    // Leading element per row kind: a server
+                                    // glyph for the console, a rounded "#"
+                                    // tile for channels, the nick initial
+                                    // for queries.
+                                    Rectangle {
+                                        Layout.alignment: Qt.AlignVCenter
+                                        Layout.preferredWidth: Math.round(Kirigami.Units.gridUnit * 1.2)
+                                        Layout.preferredHeight: Math.round(Kirigami.Units.gridUnit * 1.2)
+                                        radius: bufferDelegate.isQuery ? width / 2 : page.rowRad
+                                        color: bufferDelegate.tileColor
+
+                                        Kirigami.Icon {
+                                            anchors.centerIn: parent
+                                            visible: bufferDelegate.isServer
+                                            source: "network-server"
+                                            color: Kirigami.Theme.textColor
+                                            implicitWidth: Math.round(parent.width * 0.66)
+                                            implicitHeight: implicitWidth
+                                        }
+
+                                        Controls.Label {
+                                            anchors.centerIn: parent
+                                            visible: !bufferDelegate.isServer
+                                            text: bufferDelegate.isQuery
+                                                  ? ThemeEngine.initial(bufferDelegate.target)
+                                                  : "#"
+                                            color: ThemeEngine.contrastingTextColor(bufferDelegate.tileColor)
+                                            font.bold: true
+                                            font.pointSize: Math.max(1, Kirigami.Theme.defaultFont.pointSize)
+                                        }
+
+                                        // Presence dot for query windows
+                                        // (see presenceColor above).
+                                        Rectangle {
+                                            visible: bufferDelegate.isQuery
+                                            anchors.right: parent.right
+                                            anchors.bottom: parent.bottom
+                                            anchors.rightMargin: -1
+                                            anchors.bottomMargin: -1
+                                            implicitWidth: Math.round(parent.width * 0.38)
+                                            implicitHeight: implicitWidth
+                                            radius: width / 2
+                                            color: bufferDelegate.presenceColor
+                                            border.width: 1
+                                            border.color: page.sideBg
+                                        }
+                                    }
+
+                                    Controls.Label {
+                                        Layout.fillWidth: true
+                                        Layout.alignment: Qt.AlignVCenter
+                                        text: bufferDelegate.isServer
+                                              ? page.serverBufferLabel
+                                              : (bufferDelegate.isQuery
+                                                 ? bufferDelegate.target
+                                                 : bufferDelegate.target.substring(1))
+                                        color: Kirigami.Theme.textColor
+                                        font.bold: bufferDelegate.active || bufferDelegate.hasUnread
+                                        elide: Text.ElideRight
+                                    }
+
+                                    // Per-row unread dot (the core only
+                                    // tracks a global counter, so every
+                                    // non-visible buffer carries the dot
+                                    // while it is non-zero).
+                                    Rectangle {
+                                        Layout.alignment: Qt.AlignVCenter
+                                        visible: bufferDelegate.hasUnread
+                                        implicitWidth: 8
+                                        implicitHeight: 8
+                                        radius: width / 2
+                                        color: page.unreadBg
+
+                                        Controls.ToolTip.visible: unreadHover.hovered
+                                        Controls.ToolTip.text: page.bridge !== null
+                                            ? qsTr("%n unread message(s)", "", page.bridge.unread_count) : ""
+
+                                        HoverHandler {
+                                            id: unreadHover
+                                        }
+                                    }
+                                }
+
+                                // The close control is OVERLAID top-right
+                                // inside the row (slot always reserved via
+                                // the inner row's right margin): it only
+                                // fades in on hover or keyboard focus, so it
+                                // can never shove the log, float outside the
+                                // pill, or sit beside the Channels "+" (which
+                                // now lives in the section header).
+                                Controls.ToolButton {
+                                    id: closeButton
+                                    anchors.right: parent.right
+                                    anchors.verticalCenter: parent.verticalCenter
                                     visible: !bufferDelegate.isServer
-                                    opacity: (bufferDelegate.hovered || bufferDelegate.active) ? 1 : 0
+                                    opacity: (bufferDelegate.hovered || bufferDelegate.active
+                                              || closeButton.activeFocus || bufferDelegate.activeFocus) ? 1 : 0
+                                    // An invisible control must not swallow
+                                    // clicks meant for opening the buffer.
+                                    enabled: closeButton.opacity > 0
                                     icon.name: "window-close"
                                     display: Controls.AbstractButton.IconOnly
-                                    Layout.preferredWidth: Math.round(Kirigami.Units.gridUnit * 1.2)
-                                    Layout.preferredHeight: Math.round(Kirigami.Units.gridUnit * 1.2)
+                                    implicitWidth: Math.round(Kirigami.Units.gridUnit * 1.25)
+                                    implicitHeight: Math.round(Kirigami.Units.gridUnit * 1.25)
                                     onClicked: page.closeBuffer(bufferDelegate.target)
+
+                                    Behavior on opacity {
+                                        NumberAnimation { duration: ThemeEngine.motionDuration }
+                                    }
+
                                     Controls.ToolTip.visible: hovered
                                     Controls.ToolTip.text: bufferDelegate.isQuery
                                                           ? qsTr("Close conversation")
@@ -416,83 +665,6 @@ Kirigami.Page {
                         }
                     }
                 }
-
-                Rectangle {
-                    Layout.fillWidth: true
-                    implicitHeight: 1
-                    color: page.hairline
-                }
-
-                // ---------------- join field ---------------- //
-                RowLayout {
-                    Layout.fillWidth: true
-                    Layout.margins: Kirigami.Units.smallSpacing
-                    spacing: Kirigami.Units.smallSpacing
-
-                    Rectangle {
-                        id: joinFrame
-                        Layout.fillWidth: true
-                        implicitHeight: joinField.implicitHeight + Kirigami.Units.smallSpacing * 2
-                        radius: Kirigami.Units.cornerRadius + 2
-                        color: Kirigami.Theme.backgroundColor
-                        border.width: 1
-                        border.color: joinField.activeFocus ? Kirigami.Theme.highlightColor : page.hairline
-                        Behavior on border.color {
-                            ColorAnimation { duration: ThemeEngine.motionDuration }
-                        }
-
-                        Controls.TextField {
-                            id: joinField
-                            anchors.fill: parent
-                            anchors.margins: Kirigami.Units.smallSpacing
-                            background: null
-                            placeholderText: qsTr("Join a channel…")
-                            onAccepted: page.tryJoin()
-                        }
-                    }
-
-                    Controls.Button {
-                        id: joinButton
-                        Layout.preferredWidth: Math.round(Kirigami.Units.gridUnit * 1.6)
-                        Layout.preferredHeight: Math.round(Kirigami.Units.gridUnit * 1.6)
-                        enabled: joinField.text.trim().length > 0
-                        onClicked: page.tryJoin()
-
-                        Controls.ToolTip.visible: hovered
-                        Controls.ToolTip.text: qsTr("Join channel")
-
-                        background: Rectangle {
-                            radius: width / 2
-                            color: !joinButton.enabled
-                                ? "transparent"
-                                : (joinButton.pressed
-                                   ? Qt.darker(Kirigami.Theme.highlightColor, 1.2)
-                                   : Kirigami.Theme.highlightColor)
-                            border.width: 1
-                            border.color: joinButton.enabled
-                                ? "transparent"
-                                : ThemeEngine.withAlpha(Kirigami.Theme.textColor, 0.5)
-                            Behavior on color {
-                                ColorAnimation { duration: ThemeEngine.motionDuration }
-                            }
-                        }
-
-                        contentItem: Item {
-                            Kirigami.Icon {
-                                anchors.centerIn: parent
-                                source: "list-add"
-                                // Full-strength colour: the style already dims
-                                // a disabled control, and stacking another
-                                // alpha on top makes the glyph invisible.
-                                color: joinButton.enabled
-                                    ? Kirigami.Theme.highlightedTextColor
-                                    : Kirigami.Theme.disabledTextColor
-                                width: Math.round(Kirigami.Units.gridUnit * 0.85)
-                                height: width
-                            }
-                        }
-                    }
-                }
             }
         }
 
@@ -518,21 +690,72 @@ Kirigami.Page {
                 onVisibleChanged: if (!visible) page.joinError = ""
             }
 
+            // Topic bar: channel name + one-line topic (click to expand),
+            // plus the people-panel toggle.
             Rectangle {
-                visible: page.currentTopic.length > 0 && page.isChannel(page.currentChannel)
+                visible: page.isChannel(page.currentChannel)
                 Layout.fillWidth: true
-                implicitHeight: topicLabel.implicitHeight + Kirigami.Units.smallSpacing * 2
+                implicitHeight: topicRow.implicitHeight + Kirigami.Units.smallSpacing * 2
                 color: ThemeEngine.withAlpha(Kirigami.Theme.textColor, 0.04)
 
-                Controls.Label {
-                    id: topicLabel
+                HoverHandler {
+                    id: topicHover
+                }
+
+                Controls.ToolTip.visible: topicHover.hovered && !page.topicExpanded && page.currentTopic.length > 0
+                Controls.ToolTip.text: page.currentTopic
+
+                // Click anywhere except the toggle to expand/collapse a long
+                // topic. Declared before the row so the toggle stays on top.
+                MouseArea {
+                    anchors.fill: parent
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: page.topicExpanded = !page.topicExpanded
+                }
+
+                Item {
+                    id: topicRow
                     anchors.fill: parent
                     anchors.margins: Kirigami.Units.smallSpacing
-                    text: page.currentTopic
-                    elide: Text.ElideRight
-                    wrapMode: Text.NoWrap
-                    color: Kirigami.Theme.disabledTextColor
-                    font.pointSize: Math.max(1, Kirigami.Theme.defaultFont.pointSize - 1)
+                    implicitHeight: Math.max(topicLabel.implicitHeight, peopleToggle.implicitHeight)
+
+                    // Channel + topic share one wrapping label with a
+                    // reserved right margin for the toggle, so a long topic
+                    // can never slide under the button.
+                    Controls.Label {
+                        id: topicLabel
+                        anchors.left: parent.left
+                        anchors.right: parent.right
+                        anchors.rightMargin: peopleToggle.implicitWidth + Kirigami.Units.smallSpacing
+                        anchors.verticalCenter: parent.verticalCenter
+                        textFormat: Text.PlainText
+                        text: {
+                            var head = page.currentChannel + "  "
+                            return page.currentTopic.length > 0
+                                ? head + page.currentTopic
+                                : head + qsTr("No topic set")
+                        }
+                        font.italic: page.currentTopic.length === 0
+                        maximumLineCount: page.topicExpanded ? -1 : 1
+                        elide: Text.ElideRight
+                        wrapMode: page.topicExpanded ? Text.WordWrap : Text.NoWrap
+                        color: page.currentTopic.length > 0 ? Kirigami.Theme.textColor : page.mutedTxt
+                        font.pointSize: page.eventSz
+                    }
+
+                    Controls.ToolButton {
+                        id: peopleToggle
+                        anchors.right: parent.right
+                        anchors.verticalCenter: parent.verticalCenter
+                        icon.name: "system-users"
+                        display: Controls.AbstractButton.IconOnly
+                        checkable: true
+                        checked: page.peopleVisible
+                        onToggled: page.peopleVisible = checked
+
+                        Controls.ToolTip.visible: hovered
+                        Controls.ToolTip.text: qsTr("Toggle people panel")
+                    }
                 }
 
                 Rectangle {
@@ -544,106 +767,164 @@ Kirigami.Page {
                 }
             }
 
-            ListView {
-                id: messageView
+            Item {
                 Layout.fillWidth: true
                 Layout.fillHeight: true
-                clip: true
-                model: msgModel
-                reuseItems: true
-                cacheBuffer: Kirigami.Units.gridUnit * 40
-                spacing: 0
-                topMargin: Kirigami.Units.smallSpacing
-                bottomMargin: Kirigami.Units.smallSpacing
-                // Keep self-message avatars out of the overlay scrollbar gutter.
-                rightMargin: Kirigami.Units.smallSpacing * 2
 
-                // TODO(code-highlight): fenced code blocks are rendered as
-                // plain text — wiring KSyntaxHighlighting needs a C++ bridge.
-                // The delegate picks up nick/text/timestamp/isSelf/isHighlight
-                // straight from the model roles (see MessageDelegate).
-                delegate: MessageDelegate { }
+                ListView {
+                    id: messageView
+                    anchors.fill: parent
+                    clip: true
+                    model: msgModel
+                    reuseItems: true
+                    cacheBuffer: Kirigami.Units.gridUnit * 40
+                    spacing: 0
+                    topMargin: Kirigami.Units.smallSpacing
+                    bottomMargin: Kirigami.Units.smallSpacing
+                    // Keep self-message avatars out of the overlay scrollbar gutter.
+                    rightMargin: Kirigami.Units.smallSpacing * 2
 
-                // Fade the log in when the user switches channel.
-                NumberAnimation {
-                    id: contentFade
-                    target: messageView
-                    property: "opacity"
-                    from: 0
-                    to: 1
-                    duration: Math.max(60, ThemeEngine.motionDuration * 2)
-                    easing.type: Easing.OutCubic
-                }
+                    onAtYEndChanged: {
+                        if (atYEnd) {
+                            page.hasUnseenBelow = false
+                        }
+                    }
 
-                Controls.ScrollBar.vertical: Controls.ScrollBar {
-                    id: messageScroll
-                    policy: Controls.ScrollBar.AsNeeded
-                    contentItem: Rectangle {
-                        implicitWidth: 6
-                        radius: width / 2
-                        color: ThemeEngine.withAlpha(Kirigami.Theme.textColor,
-                                                     messageScroll.pressed ? 0.45 : 0.22)
-                        opacity: messageScroll.active ? 1 : 0
-                        Behavior on opacity {
-                            NumberAnimation { duration: ThemeEngine.motionDuration }
+                    // TODO(code-highlight): fenced code blocks are rendered as
+                    // plain text — wiring KSyntaxHighlighting needs a C++ bridge.
+                    // The delegate picks up nick/text/timestamp/isSelf/isHighlight
+                    // straight from the model roles (see MessageDelegate).
+                    delegate: MessageDelegate { }
+
+                    // Fade the log in when the user switches channel.
+                    NumberAnimation {
+                        id: contentFade
+                        target: messageView
+                        property: "opacity"
+                        from: 0
+                        to: 1
+                        duration: Math.max(60, ThemeEngine.motionDuration * 2)
+                        easing.type: Easing.OutCubic
+                    }
+
+                    Controls.ScrollBar.vertical: Controls.ScrollBar {
+                        id: messageScroll
+                        policy: Controls.ScrollBar.AsNeeded
+                        contentItem: Rectangle {
+                            implicitWidth: 6
+                            radius: width / 2
+                            color: ThemeEngine.withAlpha(Kirigami.Theme.textColor,
+                                                         messageScroll.pressed ? 0.45 : 0.22)
+                            opacity: messageScroll.active ? 1 : 0
+                            Behavior on opacity {
+                                NumberAnimation { duration: ThemeEngine.motionDuration }
+                            }
+                        }
+                    }
+
+                    // ---------------- empty state ---------------- //
+                    ColumnLayout {
+                        anchors.centerIn: parent
+                        anchors.margins: Kirigami.Units.largeSpacing
+                        width: Math.min(parent.width - Kirigami.Units.largeSpacing * 2, Kirigami.Units.gridUnit * 20)
+                        visible: messageView.count === 0
+                        spacing: Kirigami.Units.smallSpacing
+
+                        Kirigami.Icon {
+                            Layout.alignment: Qt.AlignHCenter
+                            source: !page.connected ? "network-offline"
+                                                    : (page.currentChannel === "*server*" ? "utilities-terminal" : "dialog-messages")
+                            color: Kirigami.Theme.disabledTextColor
+                            implicitWidth: Kirigami.Units.iconSizes.huge
+                            implicitHeight: Kirigami.Units.iconSizes.huge
+                            opacity: 0.7
+                        }
+
+                        Controls.Label {
+                            Layout.fillWidth: true
+                            horizontalAlignment: Text.AlignHCenter
+                            text: {
+                                if (!page.connected) {
+                                    return qsTr("Not connected")
+                                }
+                                if (page.currentChannel === "*server*") {
+                                    return qsTr("Server console")
+                                }
+                                if (!page.isChannel(page.currentChannel)) {
+                                    return qsTr("No messages yet")
+                                }
+                                return qsTr("No messages in %1 yet").arg(page.currentChannel)
+                            }
+                            color: Kirigami.Theme.textColor
+                            font.bold: true
+                        }
+
+                        Controls.Label {
+                            Layout.fillWidth: true
+                            horizontalAlignment: Text.AlignHCenter
+                            wrapMode: Text.WordWrap
+                            text: {
+                                if (!page.connected) {
+                                    return qsTr("Connect to a server to start chatting.")
+                                }
+                                if (page.currentChannel === "*server*") {
+                                    return qsTr("Server notices, joins and parts show up here.")
+                                }
+                                if (!page.isChannel(page.currentChannel)) {
+                                    return qsTr("Private messages with this nick show up here.")
+                                }
+                                return qsTr("Say hi!")
+                            }
+                            color: Kirigami.Theme.disabledTextColor
                         }
                     }
                 }
 
-                // ---------------- empty state ---------------- //
-                ColumnLayout {
-                    anchors.centerIn: parent
-                    anchors.margins: Kirigami.Units.largeSpacing
-                    width: Math.min(parent.width - Kirigami.Units.largeSpacing * 2, Kirigami.Units.gridUnit * 20)
-                    visible: messageView.count === 0
-                    spacing: Kirigami.Units.smallSpacing
-
-                    Kirigami.Icon {
-                        Layout.alignment: Qt.AlignHCenter
-                        source: !page.connected ? "network-offline"
-                                                : (page.currentChannel === "*server*" ? "utilities-terminal" : "dialog-messages")
-                        color: Kirigami.Theme.disabledTextColor
-                        implicitWidth: Kirigami.Units.iconSizes.huge
-                        implicitHeight: Kirigami.Units.iconSizes.huge
-                        opacity: 0.7
+                // Floating pill: traffic arrived while scrolled up.
+                Controls.Button {
+                    id: newMessagesPill
+                    anchors.bottom: parent.bottom
+                    anchors.bottomMargin: Kirigami.Units.smallSpacing * 2
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    visible: page.hasUnseenBelow
+                    z: 2
+                    leftPadding: Kirigami.Units.smallSpacing * 2
+                    rightPadding: Kirigami.Units.smallSpacing * 2
+                    icon.name: "go-down"
+                    text: qsTr("New messages")
+                    onClicked: {
+                        page.hasUnseenBelow = false
+                        page.scrollToEnd()
                     }
 
-                    Controls.Label {
-                        Layout.fillWidth: true
-                        horizontalAlignment: Text.AlignHCenter
-                        text: {
-                            if (!page.connected) {
-                                return qsTr("Not connected")
-                            }
-                            if (page.currentChannel === "*server*") {
-                                return qsTr("Server console")
-                            }
-                            if (!page.isChannel(page.currentChannel)) {
-                                return qsTr("No messages yet")
-                            }
-                            return qsTr("No messages in %1 yet").arg(page.currentChannel)
+                    background: Rectangle {
+                        radius: height / 2
+                        color: newMessagesPill.pressed
+                            ? Qt.darker(page.accentC, 1.2)
+                            : page.accentC
+                        Behavior on color {
+                            ColorAnimation { duration: ThemeEngine.motionDuration }
                         }
-                        color: Kirigami.Theme.textColor
-                        font.bold: true
                     }
 
-                    Controls.Label {
-                        Layout.fillWidth: true
-                        horizontalAlignment: Text.AlignHCenter
-                        wrapMode: Text.WordWrap
-                        text: {
-                            if (!page.connected) {
-                                return qsTr("Connect to a server to start chatting.")
-                            }
-                            if (page.currentChannel === "*server*") {
-                                return qsTr("Server notices, joins and parts show up here.")
-                            }
-                            if (!page.isChannel(page.currentChannel)) {
-                                return qsTr("Private messages with this nick show up here.")
-                            }
-                            return qsTr("Say hi!")
+                    contentItem: RowLayout {
+                        spacing: Kirigami.Units.smallSpacing
+
+                        Kirigami.Icon {
+                            Layout.alignment: Qt.AlignVCenter
+                            source: newMessagesPill.icon.name
+                            color: page.accentTxt
+                            implicitWidth: Math.round(Kirigami.Units.gridUnit * 0.8)
+                            implicitHeight: implicitWidth
                         }
-                        color: Kirigami.Theme.disabledTextColor
+
+                        Controls.Label {
+                            Layout.alignment: Qt.AlignVCenter
+                            text: newMessagesPill.text
+                            color: page.accentTxt
+                            font.bold: true
+                            font.pointSize: Math.max(1, Kirigami.Theme.defaultFont.pointSize - 1)
+                        }
                     }
                 }
             }
@@ -651,7 +932,7 @@ Kirigami.Page {
             // ---------------- input ---------------- //
             Rectangle {
                 Layout.fillWidth: true
-                implicitHeight: inputRow.implicitHeight + Kirigami.Units.smallSpacing * 2
+                implicitHeight: inputColumn.implicitHeight + Kirigami.Units.smallSpacing * 2
                 color: Kirigami.Theme.backgroundColor
 
                 Rectangle {
@@ -667,113 +948,130 @@ Kirigami.Page {
                     font: messageInput.font
                 }
 
-                RowLayout {
-                    id: inputRow
+                ColumnLayout {
+                    id: inputColumn
                     anchors.fill: parent
                     anchors.margins: Kirigami.Units.smallSpacing
-                    spacing: Kirigami.Units.smallSpacing
+                    spacing: Kirigami.Units.smallSpacing / 2
 
-                    Rectangle {
-                        id: inputFrame
-                        readonly property int pad: Math.round(Kirigami.Units.smallSpacing * 1.5)
-                        readonly property int maxFieldHeight: Math.round(inputMetrics.lineSpacing * 5)
-
+                    // The server console only takes slash commands — say so
+                    // inline instead of failing silently.
+                    Controls.Label {
+                        visible: page.currentChannel === "*server*"
                         Layout.fillWidth: true
-                        implicitHeight: Math.min(inputFrame.maxFieldHeight, messageInput.implicitHeight) + inputFrame.pad * 2
-                        radius: Kirigami.Units.cornerRadius + 4
-                        color: Kirigami.Theme.alternateBackgroundColor
-                        border.width: 1
-                        border.color: messageInput.activeFocus ? Kirigami.Theme.highlightColor : page.hairline
-                        Behavior on border.color {
-                            ColorAnimation { duration: ThemeEngine.motionDuration }
-                        }
-
-                        Controls.TextArea {
-                            id: messageInput
-                            anchors.left: parent.left
-                            anchors.right: parent.right
-                            anchors.verticalCenter: parent.verticalCenter
-                            anchors.margins: inputFrame.pad
-                            height: Math.min(inputFrame.maxFieldHeight, implicitHeight)
-
-                            background: null
-                            leftPadding: inputFrame.pad
-                            rightPadding: inputFrame.pad
-                            topPadding: 0
-                            bottomPadding: 0
-
-                            enabled: page.connected
-                            placeholderText: {
-                                if (!page.connected) {
-                                    return qsTr("Connect to a server to send messages")
-                                }
-                                if (page.currentChannel === "*server*") {
-                                    return qsTr("/join #channel   /query nick   /quote …")
-                                }
-                                return qsTr("Message %1").arg(page.currentChannel)
-                            }
-                            wrapMode: Controls.TextArea.Wrap
-                            selectByMouse: true
-
-                            // Enter sends, Shift+Enter inserts a newline. Tab
-                            // completes nicks in the current channel.
-                            Keys.onPressed: (event) => {
-                                if (event.key === Qt.Key_Tab) {
-                                    event.accepted = true
-                                    page.tabComplete()
-                                    return
-                                }
-                                if (event.key !== Qt.Key_Return && event.key !== Qt.Key_Enter) {
-                                    return
-                                }
-                                if (event.modifiers & Qt.ShiftModifier) {
-                                    event.accepted = false
-                                    return
-                                }
-                                event.accepted = true
-                                page.sendCurrent()
-                            }
-                        }
+                        text: qsTr("Server console — slash commands only, e.g. /join #channel")
+                        color: page.mutedTxt
+                        font.pointSize: page.eventSz
+                        elide: Text.ElideRight
                     }
 
-                    Controls.Button {
-                        id: sendButton
-                        Layout.alignment: Qt.AlignBottom
-                        Layout.preferredWidth: Math.round(Kirigami.Units.gridUnit * 1.9)
-                        Layout.preferredHeight: Math.round(Kirigami.Units.gridUnit * 1.9)
-                        enabled: page.connected && page.currentChannel !== "*server*" && messageInput.text.trim().length > 0
-                        onClicked: page.sendCurrent()
+                    RowLayout {
+                        id: inputRow
+                        Layout.fillWidth: true
+                        spacing: Kirigami.Units.smallSpacing
 
-                        Controls.ToolTip.visible: hovered
-                        Controls.ToolTip.text: qsTr("Send message")
+                        Rectangle {
+                            id: inputFrame
+                            readonly property int pad: Math.round(Kirigami.Units.smallSpacing * 1.5)
+                            readonly property int maxFieldHeight: Math.round(inputMetrics.lineSpacing * 5)
 
-                        background: Rectangle {
-                            radius: width / 2
-                            color: !sendButton.enabled
-                                ? "transparent"
-                                : (sendButton.pressed
-                                   ? Qt.darker(Kirigami.Theme.highlightColor, 1.2)
-                                   : Kirigami.Theme.highlightColor)
+                            Layout.fillWidth: true
+                            implicitHeight: Math.min(inputFrame.maxFieldHeight, messageInput.implicitHeight) + inputFrame.pad * 2
+                            radius: page.inputRad
+                            color: Kirigami.Theme.alternateBackgroundColor
                             border.width: 1
-                            border.color: sendButton.enabled
-                                ? "transparent"
-                                : ThemeEngine.withAlpha(Kirigami.Theme.textColor, 0.5)
-                            Behavior on color {
+                            border.color: messageInput.activeFocus ? page.accentC : page.hairline
+                            Behavior on border.color {
                                 ColorAnimation { duration: ThemeEngine.motionDuration }
+                            }
+
+                            Controls.TextArea {
+                                id: messageInput
+                                anchors.left: parent.left
+                                anchors.right: parent.right
+                                anchors.verticalCenter: parent.verticalCenter
+                                anchors.margins: inputFrame.pad
+                                height: Math.min(inputFrame.maxFieldHeight, implicitHeight)
+
+                                background: null
+                                leftPadding: inputFrame.pad
+                                rightPadding: inputFrame.pad
+                                topPadding: 0
+                                bottomPadding: 0
+
+                                enabled: page.connected
+                                placeholderText: {
+                                    if (!page.connected) {
+                                        return qsTr("Connect to a server to send messages")
+                                    }
+                                    if (page.currentChannel === "*server*") {
+                                        return qsTr("Type a command, e.g. /join #channel")
+                                    }
+                                    return qsTr("Message %1").arg(page.currentChannel)
+                                }
+                                wrapMode: Controls.TextArea.Wrap
+                                selectByMouse: true
+
+                                // Enter sends, Shift+Enter inserts a newline. Tab
+                                // completes nicks in the current channel.
+                                Keys.onPressed: (event) => {
+                                    if (event.key === Qt.Key_Tab) {
+                                        event.accepted = true
+                                        page.tabComplete()
+                                        return
+                                    }
+                                    if (event.key !== Qt.Key_Return && event.key !== Qt.Key_Enter) {
+                                        return
+                                    }
+                                    if (event.modifiers & Qt.ShiftModifier) {
+                                        event.accepted = false
+                                        return
+                                    }
+                                    event.accepted = true
+                                    page.sendCurrent()
+                                }
                             }
                         }
 
-                        contentItem: Item {
-                            Kirigami.Icon {
-                                anchors.centerIn: parent
-                                source: "document-send"
-                                // See the join button: no extra alpha on top of
-                                // the style's own disabled dimming.
-                                color: sendButton.enabled
-                                    ? Kirigami.Theme.highlightedTextColor
-                                    : Kirigami.Theme.disabledTextColor
-                                width: Math.round(Kirigami.Units.gridUnit * 0.95)
-                                height: width
+                        Controls.Button {
+                            id: sendButton
+                            Layout.alignment: Qt.AlignBottom
+                            Layout.preferredWidth: Math.round(Kirigami.Units.gridUnit * 1.9)
+                            Layout.preferredHeight: Math.round(Kirigami.Units.gridUnit * 1.9)
+                            enabled: page.connected && page.currentChannel !== "*server*" && messageInput.text.trim().length > 0
+                            onClicked: page.sendCurrent()
+
+                            Controls.ToolTip.visible: hovered
+                            Controls.ToolTip.text: qsTr("Send message")
+
+                            background: Rectangle {
+                                radius: width / 2
+                                color: !sendButton.enabled
+                                    ? "transparent"
+                                    : (sendButton.pressed
+                                       ? Qt.darker(page.accentC, 1.2)
+                                       : page.accentC)
+                                border.width: 1
+                                border.color: sendButton.enabled
+                                    ? "transparent"
+                                    : ThemeEngine.withAlpha(Kirigami.Theme.textColor, 0.5)
+                                Behavior on color {
+                                    ColorAnimation { duration: ThemeEngine.motionDuration }
+                                }
+                            }
+
+                            contentItem: Item {
+                                Kirigami.Icon {
+                                    anchors.centerIn: parent
+                                    source: "document-send"
+                                    // No extra alpha on top of the style's own
+                                    // disabled dimming.
+                                    color: sendButton.enabled
+                                        ? page.accentTxt
+                                        : Kirigami.Theme.disabledTextColor
+                                    width: Math.round(Kirigami.Units.gridUnit * 0.95)
+                                    height: width
+                                }
                             }
                         }
                     }
@@ -781,61 +1079,177 @@ Kirigami.Page {
             }
         }
 
+        // ---------------- people panel ---------------- //
         Rectangle {
-            visible: page.isChannel(page.currentChannel)
-            Layout.preferredWidth: Kirigami.Units.gridUnit * 9
-            Layout.minimumWidth: Kirigami.Units.gridUnit * 7
+            visible: page.isChannel(page.currentChannel) && page.peopleVisible
+            Layout.preferredWidth: Kirigami.Units.gridUnit * 11
+            Layout.minimumWidth: Kirigami.Units.gridUnit * 8
             Layout.fillHeight: true
-            color: Kirigami.Theme.alternateBackgroundColor
+            color: page.panelBg
 
             ColumnLayout {
                 anchors.fill: parent
                 spacing: 0
 
                 Controls.Label {
-                    text: qsTr("People (%1)").arg(page.nickList.length)
+                    text: qsTr("People (%1)").arg(page.peopleEntries.length)
                     font.bold: true
-                    color: Kirigami.Theme.disabledTextColor
+                    color: page.sectionTxt
+                    font.pointSize: page.sectionSz
                     leftPadding: Kirigami.Units.smallSpacing * 2
                     topPadding: Kirigami.Units.smallSpacing
-                    bottomPadding: Kirigami.Units.smallSpacing
+                    bottomPadding: Kirigami.Units.smallSpacing / 2
                     Layout.fillWidth: true
+                    elide: Text.ElideRight
+                }
+
+                Rectangle {
+                    Layout.fillWidth: true
+                    Layout.leftMargin: Kirigami.Units.smallSpacing * 2
+                    Layout.rightMargin: Kirigami.Units.smallSpacing * 2
+                    Layout.bottomMargin: Kirigami.Units.smallSpacing
+                    implicitHeight: peopleFilterField.implicitHeight + Kirigami.Units.smallSpacing
+                    radius: page.inputRad
+                    color: Kirigami.Theme.backgroundColor
+                    border.width: 1
+                    border.color: peopleFilterField.activeFocus ? page.accentC : page.hairline
+                    Behavior on border.color {
+                        ColorAnimation { duration: ThemeEngine.motionDuration }
+                    }
+
+                    Controls.TextField {
+                        id: peopleFilterField
+                        anchors.fill: parent
+                        anchors.margins: Kirigami.Units.smallSpacing / 2
+                        leftPadding: Kirigami.Units.smallSpacing
+                        rightPadding: Kirigami.Units.smallSpacing
+                        background: null
+                        placeholderText: qsTr("Filter…")
+                        onTextChanged: page.peopleFilter = text
+                    }
                 }
 
                 ListView {
+                    id: peopleList
                     Layout.fillWidth: true
                     Layout.fillHeight: true
                     clip: true
-                    model: page.nickList
+                    model: page.peopleEntries
                     reuseItems: true
+                    section.property: "group"
+                    section.delegate: Controls.Label {
+                        required property string section
+                        width: peopleList.width
+                        text: section
+                        color: page.mutedTxt
+                        font.bold: true
+                        font.pointSize: page.eventSz
+                        leftPadding: Kirigami.Units.smallSpacing * 2
+                        topPadding: Kirigami.Units.smallSpacing
+                        bottomPadding: Kirigami.Units.smallSpacing / 2
+                        elide: Text.ElideRight
+                    }
+
                     delegate: Controls.ItemDelegate {
-                        required property string modelData
-                        width: ListView.view.width
-                        padding: Kirigami.Units.smallSpacing
+                        id: personDelegate
+                        required property string nick
+                        required property string bare
+                        required property string prefix
+
+                        // Presence follows rank: operators read as online,
+                        // voiced as away, everyone else as offline.
+                        readonly property color presenceColor: personDelegate.prefix === "+"
+                            ? page.awayC
+                            : ((personDelegate.prefix.length > 0) ? page.onlineC : page.offlineC)
+                        readonly property color avatarColor: ThemeEngine.nickColor(personDelegate.bare, page.darkTheme)
+
+                        width: peopleList.width
+                        hoverEnabled: true
+                        padding: 0
+                        clip: true
+
+                        Controls.ToolTip.visible: hovered
+                        Controls.ToolTip.text: personDelegate.nick
+
+                        background: Rectangle {
+                            anchors.fill: parent
+                            anchors.leftMargin: Kirigami.Units.smallSpacing
+                            anchors.rightMargin: Kirigami.Units.smallSpacing
+                            anchors.topMargin: 1
+                            anchors.bottomMargin: 1
+                            radius: page.rowRad
+                            color: personDelegate.hovered ? page.rowHv : "transparent"
+                            Behavior on color {
+                                ColorAnimation { duration: ThemeEngine.motionDuration }
+                            }
+                        }
+
                         contentItem: RowLayout {
                             spacing: Kirigami.Units.smallSpacing
+
                             Rectangle {
-                                Layout.preferredWidth: Math.round(Kirigami.Units.gridUnit * 0.9)
+                                Layout.alignment: Qt.AlignVCenter
+                                Layout.leftMargin: Kirigami.Units.smallSpacing
+                                Layout.preferredWidth: Math.round(Kirigami.Units.gridUnit * 1.1)
                                 Layout.preferredHeight: Layout.preferredWidth
                                 radius: width / 2
-                                color: ThemeEngine.nickColor(modelData, page.darkTheme)
+                                color: personDelegate.avatarColor
+
                                 Controls.Label {
                                     anchors.centerIn: parent
-                                    text: ThemeEngine.initial(modelData.replace(/^[@+%~&]/, ""))
-                                    color: ThemeEngine.contrastingTextColor(parent.color)
+                                    text: ThemeEngine.initial(personDelegate.bare)
+                                    color: ThemeEngine.contrastingTextColor(personDelegate.avatarColor)
                                     font.bold: true
-                                    font.pointSize: Math.max(1, Kirigami.Theme.defaultFont.pointSize - 3)
+                                    font.pointSize: Math.max(1, Kirigami.Theme.defaultFont.pointSize - 2)
+                                }
+
+                                Rectangle {
+                                    anchors.right: parent.right
+                                    anchors.bottom: parent.bottom
+                                    anchors.rightMargin: -1
+                                    anchors.bottomMargin: -1
+                                    implicitWidth: Math.round(parent.width * 0.36)
+                                    implicitHeight: implicitWidth
+                                    radius: width / 2
+                                    color: personDelegate.presenceColor
+                                    border.width: 1
+                                    border.color: page.panelBg
                                 }
                             }
+
                             Controls.Label {
                                 Layout.fillWidth: true
-                                text: modelData
+                                Layout.alignment: Qt.AlignVCenter
+                                Layout.preferredHeight: page.rowHt
+                                verticalAlignment: Text.AlignVCenter
+                                text: personDelegate.bare
                                 elide: Text.ElideRight
                                 color: Kirigami.Theme.textColor
                             }
+
+                            // Rank badge (@ / +), hidden for regular nicks.
+                            Rectangle {
+                                Layout.alignment: Qt.AlignVCenter
+                                Layout.rightMargin: Kirigami.Units.smallSpacing
+                                visible: personDelegate.prefix.length > 0
+                                implicitWidth: prefixLabel.implicitWidth + Kirigami.Units.smallSpacing
+                                implicitHeight: prefixLabel.implicitHeight + 2
+                                radius: height / 3
+                                color: ThemeEngine.withAlpha(Kirigami.Theme.textColor, 0.10)
+
+                                Controls.Label {
+                                    id: prefixLabel
+                                    anchors.centerIn: parent
+                                    text: personDelegate.prefix
+                                    color: page.mutedTxt
+                                    font.bold: true
+                                    font.pointSize: Math.max(1, Kirigami.Theme.defaultFont.pointSize - 2)
+                                }
+                            }
                         }
+
                         onClicked: {
-                            var nick = modelData.replace(/^[@+%~&]/, "")
+                            var nick = personDelegate.bare
                             if (nick.length === 0) {
                                 return
                             }
@@ -844,6 +1258,81 @@ Kirigami.Page {
                         }
                     }
                 }
+            }
+        }
+    }
+
+    // Ctrl+J opens the join dialog from anywhere on this page.
+    Shortcut {
+        sequence: "Ctrl+J"
+        context: Qt.ApplicationShortcut
+        onActivated: page.openJoinDialog()
+    }
+
+    // Join dialog: replaces the old bottom text field. Accepts #, &, +, !
+    // or a bare name (only bare names gain a "#"), plus an optional key.
+    Controls.Dialog {
+        id: joinDialog
+        title: qsTr("Join channel")
+        modal: true
+        parent: Controls.Overlay.overlay
+        anchors.centerIn: parent
+        standardButtons: Controls.Dialog.Ok | Controls.Dialog.Cancel
+        onOpened: {
+            joinNameField.text = ""
+            joinKeyField.text = ""
+            joinAutojoinBox.checked = false
+            joinDialog.standardButton(Controls.Dialog.Ok).enabled = false
+            joinNameField.forceActiveFocus()
+        }
+        onAccepted: page.submitJoinDialog()
+
+        contentItem: ColumnLayout {
+            spacing: Kirigami.Units.smallSpacing
+
+            Controls.Label {
+                Layout.fillWidth: true
+                text: qsTr("Channel name (a bare name becomes #name):")
+                color: Kirigami.Theme.textColor
+                wrapMode: Text.WordWrap
+            }
+
+            Controls.TextField {
+                id: joinNameField
+                Layout.fillWidth: true
+                Layout.minimumWidth: Kirigami.Units.gridUnit * 14
+                placeholderText: qsTr("#channel")
+                onTextChanged: joinDialog.standardButton(Controls.Dialog.Ok).enabled = text.trim().length > 0
+                onAccepted: {
+                    if (text.trim().length > 0) {
+                        joinDialog.accept()
+                    }
+                }
+            }
+
+            Controls.Label {
+                Layout.fillWidth: true
+                text: qsTr("Channel key (only for locked channels):")
+                color: Kirigami.Theme.textColor
+                wrapMode: Text.WordWrap
+            }
+
+            Controls.TextField {
+                id: joinKeyField
+                Layout.fillWidth: true
+                placeholderText: qsTr("Optional")
+                echoMode: Controls.TextField.Password
+                onAccepted: {
+                    if (joinNameField.text.trim().length > 0) {
+                        joinDialog.accept()
+                    }
+                }
+            }
+
+            Controls.CheckBox {
+                id: joinAutojoinBox
+                Layout.fillWidth: true
+                text: qsTr("Join on connect")
             }
         }
     }
@@ -865,10 +1354,14 @@ Kirigami.Page {
             page.hostWindow.chatChannel = page.currentChannel
         }
         page.joinError = ""
+        page.hasUnseenBelow = false
+        page.topicExpanded = false
         page.refreshHistory()
         if (page.bridge !== null) {
-            page.currentTopic = page.bridge.topic_for(target)
-            var nicks = page.bridge.nicks_for(target)
+            page.currentTopic = (typeof page.bridge.topic_for === "function")
+                ? page.bridge.topic_for(target) : ""
+            var nicks = (typeof page.bridge.nicks_for === "function")
+                ? page.bridge.nicks_for(target) : ""
             page.nickList = nicks.length === 0 ? [] : nicks.split(" ")
         }
         if (switching) {
@@ -952,7 +1445,8 @@ Kirigami.Page {
         if (target === undefined || target === null || target === "*server*") {
             return
         }
-        if (page.isChannel(target) && page.bridge !== null) {
+        if (page.isChannel(target) && page.bridge !== null
+                && typeof page.bridge.part_channel === "function") {
             page.bridge.part_channel(target)
         }
         var leaving = page.sameTarget(page.currentChannel, target)
@@ -1009,11 +1503,11 @@ Kirigami.Page {
         var cmd = (space < 0 ? body : body.substring(0, space)).toLowerCase()
         var rest = space < 0 ? "" : body.substring(space + 1).trim()
         if (cmd === "/join") {
-            if (rest.length === 0) {
+            var bits = rest.split(/\s+/).filter(function (w) { return w.length > 0 })
+            if (bits.length === 0) {
                 return false
             }
-            joinField.text = rest
-            page.tryJoin()
+            page.joinChannel(bits[0], bits.length > 1 ? bits.slice(1).join(" ") : "")
             return true
         }
         if (cmd === "/part" || cmd === "/close" || cmd === "/wc") {
@@ -1037,15 +1531,15 @@ Kirigami.Page {
             return true
         }
         if (cmd === "/query" || cmd === "/msg") {
-            var bits = rest.split(" ")
-            var nick = bits[0]
+            var qbits = rest.split(" ")
+            var nick = qbits[0]
             if (!nick) {
                 return false
             }
             page.addBuffer(nick)
             page.openChannel(nick)
-            if (cmd === "/msg" && bits.length > 1) {
-                page.bridge.send_message(nick, bits.slice(1).join(" "))
+            if (cmd === "/msg" && qbits.length > 1) {
+                page.bridge.send_message(nick, qbits.slice(1).join(" "))
             }
             return true
         }
@@ -1114,8 +1608,8 @@ Kirigami.Page {
             if (kb.length === 0 || !page.isChannel(page.currentChannel)) {
                 return false
             }
-            var reason = kb.length > 1 ? kb.slice(1).join(" ") : ""
-            page.bridge.send_raw("KICK " + page.currentChannel + " " + kb[0] + (reason ? (" :" + reason) : ""))
+            var kreason = kb.length > 1 ? kb.slice(1).join(" ") : ""
+            page.bridge.send_raw("KICK " + page.currentChannel + " " + kb[0] + (kreason ? (" :" + kreason) : ""))
             return true
         }
         if (cmd === "/mode") {
@@ -1134,7 +1628,9 @@ Kirigami.Page {
             return true
         }
         if (cmd === "/clear") {
-            page.bridge.clear_buffer(page.currentChannel)
+            if (typeof page.bridge.clear_buffer === "function") {
+                page.bridge.clear_buffer(page.currentChannel)
+            }
             page.refreshHistory()
             return true
         }
@@ -1340,25 +1836,111 @@ Kirigami.Page {
         messageInput.cursorPosition = start + insert.length
     }
 
-    function tryJoin()
+    // ---------------------------------------------------------------------- //
+    // Join dialog (replaces the old bottom "Join a channel..." text field)
+    // ---------------------------------------------------------------------- //
+    function openJoinDialog()
     {
-        var target = joinField.text.trim()
-        if (target.length === 0) {
+        joinDialog.open()
+    }
+
+    /// Canonical channel name: first whitespace-separated token, CR/LF
+    /// stripped (protocol safety), and a "#" prefix ONLY for bare names —
+    /// never forced onto the +, !, & channel types.
+    function normalizeChannelName(raw)
+    {
+        var first = String(raw).trim().split(/\s+/)[0]
+        if (first === undefined || first.length === 0) {
+            return ""
+        }
+        var clean = first.replace(/[\r\n]+/g, "")
+        if (clean.length === 0) {
+            return ""
+        }
+        if (!page.isChannel(clean)) {
+            clean = "#" + clean
+        }
+        return clean
+    }
+
+    /// Join `target` with an optional channel key (JOIN <channel> <key>).
+    /// Used by the join dialog and by `/join #chan key` alike.
+    function joinChannel(target, key)
+    {
+        var chan = page.normalizeChannelName(target)
+        if (chan.length === 0 || page.bridge === null) {
             return
         }
-        joinField.text = ""
         page.joinError = ""
-        if (!page.isChannel(target)) {
-            // A nick → query window. A bare word → treat as a channel.
-            // Users type "pain" meaning "#pain"; they type a nick via /query.
-            // Join attempts need a #-style prefix, but + and ! are real
-            // channel types already — only add # when there is no prefix.
-            target = "#" + target
-        }
-        if (page.bridge !== null) {
-            page.bridge.join_channel(target)
+        var k = String(key === undefined || key === null ? "" : key).replace(/[\r\n]+/g, "")
+        if (k.length > 0) {
+            page.bridge.send_raw("JOIN " + chan + " " + k)
+        } else {
+            page.bridge.join_channel(chan)
         }
         // Do not add the channel or switch to it until JOIN is accepted.
+    }
+
+    function submitJoinDialog()
+    {
+        var name = joinNameField.text.trim()
+        if (name.length === 0) {
+            return
+        }
+        var key = joinKeyField.text.replace(/[\r\n]+/g, "")
+        if (key.trim().length === 0) {
+            key = ""
+        }
+        var wantAutojoin = joinAutojoinBox.checked
+        page.joinChannel(name, key)
+        var listed = page.normalizeChannelName(name)
+        if (listed.length > 0) {
+            if (wantAutojoin) {
+                page.addToAutojoin(listed)
+            } else {
+                page.removeFromAutojoin(listed)
+            }
+        }
+    }
+
+    /// appConfig.autojoin stays a COMMA-SEPARATED STRING (SettingsPage and
+    /// applyAutojoin both parse that format).
+    function addToAutojoin(channel)
+    {
+        var cfg = (page.hostWindow !== null && page.hostWindow !== undefined)
+            ? page.hostWindow.appConfig : null
+        if (cfg === null || cfg === undefined) {
+            return
+        }
+        var list = String(cfg.autojoin || "").split(/[\s,]+/).filter(function (w) { return w.length > 0 })
+        for (var i = 0; i < list.length; ++i) {
+            if (page.sameTarget(list[i], channel)) {
+                return
+            }
+        }
+        list.push(channel)
+        cfg.autojoin = list.join(", ")
+        if (typeof cfg.save === "function") {
+            cfg.save()
+        }
+    }
+
+    function removeFromAutojoin(channel)
+    {
+        var cfg = (page.hostWindow !== null && page.hostWindow !== undefined)
+            ? page.hostWindow.appConfig : null
+        if (cfg === null || cfg === undefined) {
+            return
+        }
+        var list = String(cfg.autojoin || "").split(/[\s,]+/).filter(function (w) { return w.length > 0 })
+        var kept = list.filter(function (w) { return !page.sameTarget(w, channel) })
+        if (kept.length === list.length) {
+            return
+        }
+        cfg.autojoin = kept.join(", ")
+        if (typeof cfg.save === "function") {
+            cfg.save()
+        }
     }
 
     // ---------------------------------------------------------------------- //

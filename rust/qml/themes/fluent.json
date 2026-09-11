@@ -1,21 +1,21 @@
 {
-    "id": "breeze-classic",
-    "name": "Breeze Classic",
-    "mode": "dense",
+    "id": "fluent",
+    "name": "Fluent",
+    "mode": "bubble",
     "bubble": {
-        "radius": 8,
-        "spacing": 4,
+        "radius": 12,
+        "spacing": 6,
         "groupSpacing": 2,
-        "tailRadius": 4,
+        "tailRadius": 5,
         "maxWidthFraction": 0.78,
         "selfColor": "",
         "otherColor": ""
     },
     "dense": {
-        "lineSpacing": 2
+        "lineSpacing": 3
     },
     "avatar": {
-        "enabled": false,
+        "enabled": true,
         "size": 0
     },
     "grouping": {
@@ -24,7 +24,7 @@
     },
     "motion": {
         "enabled": true,
-        "duration": 120
+        "duration": 140
     },
     "sidebar": {
         "width": 0
@@ -49,9 +49,9 @@
         "sidebarSurface": "",
         "cardBackground": "",
         "cardBorder": "",
-        "cardRadius": 6,
+        "cardRadius": 8,
         "cardPadding": 12,
-        "rowRadius": 4,
+        "rowRadius": 6,
         "rowHover": "",
         "rowSelected": "",
         "rowHeight": 36,
@@ -68,7 +68,7 @@
         "unreadBadge": "",
         "unreadBadgeText": "",
         "inputRadius": 4,
-        "shadowOpacity": 0,
+        "shadowOpacity": 0.18,
         "headerHeight": 48
     }
 }

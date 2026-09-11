@@ -30,8 +30,36 @@ import org.kde.kirc
 Kirigami.ApplicationWindow {
     id: root
 
+    // Icon theme id for the title bar / task switcher (set imperatively; the
+    // QWindow icon property is dynamic on this Kirigami/Qt combo and rejects
+    // a static assignment).
+    // Window geometry is restored from the persisted prefs when present.
     width: 1024
     height: 700
+    // qmllint disable missing-property
+    Component.onCompleted: {
+        try {
+            if (root["icon"] !== undefined && root["icon"] !== null) {
+                root["icon"].name = "kirc"
+            }
+        } catch (e) {
+        }
+        if (root.appConfig !== null) {
+            var w = root.appConfig.windowWidth
+            var h = root.appConfig.windowHeight
+            if (w !== undefined && h !== undefined
+                    && w >= root.minimumWidth && h >= root.minimumHeight) {
+                root.width = w
+                root.height = h
+            }
+            root.syncSaslMechanismFromConfig()
+            if (root.appConfig.themeId.length > 0) {
+                ThemeEngine.applyBuiltinTheme(root.appConfig.themeId)
+            }
+            ThemeEngine.fontDelta = root.appConfig.fontDelta
+        }
+    }
+    // qmllint enable missing-property
     // Wide/tall enough for the connection form (capped at gridUnit*28 plus
     // page padding) plus the header; a narrower minimum let the form clip.
     minimumWidth: Kirigami.Units.gridUnit * 32
@@ -108,23 +136,30 @@ Kirigami.ApplicationWindow {
     property string lastNickname: ""
     property string lastSaslUser: ""
     property string lastSaslPass: ""
+    property int lastSaslMechanism: 0
     property bool userDisconnect: false
     property int reconnectAttempt: 0
+    // True when the last drop carried an authentication failure (904-907).
+    // Cleared on every new attempt; when set, reconnects are skipped unless
+    // the reconnectAfterAuthFailure pref allows them.
+    property bool lastDropWasAuthFailure: false
+    // The bridge-side SASL mechanism id currently in effect.  Initialised
+    // from the persisted pref once (plain property + assignment, so no
+    // binding loop with appConfig); written back when the user changes it.
+    property int saslMechanism: 0
+
+    function syncSaslMechanismFromConfig()
+    {
+        if (root.appConfig !== null && root.appConfig.saslMechanism !== undefined) {
+            root.saslMechanism = root.appConfig.saslMechanism
+        }
+    }
 
     Timer {
         id: reconnectTimer
         interval: 3000
         repeat: false
         onTriggered: root.tryReconnect()
-    }
-
-    Component.onCompleted: {
-        if (root.appConfig !== null) {
-            if (root.appConfig.themeId.length > 0) {
-                ThemeEngine.applyBuiltinTheme(root.appConfig.themeId)
-            }
-            ThemeEngine.fontDelta = root.appConfig.fontDelta
-        }
     }
 
     /// Buffer name for humans. "*server*" is internal; the header glyph
@@ -168,6 +203,45 @@ Kirigami.ApplicationWindow {
         return qsTr("Disconnected")
     }
 
+    // Secondary header line: nick @ server, plus the channel topic when one
+    // is known.  Derived from live bridge state + the chat page below; empty
+    // when there is nothing useful to say (connection form).
+    readonly property string headerSubtitle: {
+        if (root.pageStack.depth <= 1) {
+            return ""
+        }
+        var bits = []
+        var nick = root.bridge.nickname
+        var server = root.bridge.connected_server
+        if (nick.length > 0 && server.length > 0) {
+            var cut = server.indexOf(":")
+            var shortServer = cut > 0 ? server.substring(0, cut) : server
+            bits.push(nick + " @ " + shortServer)
+        } else if (nick.length > 0) {
+            bits.push(nick)
+        } else if (server.length > 0) {
+            bits.push(server)
+        }
+        var page = root.pageStack.currentItem
+        // qmllint disable missing-property
+        if (page && page["currentTopic"] !== undefined && String(page["currentTopic"]).length > 0
+                && root.isChannel(root.chatChannel)) {
+            bits.push(String(page["currentTopic"]))
+        }
+        // qmllint enable missing-property
+        return bits.join(" · ")
+    }
+
+    // Tooltip for the connection status pill ("Connected to …" etc).
+    readonly property string statusTip: {
+        var server = root.bridge.connected_server
+        switch (root.bridge.connection_state) {
+        case 2: return server.length > 0 ? qsTr("Connected to %1").arg(server) : qsTr("Connected")
+        case 1: return server.length > 0 ? qsTr("Connecting to %1…").arg(server) : qsTr("Connecting…")
+        }
+        return server.length > 0 ? qsTr("Disconnected from %1").arg(server) : qsTr("Disconnected")
+    }
+
     readonly property color statusColor: root.bridge.connection_state === 2
         ? Kirigami.Theme.positiveTextColor
         : (root.bridge.connection_state === 1
@@ -178,12 +252,45 @@ Kirigami.ApplicationWindow {
     // Close = hide to tray (when a tray is available and the setting is on).
     // The tray's "Quit kIRC" action and the menu item below bypass this by
     // calling Qt.quit()/QCoreApplication::quit(), which never triggers a
-    // window close.
-    // ---------------------------------------------------------------------- //
+    // window close.  The geometry is persisted first, so a re-launch restores
+    // the size the user actually closed with.
     onClosing: (close) => {
+        root.saveGeometry()
         if (root.trayAvailable && root.minimizeToTray) {
             close.accepted = false
             root.hide()
+        }
+    }
+
+    onWidthChanged: saveGeometrySoon()
+    onHeightChanged: saveGeometrySoon()
+
+    // Coalesced geometry writer: stores the live size (not while hidden to
+    // tray) so a restart restores it.
+    Timer {
+        id: geometryTimer
+        interval: 500
+        repeat: false
+        onTriggered: root.saveGeometry()
+    }
+
+    function saveGeometrySoon()
+    {
+        if (root.appConfig === null || !root.visible) {
+            return
+        }
+        geometryTimer.restart()
+    }
+
+    function saveGeometry()
+    {
+        if (root.appConfig === null || root.appConfig.windowWidth === undefined) {
+            return
+        }
+        if (root.width >= root.minimumWidth && root.height >= root.minimumHeight) {
+            root.appConfig.windowWidth = root.width
+            root.appConfig.windowHeight = root.height
+            root.appConfig.save()
         }
     }
 
@@ -263,6 +370,19 @@ Kirigami.ApplicationWindow {
                 Layout.fillWidth: true
             }
 
+            // Secondary line (nick @ server · topic), truncating gracefully.
+            // A fixed width cap keeps long topics from squeezing the pills
+            // and toolbar off the header at narrow window sizes.
+            Controls.Label {
+                visible: root.headerSubtitle.length > 0
+                text: root.headerSubtitle
+                color: Kirigami.Theme.disabledTextColor
+                font.pointSize: Math.max(1, Kirigami.Theme.defaultFont.pointSize - 1)
+                elide: Text.ElideRight
+                Layout.fillWidth: true
+                Layout.maximumWidth: Kirigami.Units.gridUnit * 22
+            }
+
             // ---- connection status pill ----
             Rectangle {
                 Layout.alignment: Qt.AlignVCenter
@@ -270,6 +390,16 @@ Kirigami.ApplicationWindow {
                 implicitHeight: Math.round(Kirigami.Units.gridUnit * 1.5)
                 radius: height / 2
                 color: ThemeEngine.withAlpha(root.statusColor, 0.16)
+
+                Accessible.name: root.statusTip
+                Accessible.description: root.statusTip
+
+                Controls.ToolTip.visible: statusHover.hovered
+                Controls.ToolTip.text: root.statusTip
+
+                HoverHandler {
+                    id: statusHover
+                }
 
                 RowLayout {
                     id: statusPill
@@ -293,19 +423,43 @@ Kirigami.ApplicationWindow {
                 }
             }
 
-            // ---- unread badge ----
+            // ---- unread badge: opens/clears with the buffers ----
+            // Count of unread messages across buffers; clears when the buffers
+            // are read (ChatPage calls bridge.mark_read() on open/switch).
             Rectangle {
                 Layout.alignment: Qt.AlignVCenter
-                visible: root.bridge.unread_count > 0
+                // Only meaningful once the chat is on screen: on the connect
+                // form a stale count from the previous session reads as a
+                // mystery badge.
+                visible: root.pageStack.depth > 1 && root.bridge.unread_count > 0
                 implicitWidth: Math.max(height, unreadLabel.implicitWidth + Kirigami.Units.smallSpacing * 2)
                 implicitHeight: Math.round(Kirigami.Units.gridUnit * 1.5)
                 radius: height / 2
                 color: Kirigami.Theme.highlightColor
 
+                Accessible.name: qsTr("%n unread message(s)", "", root.bridge.unread_count)
+                Accessible.description: qsTr("Unread messages")
+
+                Controls.ToolTip.visible: unreadHover.hovered
+                Controls.ToolTip.text: qsTr("%n unread message(s)", "", root.bridge.unread_count)
+
+                HoverHandler {
+                    id: unreadHover
+                }
+
+                TapHandler {
+                    onTapped: {
+                        if (root.pageStack.depth > 1
+                                && typeof root.bridge.mark_read === "function") {
+                            root.bridge.mark_read()
+                        }
+                    }
+                }
+
                 Controls.Label {
                     id: unreadLabel
                     anchors.centerIn: parent
-                    text: root.bridge.unread_count
+                    text: root.bridge.unread_count > 99 ? "99+" : root.bridge.unread_count
                     color: Kirigami.Theme.highlightedTextColor
                     font.bold: true
                     font.pointSize: Math.max(1, Kirigami.Theme.defaultFont.pointSize - 1)
@@ -320,6 +474,15 @@ Kirigami.ApplicationWindow {
                 implicitHeight: Math.round(Kirigami.Units.gridUnit * 1.6)
                 radius: height / 2
                 color: ThemeEngine.withAlpha(Kirigami.Theme.textColor, 0.07)
+
+                Accessible.name: root.bridge.nickname
+
+                Controls.ToolTip.visible: nickHover.hovered
+                Controls.ToolTip.text: root.bridge.nickname
+
+                HoverHandler {
+                    id: nickHover
+                }
 
                 RowLayout {
                     id: nickChip
@@ -353,7 +516,35 @@ Kirigami.ApplicationWindow {
                 }
             }
 
+            // Proper toolbar: Search (Ctrl+F), Settings, Menu — each labelled
+            // with a tooltip.  (Search forwards to the chat page when one is
+            // open; it is disabled on the connection form.)
             Controls.ToolButton {
+                id: searchButton
+                icon.name: "edit-find"
+                text: qsTr("Search")
+                display: Controls.AbstractButton.IconOnly
+                enabled: root.pageStack.depth > 1
+                visible: root.pageStack.depth > 1
+                onClicked: root.focusChatSearch()
+
+                Controls.ToolTip.visible: hovered
+                Controls.ToolTip.text: qsTr("Search messages (Ctrl+F)")
+            }
+
+            Controls.ToolButton {
+                id: settingsButton
+                icon.name: "configure"
+                text: qsTr("Settings")
+                display: Controls.AbstractButton.IconOnly
+                onClicked: root.openSettings()
+
+                Controls.ToolTip.visible: hovered
+                Controls.ToolTip.text: qsTr("Settings")
+            }
+
+            Controls.ToolButton {
+                id: disconnectButton
                 icon.name: "network-disconnect"
                 text: qsTr("Disconnect")
                 display: Controls.AbstractButton.IconOnly
@@ -425,6 +616,31 @@ Kirigami.ApplicationWindow {
                     id: appMenu
 
                     Controls.MenuItem {
+                        text: root.bridge.connection_state === 0 ? qsTr("Connect") : qsTr("Disconnect")
+                        icon.name: root.bridge.connection_state === 0 ? "network-connect" : "network-disconnect"
+                        onTriggered: {
+                            if (root.bridge.connection_state === 0) {
+                                if (root.pageStack.depth > 1) {
+                                    root.pageStack.pop()
+                                }
+                            } else {
+                                root.userDisconnect = true
+                                reconnectTimer.stop()
+                                root.bridge.disconnect_server()
+                            }
+                        }
+                    }
+
+                    Controls.MenuItem {
+                        text: qsTr("Join channel…")
+                        icon.name: "list-add"
+                        enabled: root.pageStack.depth > 1 && root.bridge.connection_state === 2
+                        onTriggered: root.requestChatJoin()
+                    }
+
+                    Controls.MenuSeparator {}
+
+                    Controls.MenuItem {
                         text: root.trayVisibleLabel()
                         icon.name: root.visible ? "window-minimize" : "window-restore"
                         enabled: root.trayAvailable
@@ -442,11 +658,13 @@ Kirigami.ApplicationWindow {
                     Controls.MenuItem {
                         text: qsTr("Settings")
                         icon.name: "configure"
-                        onTriggered: {
-                            root.pageStack.push(Qt.resolvedUrl("SettingsPage.qml"), {
-                                "kircConfig": root.appConfig
-                            })
-                        }
+                        onTriggered: root.openSettings()
+                    }
+
+                    Controls.MenuItem {
+                        text: qsTr("About kIRC")
+                        icon.name: "help-about"
+                        onTriggered: root.openAbout()
                     }
 
                     Controls.MenuSeparator {}
@@ -464,6 +682,25 @@ Kirigami.ApplicationWindow {
         }
     }
 
+    // Global shortcuts: Search (Ctrl+F), Join channel (Ctrl+J), Settings.
+    // Top-level Shortcut items — ToolButton/MenuItem have no shortcut prop.
+    Shortcut {
+        sequence: "Ctrl+F"
+        enabled: root.pageStack.depth > 1
+        onActivated: root.focusChatSearch()
+    }
+
+    Shortcut {
+        sequence: "Ctrl+J"
+        enabled: root.pageStack.depth > 1 && root.bridge.connection_state === 2
+        onActivated: root.requestChatJoin()
+    }
+
+    Shortcut {
+        sequence: StandardKey.Preferences
+        onActivated: root.openSettings()
+    }
+
     // ---------------------------------------------------------------------- //
     // Page stack
     // ---------------------------------------------------------------------- //
@@ -471,7 +708,8 @@ Kirigami.ApplicationWindow {
         bridge: root.bridge
         kircConfig: root.appConfig
 
-        onConnectRequested: (host, port, tls, nickname, saslUser, saslPass) => {
+        // The form's SASL mechanism choice flows here (same 0/1/2 mapping).
+        onConnectRequested: (host, port, tls, nickname, saslUser, saslPass, saslMechanism) => {
             // Remember what was attempted; persisted once the connection
             // actually succeeds (state 2 below). The SASL password is kept in
             // memory only (never KConfig): reused by tryReconnect and handed
@@ -483,13 +721,17 @@ Kirigami.ApplicationWindow {
             root.lastNickname = nickname
             root.lastSaslUser = saslUser
             root.lastSaslPass = saslPass
+            root.lastSaslMechanism = (saslMechanism === undefined) ? root.saslMechanism : saslMechanism
+            root.saslMechanism = root.lastSaslMechanism
             if (root.appConfig !== null && root.appConfig.sessionSaslPassword !== undefined) {
                 root.appConfig.sessionSaslPassword = saslPass
             }
             root.userDisconnect = false
+            root.lastDropWasAuthFailure = false
             root.reconnectAttempt = 0
             reconnectTimer.stop()
 
+            root.applySaslMechanism()
             root.bridge.connect_server(host, port, tls, nickname, saslUser, saslPass)
             root.openChat()
         }
@@ -504,11 +746,30 @@ Kirigami.ApplicationWindow {
         function onState_changed(state) {
             if (state === 2) {
                 root.reconnectAttempt = 0
+                root.lastDropWasAuthFailure = false
                 reconnectTimer.stop()
                 root.saveProfile()
                 root.openChat()
             } else if (state === 0) {
                 if (!root.userDisconnect && root.wantReconnect() && root.lastHost.length > 0) {
+                    // Never retry an authentication failure unless the user
+                    // opted in: a bad password would otherwise 904-loop, and
+                    // the tray honors the same policy (KircTray::onConnect is
+                    // only reached from an explicit click).
+                    if (root.lastDropWasAuthFailure && !root.reconnectAfterAuthFailureAllowed()) {
+                        root.lastDropWasAuthFailure = false
+                        if (root.pageStack.depth > 1) {
+                            root.pageStack.pop()
+                        }
+                        return
+                    }
+                    var limit = root.reconnectLimit()
+                    if (limit > 0 && root.reconnectAttempt >= limit) {
+                        if (root.pageStack.depth > 1) {
+                            root.pageStack.pop()
+                        }
+                        return
+                    }
                     reconnectTimer.interval = Math.min(30000, 3000 * Math.pow(2, root.reconnectAttempt))
                     root.reconnectAttempt += 1
                     reconnectTimer.start()
@@ -521,12 +782,18 @@ Kirigami.ApplicationWindow {
         }
 
         function onNotification_fired(title, body) {
-            // In-app notice; the C++ side mirrors the same signal into a
-            // native KNotification (cpp/kircnotify.cpp).
+            // Native KNotification is the C++ side's job (cpp/kircnotify.cpp);
+            // the in-app notice is gated here on the notification prefs.
+            if (!root.notificationsAllowed(title)) {
+                return
+            }
             root.showPassiveNotification(title.length > 0 ? (title + " — " + body) : body)
         }
 
         function onError_occurred(message) {
+            if (root.looksLikeAuthFailure(message)) {
+                root.lastDropWasAuthFailure = true
+            }
             root.showPassiveNotification(message, 5000)
         }
 
@@ -555,6 +822,7 @@ Kirigami.ApplicationWindow {
         if (root.userDisconnect || root.lastHost.length === 0) {
             return
         }
+        root.applySaslMechanism()
         root.bridge.connect_server(root.lastHost, root.lastPort, root.lastTls,
                                    root.lastNickname, root.lastSaslUser, root.lastSaslPass)
     }
@@ -564,12 +832,152 @@ Kirigami.ApplicationWindow {
         return root.appConfig !== null && root.appConfig.reconnect
     }
 
+    /// Max automatic reconnect attempts (0 = unlimited).  Defaults to 10 so
+    /// a dead network cannot retry forever; harnesses without prefs behave
+    /// as unlimited.
+    function reconnectLimit()
+    {
+        if (root.appConfig !== null && root.appConfig.reconnectLimit !== undefined) {
+            return root.appConfig.reconnectLimit
+        }
+        return 0
+    }
+
+    /// Whether an authentication-failure drop may be retried.  Off unless the
+    /// user opts in, so a bad SASL/NickServ password never loops.
+    function reconnectAfterAuthFailureAllowed()
+    {
+        if (root.appConfig !== null && root.appConfig.reconnectAfterAuthFailure !== undefined) {
+            return root.appConfig.reconnectAfterAuthFailure
+        }
+        return false
+    }
+
+    /// True when `message` looks like a SASL/authentication failure (904-907,
+    /// "authentication failed", NickServ "invalid password" / "not registered").
+    function looksLikeAuthFailure(message)
+    {
+        if (message === undefined || message === null) {
+            return false
+        }
+        var m = String(message).toLowerCase()
+        return m.indexOf("904") >= 0 || m.indexOf("905") >= 0
+            || m.indexOf("906") >= 0 || m.indexOf("907") >= 0
+            || m.indexOf("sasl authentication failed") >= 0
+            || m.indexOf("authentication failed") >= 0
+            || m.indexOf("invalid password") >= 0
+            || m.indexOf("password incorrect") >= 0
+            || m.indexOf("not registered") >= 0
+    }
+
+    /// Gate for notification_fired: highlights need notifyHighlights, a
+    /// private-message title (a nick, not a #channel) needs
+    /// notifyDirectMessages.  Harnesses without prefs allow everything.
+    function notificationsAllowed(title)
+    {
+        if (root.appConfig === null) {
+            return true
+        }
+        var highlights = root.appConfig.notifyHighlights
+        var directs = root.appConfig.notifyDirectMessages
+        if (highlights === undefined && directs === undefined) {
+            return true
+        }
+        var t = String(title === undefined || title === null ? "" : title)
+        var isChannel = t.length > 0 && (t.charAt(0) === "#" || t.charAt(0) === "&"
+                      || t.charAt(0) === "+" || t.charAt(0) === "!")
+        if (isChannel) {
+            return highlights === undefined ? true : highlights
+        }
+        // Private message (or untitled notice): both prefs apply.
+        if (highlights !== undefined && !highlights) {
+            return false
+        }
+        return directs === undefined ? true : directs
+    }
+
+    /// Push the persisted SASL mechanism into the bridge.  Must run BEFORE
+    /// connect_server (bridge contract).  Guarded with typeof so harnesses
+    /// whose stub predates set_sasl_mechanism keep working.
+    function applySaslMechanism()
+    {
+        if (typeof root.bridge.set_sasl_mechanism !== "function") {
+            return
+        }
+        root.bridge.set_sasl_mechanism(root.saslMechanism)
+    }
+
+    /// Open the chat page's join dialog when it exists; otherwise drive the
+    /// chat page's own join entry (both owned by ChatPage, guarded by
+    /// typeof so harnesses without them keep working).
+    // qmllint disable missing-property
+    function requestChatJoin()
+    {
+        var page = root.pageStack.currentItem
+        if (page) {
+            if (typeof page["openJoinDialog"] === "function") {
+                page["openJoinDialog"]()
+                return
+            }
+            // Older ChatPage without the dialog: drive its join entry when
+            // present (it sends JOIN via the bridge itself).
+            if (typeof page["tryJoin"] === "function") {
+                page["tryJoin"]()
+                return
+            }
+        }
+    }
+    // qmllint enable missing-property
+
+    /// Give the chat page's search field focus (Ctrl+F toolbar action).
+    /// No-op when no chat page is open or it has no search UI.
+    // qmllint disable missing-property
+    function focusChatSearch()
+    {
+        var page = root.pageStack.currentItem
+        if (page && typeof page["focusSearch"] === "function") {
+            page["focusSearch"]()
+        }
+    }
+    // qmllint enable missing-property
+
+    /// Push the settings pane (single instance: pop back to it if open).
+    function openSettings()
+    {
+        for (var i = 0; i < root.pageStack.depth; ++i) {
+            var item = root.pageStack.get(i)
+            if (item && item.isKircSettingsPage) {
+                while (root.pageStack.depth - 1 > i) {
+                    root.pageStack.pop()
+                }
+                return
+            }
+        }
+        root.pageStack.push(Qt.resolvedUrl("SettingsPage.qml"), {
+            "kircConfig": root.appConfig
+        })
+    }
+
+    /// The About content lives in the settings pane's About section.
+    // qmllint disable missing-property
+    function openAbout()
+    {
+        root.openSettings()
+        var page = root.pageStack.currentItem
+        if (page && typeof page["showAbout"] === "function") {
+            page["showAbout"]()
+        }
+    }
+    // qmllint enable missing-property
+
     function closeCurrentBuffer()
     {
         var page = root.pageStack.currentItem
-        if (page && page.closeBuffer) {
-            page.closeBuffer(root.chatChannel)
+        // qmllint disable missing-property
+        if (page && page["closeBuffer"]) {
+            page["closeBuffer"](root.chatChannel)
         }
+        // qmllint enable missing-property
     }
 
     /// Persist the profile that just connected. host/port/tls/nickname and the

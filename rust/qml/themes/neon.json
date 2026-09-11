@@ -35,12 +35,40 @@
         "nickSize": 0
     },
     "colors": {
-        "nickSatMin": 0.70,
+        "nickSatMin": 0.7,
         "nickSatMax": 0.95,
-        "nickLightnessDark": 0.70,
-        "nickLightnessLight": 0.40,
+        "nickLightnessDark": 0.7,
+        "nickLightnessLight": 0.4,
         "linkify": true,
         "highlightIsBold": true,
         "linkColor": ""
+    },
+    "surfaces": {
+        "surface": "#12161b",
+        "surfaceAlt": "#1a2129",
+        "sidebarSurface": "#0d1116",
+        "cardBackground": "#1a2129",
+        "cardBorder": "#2e3d4d",
+        "cardRadius": 10,
+        "cardPadding": 12,
+        "rowRadius": 6,
+        "rowHover": "#222d38",
+        "rowSelected": "#27374a",
+        "rowHeight": 36,
+        "accent": "#35d0ff",
+        "accentText": "#0b0e11",
+        "mutedText": "#8b98a5",
+        "sectionHeader": "#8b98a5",
+        "sectionHeaderSize": 0,
+        "eventText": "#8b98a5",
+        "eventSize": 0,
+        "statusOnline": "#3ddc84",
+        "statusAway": "#ffb020",
+        "statusOffline": "#5b6b7a",
+        "unreadBadge": "#35d0ff",
+        "unreadBadgeText": "#0b0e11",
+        "inputRadius": 6,
+        "shadowOpacity": 0.35,
+        "headerHeight": 48
     }
 }

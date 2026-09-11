@@ -17,8 +17,9 @@
 .pragma library
 
 // --- built-in theme ids -----------------------------------------------------
-// Order matters: this is the order of the theme menu.
-var BUILTIN_IDS = ["breeze", "breeze-classic", "oxygen", "neon"]
+// Order matters: this is the order of the theme menu. "fluent" is first: it
+// is the default for fresh installs.
+var BUILTIN_IDS = ["fluent", "fluent-light", "breeze", "breeze-classic", "oxygen", "neon"]
 
 // Older builds shipped the modern default under this id; keep it working for
 // anyone with it in kirc.conf.
@@ -26,9 +27,126 @@ var ALIASES = {"breeze-dark-default": "breeze"}
 
 // --- built-in themes (mirror of qml/themes/*.json) --------------------------
 var builtins = {
-    // The default: modern bubble chat with avatars, grouped messages and
-    // subtle motion. Colours come from the KDE palette, so it is correct in
-    // both Breeze Light and Breeze Dark.
+    // The default: Fluent-style layered surfaces, soft shadows, rounded
+    // cards, bubble chat with avatars and grouped messages. Colour tokens in
+    // `surfaces` are empty, which means "fall back to the Kirigami palette at
+    // the call site" — so Breeze Light, Breeze Dark and custom schemes all
+    // look right. Geometry (radii, shadow) carries the Fluent character.
+    "fluent": {
+        "id": "fluent",
+        "name": "Fluent",
+        "mode": "bubble",
+        "bubble": {
+            "radius": 12,
+            "spacing": 6,
+            "groupSpacing": 2,
+            "tailRadius": 5,
+            "maxWidthFraction": 0.78,
+            "selfColor": "",
+            "otherColor": ""
+        },
+        "dense": {"lineSpacing": 3},
+        "avatar": {"enabled": true, "size": 0},
+        "grouping": {"enabled": true, "windowMinutes": 5},
+        "motion": {"enabled": true, "duration": 140},
+        "sidebar": {"width": 0},
+        "fonts": {"messageSize": 0, "timestampSize": 0, "nickSize": 0},
+        "colors": {
+            "nickSatMin": 0.55,
+            "nickSatMax": 0.70,
+            "nickLightnessDark": 0.62,
+            "nickLightnessLight": 0.35,
+            "linkify": true,
+            "highlightIsBold": true,
+            "linkColor": ""
+        },
+        "surfaces": {
+            "surface": "",
+            "surfaceAlt": "",
+            "sidebarSurface": "",
+            "cardBackground": "",
+            "cardBorder": "",
+            "cardRadius": 8,
+            "cardPadding": 12,
+            "rowRadius": 6,
+            "rowHover": "",
+            "rowSelected": "",
+            "rowHeight": 36,
+            "accent": "",
+            "accentText": "",
+            "mutedText": "",
+            "sectionHeader": "",
+            "sectionHeaderSize": 0,
+            "eventText": "",
+            "eventSize": 0,
+            "statusOnline": "",
+            "statusAway": "",
+            "statusOffline": "",
+            "unreadBadge": "",
+            "unreadBadgeText": "",
+            "inputRadius": 4,
+            "shadowOpacity": 0.18,
+            "headerHeight": 48
+        }
+    },
+    // Same Fluent geometry, tuned for light schemes (softer shadow).
+    "fluent-light": {
+        "id": "fluent-light",
+        "name": "Fluent Light",
+        "mode": "bubble",
+        "bubble": {
+            "radius": 12,
+            "spacing": 6,
+            "groupSpacing": 2,
+            "tailRadius": 5,
+            "maxWidthFraction": 0.78,
+            "selfColor": "",
+            "otherColor": ""
+        },
+        "dense": {"lineSpacing": 3},
+        "avatar": {"enabled": true, "size": 0},
+        "grouping": {"enabled": true, "windowMinutes": 5},
+        "motion": {"enabled": true, "duration": 140},
+        "sidebar": {"width": 0},
+        "fonts": {"messageSize": 0, "timestampSize": 0, "nickSize": 0},
+        "colors": {
+            "nickSatMin": 0.55,
+            "nickSatMax": 0.70,
+            "nickLightnessDark": 0.62,
+            "nickLightnessLight": 0.35,
+            "linkify": true,
+            "highlightIsBold": true,
+            "linkColor": ""
+        },
+        "surfaces": {
+            "surface": "",
+            "surfaceAlt": "",
+            "sidebarSurface": "",
+            "cardBackground": "",
+            "cardBorder": "",
+            "cardRadius": 8,
+            "cardPadding": 12,
+            "rowRadius": 6,
+            "rowHover": "",
+            "rowSelected": "",
+            "rowHeight": 36,
+            "accent": "",
+            "accentText": "",
+            "mutedText": "",
+            "sectionHeader": "",
+            "sectionHeaderSize": 0,
+            "eventText": "",
+            "eventSize": 0,
+            "statusOnline": "",
+            "statusAway": "",
+            "statusOffline": "",
+            "unreadBadge": "",
+            "unreadBadgeText": "",
+            "inputRadius": 4,
+            "shadowOpacity": 0.12,
+            "headerHeight": 48
+        }
+    },
     "breeze": {
         "id": "breeze",
         "name": "Breeze",
@@ -56,6 +174,34 @@ var builtins = {
             "linkify": true,
             "highlightIsBold": true,
             "linkColor": ""
+        },
+        "surfaces": {
+            "surface": "",
+            "surfaceAlt": "",
+            "sidebarSurface": "",
+            "cardBackground": "",
+            "cardBorder": "",
+            "cardRadius": 6,
+            "cardPadding": 12,
+            "rowRadius": 4,
+            "rowHover": "",
+            "rowSelected": "",
+            "rowHeight": 36,
+            "accent": "",
+            "accentText": "",
+            "mutedText": "",
+            "sectionHeader": "",
+            "sectionHeaderSize": 0,
+            "eventText": "",
+            "eventSize": 0,
+            "statusOnline": "",
+            "statusAway": "",
+            "statusOffline": "",
+            "unreadBadge": "",
+            "unreadBadgeText": "",
+            "inputRadius": 4,
+            "shadowOpacity": 0,
+            "headerHeight": 48
         }
     },
     // The classic IRC look: one compact line per message, no avatars.
@@ -86,6 +232,34 @@ var builtins = {
             "linkify": true,
             "highlightIsBold": true,
             "linkColor": ""
+        },
+        "surfaces": {
+            "surface": "",
+            "surfaceAlt": "",
+            "sidebarSurface": "",
+            "cardBackground": "",
+            "cardBorder": "",
+            "cardRadius": 6,
+            "cardPadding": 12,
+            "rowRadius": 4,
+            "rowHover": "",
+            "rowSelected": "",
+            "rowHeight": 36,
+            "accent": "",
+            "accentText": "",
+            "mutedText": "",
+            "sectionHeader": "",
+            "sectionHeaderSize": 0,
+            "eventText": "",
+            "eventSize": 0,
+            "statusOnline": "",
+            "statusAway": "",
+            "statusOffline": "",
+            "unreadBadge": "",
+            "unreadBadgeText": "",
+            "inputRadius": 4,
+            "shadowOpacity": 0,
+            "headerHeight": 48
         }
     },
     "oxygen": {
@@ -115,8 +289,37 @@ var builtins = {
             "linkify": true,
             "highlightIsBold": true,
             "linkColor": ""
+        },
+        "surfaces": {
+            "surface": "",
+            "surfaceAlt": "",
+            "sidebarSurface": "",
+            "cardBackground": "",
+            "cardBorder": "",
+            "cardRadius": 8,
+            "cardPadding": 12,
+            "rowRadius": 6,
+            "rowHover": "",
+            "rowSelected": "",
+            "rowHeight": 36,
+            "accent": "",
+            "accentText": "",
+            "mutedText": "",
+            "sectionHeader": "",
+            "sectionHeaderSize": 0,
+            "eventText": "",
+            "eventSize": 0,
+            "statusOnline": "",
+            "statusAway": "",
+            "statusOffline": "",
+            "unreadBadge": "",
+            "unreadBadgeText": "",
+            "inputRadius": 6,
+            "shadowOpacity": 0,
+            "headerHeight": 48
         }
     },
+    // Fixed dark look: explicit surfaces, neon accent.
     "neon": {
         "id": "neon",
         "name": "Neon",
@@ -144,13 +347,41 @@ var builtins = {
             "linkify": true,
             "highlightIsBold": true,
             "linkColor": ""
+        },
+        "surfaces": {
+            "surface": "#12161b",
+            "surfaceAlt": "#1a2129",
+            "sidebarSurface": "#0d1116",
+            "cardBackground": "#1a2129",
+            "cardBorder": "#2e3d4d",
+            "cardRadius": 10,
+            "cardPadding": 12,
+            "rowRadius": 6,
+            "rowHover": "#222d38",
+            "rowSelected": "#27374a",
+            "rowHeight": 36,
+            "accent": "#35d0ff",
+            "accentText": "#0b0e11",
+            "mutedText": "#8b98a5",
+            "sectionHeader": "#8b98a5",
+            "sectionHeaderSize": 0,
+            "eventText": "#8b98a5",
+            "eventSize": 0,
+            "statusOnline": "#3ddc84",
+            "statusAway": "#ffb020",
+            "statusOffline": "#5b6b7a",
+            "unreadBadge": "#35d0ff",
+            "unreadBadgeText": "#0b0e11",
+            "inputRadius": 6,
+            "shadowOpacity": 0.35,
+            "headerHeight": 48
         }
     }
 }
 
 // --- defaults for anything the JSON does not (or wrongly) specify ----------
-// Identical to the `breeze` built-in: the default theme *is* the modern look.
-var DEFAULTS = builtins["breeze"]
+// The default theme *is* the modern Fluent look.
+var DEFAULTS = builtins["fluent"]
 
 // Resolve a legacy/aliased theme id.
 function canonicalId(id)
@@ -223,13 +454,38 @@ function nickInitial(nick)
 }
 
 // ---------------------------------------------------------------------------
+// Event rows + day separators.
+//
+// The bridge synthesizes join/part/quit/mode/topic lines with nick "*" (and
+// server-console lines use "*" too). Those are not chat: they render as muted
+// compact event rows and they always break message groups.
+// ---------------------------------------------------------------------------
+
+// True for the decorative nicks ("*" or empty) that mark an event row.
+function isEventNick(nick)
+{
+    var s = String(nick === undefined || nick === null ? "" : nick).trim()
+    return s === "" || s === "*"
+}
+
+// True for a row object (nick/timestamp/isSelf) that renders as an event row.
+// Tolerates half-initialised neighbours (missing values => not an event).
+function isEventRow(row)
+{
+    if (row === undefined || row === null) {
+        return false
+    }
+    return isEventNick(row.nick)
+}
+
+// ---------------------------------------------------------------------------
 // Message grouping.
 //
 // The model only exposes a preformatted local time ("HH:MM", optionally
 // "HH:MM:SS"), so two messages belong to the same group when they are from the
 // same person (same self/other side too) and no more than `windowMinutes`
 // apart. Anything unparseable is *not* grouped — a wrong avatar is worse than
-// a duplicated one.
+// a duplicated one. Event rows never group, with anything.
 // ---------------------------------------------------------------------------
 
 // "HH:MM[:SS]" -> minutes since midnight, or -1 when not understood.
@@ -265,6 +521,9 @@ function sameGroup(prevNick, prevTs, prevSelf, nick, ts, isSelf, windowMinutes)
     if (a.toLowerCase() !== b.toLowerCase()) {
         return false
     }
+    if (isEventNick(a) || isEventNick(b)) {
+        return false
+    }
     if (Boolean(prevSelf) !== Boolean(isSelf)) {
         return false
     }
@@ -287,6 +546,49 @@ function rowsAreGrouped(prev, row, windowMinutes)
     }
     return sameGroup(prev.nick, prev.timestamp, prev.isSelf,
                      row.nick, row.timestamp, row.isSelf, windowMinutes)
+}
+
+// ---------------------------------------------------------------------------
+// Day separators.
+//
+// Timestamps carry no date, so a clock running backwards (23:59 -> 00:01) is
+// the only day signal. The delegate computes this once per row at settle time
+// (never per frame) and renders a small centred pill above the row.
+// ---------------------------------------------------------------------------
+
+// "HH:MM" clock strings -> true when `ts` is earlier than `prevTs`, i.e. the
+// day rolled over between them. Unparseable sides never open a separator.
+function dayBoundaryMinutes(prevTs, ts)
+{
+    var t1 = parseTimestampMinutes(prevTs)
+    var t2 = parseTimestampMinutes(ts)
+    if (t1 < 0 || t2 < 0) {
+        return false
+    }
+    return t2 < t1
+}
+
+// Row-object wrapper for the delegate's neighbour lookups.
+function dayBoundaryRows(prev, row)
+{
+    if (prev === undefined || prev === null || row === undefined || row === null) {
+        return false
+    }
+    return dayBoundaryMinutes(prev.timestamp, row.timestamp)
+}
+
+// True when no later rollover follows `row` — its day is the latest one shown,
+// so the pill reads "Today", otherwise "Yesterday". (With HH:MM stamps the
+// exact calendar date is unknowable; relative labels stay honest.)
+function latestDayRows(row, next)
+{
+    if (row === undefined || row === null) {
+        return true
+    }
+    if (next === undefined || next === null) {
+        return true
+    }
+    return !dayBoundaryMinutes(row.timestamp, next.timestamp)
 }
 
 // ---------------------------------------------------------------------------
@@ -340,22 +642,33 @@ function isPlainObject(v)
     return v !== null && typeof v === "object" && !(v instanceof Array)
 }
 
+function copySection(section)
+{
+    var out = {}
+    for (var k in section) { out[k] = section[k] }
+    return out
+}
+
 function mergeTheme(override)
 {
     var out = {}
     for (var k in DEFAULTS) {
-        out[k] = DEFAULTS[k]
+        out[k] = isPlainObject(DEFAULTS[k]) ? copySection(DEFAULTS[k]) : DEFAULTS[k]
     }
     if (!isPlainObject(override)) {
         return out
     }
     for (var key in override) {
         var val = override[key]
-        if (isPlainObject(DEFAULTS[key]) && isPlainObject(val)) {
-            var merged = {}
-            for (var dk in DEFAULTS[key]) { merged[dk] = DEFAULTS[key][dk] }
+        if (isPlainObject(out[key]) && isPlainObject(val)) {
+            var merged = copySection(out[key])
             for (var ok in val) { merged[ok] = val[ok] }
             out[key] = merged
+        } else if (!isPlainObject(out[key]) && val !== undefined && val !== null) {
+            out[key] = val
+        } else if (isPlainObject(out[key]) && !isPlainObject(val)) {
+            // Wrong-typed section (e.g. "surfaces": "dark"): keep defaults
+            // instead of crashing every binding that reads the section.
         } else if (val !== undefined && val !== null) {
             out[key] = val
         }
@@ -376,6 +689,16 @@ function mergeTheme(override)
     out.grouping.windowMinutes = clampNumber(out.grouping.windowMinutes, 0, 1440, DEFAULTS.grouping.windowMinutes)
     out.motion.duration = clampNumber(out.motion.duration, 0, 1000, DEFAULTS.motion.duration)
     out.sidebar.width = clampNumber(out.sidebar.width, 0, 4096, DEFAULTS.sidebar.width)
+    var surf = out.surfaces
+    surf.cardRadius = clampNumber(surf.cardRadius, 0, 64, DEFAULTS.surfaces.cardRadius)
+    surf.cardPadding = clampNumber(surf.cardPadding, 0, 64, DEFAULTS.surfaces.cardPadding)
+    surf.rowRadius = clampNumber(surf.rowRadius, 0, 64, DEFAULTS.surfaces.rowRadius)
+    surf.rowHeight = clampNumber(surf.rowHeight, 0, 256, DEFAULTS.surfaces.rowHeight)
+    surf.inputRadius = clampNumber(surf.inputRadius, 0, 64, DEFAULTS.surfaces.inputRadius)
+    surf.shadowOpacity = clampNumber(surf.shadowOpacity, 0, 1, DEFAULTS.surfaces.shadowOpacity)
+    surf.headerHeight = clampNumber(surf.headerHeight, 0, 512, DEFAULTS.surfaces.headerHeight)
+    surf.sectionHeaderSize = clampNumber(surf.sectionHeaderSize, 0, 64, DEFAULTS.surfaces.sectionHeaderSize)
+    surf.eventSize = clampNumber(surf.eventSize, 0, 64, DEFAULTS.surfaces.eventSize)
     return out
 }
 

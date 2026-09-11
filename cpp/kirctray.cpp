@@ -260,6 +260,14 @@ void KircTray::onConnect()
         return;
     }
     showWindow();
+    // Mechanism must be selected BEFORE connect_server (bridge contract):
+    // 0 = auto, 1 = PLAIN, 2 = EXTERNAL.  invokeMethod returns false when
+    // the bridge predates set_sasl_mechanism; connect must still proceed.
+    if (!QMetaObject::invokeMethod(m_bridge,
+                                   "set_sasl_mechanism",
+                                   Q_ARG(int, m_config->saslMechanism()))) {
+        qWarning("kIRC: tray could not invoke IrcBridge::set_sasl_mechanism");
+    }
     // Reconnect from the last saved profile.  The SASL password is memory-only
     // (KircConfig::sessionSaslPassword, never on disk): empty unless the user
     // connected with SASL this session, in which case reuse it so the tray

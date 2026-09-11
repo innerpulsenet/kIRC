@@ -269,6 +269,7 @@ fn base_config(port: u16, sasl: Option<SaslConfig>) -> ConnectionConfig {
         realname: "kIRC test".to_string(),
         server_password: None,
         sasl,
+        sasl_mechanism: 0,
         request_caps: vec![],
     }
 }

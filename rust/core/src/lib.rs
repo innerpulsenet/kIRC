@@ -29,6 +29,7 @@
 //!     realname: "kIRC test".into(),
 //!     server_password: None,
 //!     sasl: None,
+//!     sasl_mechanism: 0,
 //!     request_caps: vec![],
 //! };
 //! let (event_tx, mut event_rx) = mpsc::channel::<IrcEvent>(64);

@@ -6,6 +6,7 @@ QtObject {
 
     property int connection_state: 0
     property int unread_count: 0
+    property int sasl_mechanism: 0
     property string nickname: ""
     property string connected_server: ""
 
@@ -25,6 +26,10 @@ QtObject {
     function mark_read() {
         console.error("STUB mark_read()")
         bridge.unread_count = 0
+    }
+    function set_sasl_mechanism(mechanism) {
+        console.error("STUB set_sasl_mechanism(" + mechanism + ")")
+        bridge.sasl_mechanism = mechanism
     }
     function connect_server(host, port, tls, nickname, sasl_user, sasl_pass) {
         console.error("STUB connect_server(" + host + ", " + port + ", " + tls + ", " + nickname + ", " + sasl_user + ")")

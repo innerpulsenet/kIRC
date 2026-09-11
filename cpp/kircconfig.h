@@ -35,7 +35,15 @@ class KircConfig : public QObject
     Q_PROPERTY(bool tls READ tls WRITE setTls NOTIFY tlsChanged)
     Q_PROPERTY(QString nickname READ nickname WRITE setNickname NOTIFY nicknameChanged)
     Q_PROPERTY(QString saslUser READ saslUser WRITE setSaslUser NOTIFY saslUserChanged)
+    Q_PROPERTY(int windowWidth READ windowWidth WRITE setWindowWidth NOTIFY windowWidthChanged)
+    Q_PROPERTY(int windowHeight READ windowHeight WRITE setWindowHeight NOTIFY windowHeightChanged)
+    Q_PROPERTY(int saslMechanism READ saslMechanism WRITE setSaslMechanism NOTIFY saslMechanismChanged)
+    Q_PROPERTY(bool notifyHighlights READ notifyHighlights WRITE setNotifyHighlights NOTIFY notifyHighlightsChanged)
+    Q_PROPERTY(bool notifyDirectMessages READ notifyDirectMessages WRITE setNotifyDirectMessages NOTIFY notifyDirectMessagesChanged)
+    Q_PROPERTY(int reconnectLimit READ reconnectLimit WRITE setReconnectLimit NOTIFY reconnectLimitChanged)
+    Q_PROPERTY(bool reconnectAfterAuthFailure READ reconnectAfterAuthFailure WRITE setReconnectAfterAuthFailure NOTIFY reconnectAfterAuthFailureChanged)
     Q_PROPERTY(bool minimizeToTray READ minimizeToTray WRITE setMinimizeToTray NOTIFY minimizeToTrayChanged)
+    Q_PROPERTY(bool showTimestamps READ showTimestamps WRITE setShowTimestamps NOTIFY showTimestampsChanged)
     Q_PROPERTY(QString themeId READ themeId WRITE setThemeId NOTIFY themeIdChanged)
     Q_PROPERTY(QString autojoin READ autojoin WRITE setAutojoin NOTIFY autojoinChanged)
     Q_PROPERTY(bool reconnect READ reconnect WRITE setReconnect NOTIFY reconnectChanged)
@@ -67,6 +75,35 @@ public:
 
     QString saslUser() const;
     void setSaslUser(const QString &saslUser);
+
+    int windowWidth() const;
+    void setWindowWidth(int windowWidth);
+
+    int windowHeight() const;
+    void setWindowHeight(int windowHeight);
+
+    /// SASL mechanism: 0 = auto, 1 = PLAIN, 2 = EXTERNAL.  Kept in sync with
+    /// IrcBridge::set_sasl_mechanism.  (SCRAM-SHA-256-only is "Auto".)
+    int saslMechanism() const;
+    void setSaslMechanism(int saslMechanism);
+
+    bool notifyHighlights() const;
+    void setNotifyHighlights(bool notifyHighlights);
+
+    bool notifyDirectMessages() const;
+    void setNotifyDirectMessages(bool notifyDirectMessages);
+
+    /// Max automatic reconnect attempts after a drop (0 = unlimited).
+    int reconnectLimit() const;
+    void setReconnectLimit(int reconnectLimit);
+
+    /// Whether a drop that looks like an authentication failure may be
+    /// retried.  Off by default so a bad password cannot SASL-904-loop.
+    bool reconnectAfterAuthFailure() const;
+    void setReconnectAfterAuthFailure(bool reconnectAfterAuthFailure);
+
+    bool showTimestamps() const;
+    void setShowTimestamps(bool showTimestamps);
 
     bool minimizeToTray() const;
     void setMinimizeToTray(bool minimizeToTray);
@@ -111,6 +148,14 @@ Q_SIGNALS:
     void tlsChanged();
     void nicknameChanged();
     void saslUserChanged();
+    void windowWidthChanged();
+    void windowHeightChanged();
+    void saslMechanismChanged();
+    void notifyHighlightsChanged();
+    void notifyDirectMessagesChanged();
+    void reconnectLimitChanged();
+    void reconnectAfterAuthFailureChanged();
+    void showTimestampsChanged();
     void minimizeToTrayChanged();
     void themeIdChanged();
     void autojoinChanged();
@@ -129,8 +174,16 @@ private:
     bool m_tls = true;
     QString m_nickname = QStringLiteral("kircuser");
     QString m_saslUser;
+    int m_windowWidth = 1024;
+    int m_windowHeight = 700;
+    int m_saslMechanism = 0; // 0 = auto, 1 = PLAIN, 2 = EXTERNAL
+    bool m_notifyHighlights = true;
+    bool m_notifyDirectMessages = true;
+    int m_reconnectLimit = 10; // 0 = unlimited
+    bool m_reconnectAfterAuthFailure = false;
+    bool m_showTimestamps = true;
     bool m_minimizeToTray = true;
-    QString m_themeId = QStringLiteral("breeze");
+    QString m_themeId = QStringLiteral("fluent");
     QString m_autojoin;
     bool m_reconnect = true;
     int m_fontDelta = 0;

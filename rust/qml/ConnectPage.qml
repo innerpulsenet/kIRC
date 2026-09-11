@@ -45,6 +45,20 @@ Kirigami.Page {
     property alias saslUser: saslUserField.text
     property alias saslPass: saslPassField.text
 
+    // SASL mechanism id, same mapping as IrcBridge::set_sasl_mechanism and
+    // KircConfig.saslMechanism: 0 = Auto, 1 = PLAIN, 2 = EXTERNAL.
+    // (SCRAM-SHA-256-only is "Auto".)
+    property int saslMechanism: 0
+
+    function saslMechanismLabel(id)
+    {
+        switch (id) {
+        case 1: return qsTr("PLAIN")
+        case 2: return qsTr("EXTERNAL (client certificate)")
+        }
+        return qsTr("Auto")
+    }
+
     // Last error pushed by the bridge, shown as an inline hint until the user
     // tries again.
     property string lastError: ""
@@ -65,7 +79,7 @@ Kirigami.Page {
     readonly property color hairline: ThemeEngine.withAlpha(Kirigami.Theme.textColor, 0.12)
     readonly property color fieldColor: Kirigami.Theme.alternateBackgroundColor
 
-    signal connectRequested(string host, int port, bool tls, string nickname, string saslUser, string saslPass)
+    signal connectRequested(string host, int port, bool tls, string nickname, string saslUser, string saslPass, int saslMechanism)
 
     Connections {
         target: page.bridge
@@ -102,6 +116,9 @@ Kirigami.Page {
         if (cfg.saslUser.length > 0) {
             page.saslEnabled = true
             page.saslUser = cfg.saslUser
+        }
+        if (cfg.saslMechanism !== undefined && cfg.saslMechanism >= 0 && cfg.saslMechanism <= 2) {
+            page.saslMechanism = cfg.saslMechanism
         }
     }
 
@@ -456,12 +473,63 @@ Kirigami.Page {
                                         anchors.fill: parent
                                         // Never written to disk: kirc.conf is plaintext.
                                         placeholderText: qsTr("SASL password (not saved)")
-                                        echoMode: TextInput.Password
+                                        echoMode: showSaslPass.checked ? TextInput.Normal : TextInput.Password
                                         background: null
                                         leftPadding: page.fieldIconInset
-                                        rightPadding: Kirigami.Units.smallSpacing * 2
+                                        rightPadding: showSaslPass.width + Kirigami.Units.smallSpacing * 3
                                         onAccepted: page.tryConnect()
                                         onTextEdited: page.lastError = ""
+                                    }
+
+                                    Controls.ToolButton {
+                                        id: showSaslPass
+                                        anchors.right: parent.right
+                                        anchors.rightMargin: Kirigami.Units.smallSpacing
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        checkable: true
+                                        icon.name: checked ? "password-show-off" : "password-show-on"
+                                        text: qsTr("Show password")
+
+                                        Controls.ToolTip.visible: hovered
+                                        Controls.ToolTip.text: checked ? qsTr("Hide password") : qsTr("Show password")
+                                    }
+                                }
+
+                                // ---- SASL mechanism ----
+                                RowLayout {
+                                    Layout.fillWidth: true
+                                    spacing: Kirigami.Units.smallSpacing
+
+                                    Controls.Label {
+                                        text: qsTr("Mechanism")
+                                        color: Kirigami.Theme.textColor
+                                        opacity: 0.75
+                                        font.bold: true
+                                        font.pointSize: Math.max(1, Kirigami.Theme.defaultFont.pointSize - 1)
+                                        Layout.alignment: Qt.AlignVCenter
+                                    }
+
+                                    Item { Layout.fillWidth: true }
+
+                                    Controls.ComboBox {
+                                        id: saslMechBox
+                                        Layout.preferredWidth: Math.round(Kirigami.Units.gridUnit * 11)
+                                        model: [0, 1, 2]
+                                        currentIndex: Math.max(0, Math.min(2, page.saslMechanism))
+                                        textRole: ""
+                                        displayText: page.saslMechanismLabel(currentValue !== undefined ? currentValue : page.saslMechanism)
+                                        onActivated: (index) => {
+                                            page.saslMechanism = model[index]
+                                        }
+                                        delegate: Controls.ItemDelegate {
+                                            required property var modelData
+                                            width: saslMechBox.width
+                                            text: page.saslMechanismLabel(modelData)
+                                            highlighted: saslMechBox.currentValue === modelData
+                                        }
+
+                                        Controls.ToolTip.visible: hovered
+                                        Controls.ToolTip.text: qsTr("Auto negotiates SCRAM-SHA-256 when advertised, else PLAIN")
                                     }
                                 }
                             }
@@ -574,6 +642,7 @@ Kirigami.Page {
                               tlsSwitch.checked,
                               nickField.text,
                               saslSwitch.checked ? saslUserField.text : "",
-                              saslSwitch.checked ? saslPassField.text : "")
+                              saslSwitch.checked ? saslPassField.text : "",
+                              saslSwitch.checked ? page.saslMechanism : 0)
     }
 }

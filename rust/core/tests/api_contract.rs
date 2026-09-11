@@ -77,6 +77,7 @@ fn connection_config_fields() {
             username: "u".into(),
             password: "p".into(),
         }),
+        sasl_mechanism: 0,
         request_caps: vec!["draft/example".into()],
     };
     let _: String = cfg.host;

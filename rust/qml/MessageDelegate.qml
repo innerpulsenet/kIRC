@@ -50,6 +50,12 @@ Item {
     // Gaps to the previous/next message are set by recomputeGrouping().
     property bool continuesPrevious: false
     property bool continuesNext: false
+    // True when the clock ran backwards across the previous row (day
+    // rollover): a small centred pill is rendered above this row.
+    property bool showDaySeparator: false
+    // True when no later rollover follows this row — its day is the latest
+    // shown, so the pill reads "Today", otherwise "Yesterday".
+    property bool latestDay: true
 
     readonly property bool hovered: hoverHandler.hovered
 
@@ -78,13 +84,20 @@ Item {
     readonly property int avatarPx: ThemeEngine.avatarSizeFor(Kirigami.Units.gridUnit)
     readonly property int avatarGutter: delegate.avatarPx + Kirigami.Units.smallSpacing
     readonly property bool avatarVisible: ThemeEngine.avatarEnabled && delegate.styleMode === 1
-    // Server notices arrive with a decorative nick ("*" or empty). They get the
-    // avatar gutter but no bubble-with-a-letter, so console traffic reads as
-    // system output instead of messages from a user called "?".
+    // Server notices arrive with a decorative nick ("*" or empty). They are
+    // event rows: muted, compact, no bubble, no avatar (see eventRow below).
     readonly property bool decorativeNick: delegate.nick.trim().length === 0 || delegate.nick.trim() === "*"
+    readonly property bool isEvent: delegate.decorativeNick
     readonly property int bubblePaddingH: Math.round(Kirigami.Units.gridUnit * 0.5)
     readonly property int bubblePaddingV: Math.round(Kirigami.Units.gridUnit * 0.33)
     readonly property color hairline: ThemeEngine.withAlpha(Kirigami.Theme.textColor, 0.10)
+    readonly property color bubbleHairline: ThemeEngine.cardBorderColor(delegate.hairline)
+    readonly property color rowHoverFill: ThemeEngine.rowHoverColor(ThemeEngine.withAlpha(Kirigami.Theme.textColor, 0.06))
+    readonly property color rowSelectedFill: ThemeEngine.rowSelectedColor(ThemeEngine.withAlpha(Kirigami.Theme.highlightColor, 0.16))
+    readonly property color accentFill: ThemeEngine.accentColor(Kirigami.Theme.highlightColor)
+    readonly property color eventTextColor: ThemeEngine.eventTextColor(ThemeEngine.withAlpha(Kirigami.Theme.textColor, 0.64))
+    readonly property int eventPointSize: ThemeEngine.resolveEventSize(Kirigami.Theme.defaultFont.pointSize)
+    readonly property real bubbleShadowOpacity: ThemeEngine.shadowOpacity
     readonly property color highlightWash: ThemeEngine.withAlpha(Kirigami.Theme.highlightColor, 0.18)
 
     // Widest a wrapped bubble may get, avatar column included.
@@ -145,8 +158,10 @@ Item {
         // overlay scrollbar gutter).
         return Math.max(0, view.width - view.leftMargin - view.rightMargin)
     }
-    implicitWidth: Math.max(bubbleRow.implicitWidth, denseRow.implicitWidth)
-    implicitHeight: (delegate.styleMode === 1 ? bubbleRow.implicitHeight : denseRow.implicitHeight) + delegate.rowGap
+    implicitWidth: Math.max(bubbleRow.implicitWidth, denseRow.implicitWidth, eventRow.implicitWidth)
+    implicitHeight: dayPill.implicitHeight + (delegate.isEvent
+        ? eventRow.implicitHeight + delegate.rowGap
+        : (delegate.styleMode === 1 ? bubbleRow.implicitHeight : denseRow.implicitHeight) + delegate.rowGap)
 
     HoverHandler {
         id: hoverHandler
@@ -210,10 +225,25 @@ Item {
             // Not laid out (or parked in the reuse pool): no group edges.
             delegate.continuesPrevious = false
             delegate.continuesNext = false
+            delegate.showDaySeparator = false
+            delegate.latestDay = true
             return
         }
-        delegate.continuesPrevious = delegate.continuesFrom(delegate.neighbourAt(self - 1))
-        delegate.continuesNext = delegate.continuesInto(delegate.neighbourAt(self + 1))
+        // Event rows never group — with anything, on either side.
+        if (delegate.isEvent) {
+            delegate.continuesPrevious = false
+            delegate.continuesNext = false
+        } else {
+            delegate.continuesPrevious = delegate.continuesFrom(delegate.neighbourAt(self - 1))
+            delegate.continuesNext = delegate.continuesInto(delegate.neighbourAt(self + 1))
+        }
+        var prev = delegate.neighbourAt(self - 1)
+        var next = delegate.neighbourAt(self + 1)
+        delegate.showDaySeparator = prev !== null && prev.timestamp !== undefined
+            && delegate.timestamp !== undefined
+            && ThemeEngine.dayBoundary(prev.timestamp, delegate.timestamp)
+        delegate.latestDay = next === null || next.timestamp === undefined
+            || !ThemeEngine.dayBoundary(delegate.timestamp, next.timestamp)
     }
 
     /// Our own edges depend on the neighbours and theirs on us, so whoever
@@ -251,11 +281,32 @@ Item {
     onTextChanged: Qt.callLater(delegate.refreshNeighbours)
 
     // ---------------------------------------------------------------------- //
+    // Row background: hover tint + highlight wash. Opacity-only (never a
+    // visibility toggle) so hovering can never reflow the log. Highlighted
+    // rows get the accent-tinted fill; the 3px accent bar below marks the
+    // leading edge.
+    // ---------------------------------------------------------------------- //
+    Rectangle {
+        id: rowBackground
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.top: parent.top
+        anchors.bottom: parent.bottom
+        anchors.bottomMargin: delegate.rowGap
+        radius: ThemeEngine.rowRadius
+        color: delegate.isHighlight ? delegate.rowSelectedFill : delegate.rowHoverFill
+        opacity: (delegate.isHighlight || delegate.hovered) && !delegate.isEvent ? 1 : 0
+        Behavior on opacity {
+            NumberAnimation { duration: ThemeEngine.motionDuration }
+        }
+    }
+
+    // ---------------------------------------------------------------------- //
     // Highlight marker: a slim accent bar in the page margin.
     // ---------------------------------------------------------------------- //
     Rectangle {
         id: stripe
-        visible: delegate.isHighlight
+        visible: delegate.isHighlight && !delegate.isEvent
         anchors.left: parent.left
         anchors.leftMargin: Kirigami.Units.smallSpacing
         anchors.top: parent.top
@@ -263,7 +314,40 @@ Item {
         anchors.bottomMargin: delegate.rowGap
         width: 3
         radius: width / 2
-        color: Kirigami.Theme.highlightColor
+        color: delegate.accentFill
+    }
+
+    // ---------------------------------------------------------------------- //
+    // Day separator: a small centred pill rendered above the row whose clock
+    // ran backwards across its predecessor (day rollover, computed once at
+    // settle time — never per frame). The wrapper always exists with an
+    // explicit height (0 when no separator) so nothing reflows; only the
+    // inner pill toggles visibility inside fixed space.
+    // ---------------------------------------------------------------------- //
+    Item {
+        id: dayPill
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.top: parent.top
+        implicitHeight: delegate.showDaySeparator ? Kirigami.Units.gridUnit + Kirigami.Units.smallSpacing * 2 : 0
+        height: implicitHeight
+
+        Rectangle {
+            visible: delegate.showDaySeparator
+            anchors.centerIn: parent
+            implicitWidth: dayLabel.implicitWidth + Kirigami.Units.largeSpacing
+            implicitHeight: Kirigami.Units.gridUnit + Kirigami.Units.smallSpacing
+            radius: height / 2
+            color: ThemeEngine.withAlpha(Kirigami.Theme.textColor, 0.08)
+
+            Controls.Label {
+                id: dayLabel
+                anchors.centerIn: parent
+                text: delegate.latestDay ? qsTr("Today") : qsTr("Yesterday")
+                color: ThemeEngine.mutedTextColor(Kirigami.Theme.disabledTextColor)
+                font.pointSize: delegate.timestampPointSize
+            }
+        }
     }
 
     // ---------------------------------------------------------------------- //
@@ -271,20 +355,23 @@ Item {
     // ---------------------------------------------------------------------- //
     RowLayout {
         id: denseRow
-        visible: delegate.styleMode === 0
+        visible: delegate.styleMode === 0 && !delegate.isEvent
         anchors.left: parent.left
         anchors.right: parent.right
-        anchors.top: parent.top
+        anchors.top: dayPill.bottom
         anchors.leftMargin: delegate.hMargin
         anchors.rightMargin: delegate.hMargin
         spacing: Kirigami.Units.smallSpacing
 
         Controls.Label {
             text: delegate.timestamp
-            color: Kirigami.Theme.disabledTextColor
+            color: ThemeEngine.mutedTextColor(Kirigami.Theme.disabledTextColor)
             font.pointSize: delegate.timestampPointSize
+            // Opacity-only (never visible=false): hiding the stamp must not
+            // shift the nick/text columns between grouped and ungrouped rows.
             opacity: delegate.continuesPrevious ? 0 : 1
             Layout.alignment: Qt.AlignTop
+            Layout.preferredWidth: implicitWidth
         }
 
         Controls.Label {
@@ -314,14 +401,58 @@ Item {
     }
 
     // ---------------------------------------------------------------------- //
+    // Event row (BOTH modes): muted compact line for nick "*" (joins, parts,
+    // quits, modes, topics, server notices). Small glyph, no bubble, no
+    // avatar — this is the biggest single visual win over the old log.
+    // ---------------------------------------------------------------------- //
+    RowLayout {
+        id: eventRow
+        visible: delegate.isEvent
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.top: dayPill.bottom
+        anchors.leftMargin: delegate.hMargin + delegate.avatarGutter
+        anchors.rightMargin: delegate.hMargin
+        spacing: Kirigami.Units.smallSpacing
+
+        Controls.Label {
+            text: "●"
+            color: delegate.accentFill
+            font.pointSize: Math.max(6, delegate.eventPointSize - 2)
+            opacity: 0.7
+            Layout.alignment: Qt.AlignVCenter
+        }
+
+        Kirigami.SelectableLabel {
+            text: ThemeEngine.formatMessage(delegate.text, delegate.linkCss)
+            textFormat: Text.RichText
+            color: delegate.eventTextColor
+            font.pointSize: delegate.eventPointSize
+            font.italic: true
+            wrapMode: Text.WrapAtWordBoundaryOrAnywhere
+            Layout.fillWidth: true
+            padding: 0
+            onLinkActivated: (link) => Qt.openUrlExternally(link)
+        }
+
+        Controls.Label {
+            text: delegate.timestamp
+            color: ThemeEngine.mutedTextColor(Kirigami.Theme.disabledTextColor)
+            font.pointSize: delegate.timestampPointSize
+            opacity: 0.8
+            Layout.alignment: Qt.AlignVCenter
+        }
+    }
+
+    // ---------------------------------------------------------------------- //
     // Bubble mode (default)
     // ---------------------------------------------------------------------- //
     RowLayout {
         id: bubbleRow
-        visible: delegate.styleMode === 1
+        visible: delegate.styleMode === 1 && !delegate.isEvent
         anchors.left: parent.left
         anchors.right: parent.right
-        anchors.top: parent.top
+        anchors.top: dayPill.bottom
         anchors.leftMargin: delegate.hMargin
         anchors.rightMargin: delegate.hMargin
         spacing: Kirigami.Units.smallSpacing
@@ -375,7 +506,26 @@ Item {
             // Highlighted lines are marked by the accent bar in the page margin
             // plus the tinted fill below — no extra outline, which only made the
             // bubble look busy.
-            border.width: 0
+            border.width: 1
+            border.color: delegate.bubbleHairline
+
+            // Soft drop shadow (Fluent layering), gated by shadowOpacity:
+            // opacity 0 means no shadow item at all (and no height impact —
+            // the shadow's negative margin is inside the bubble's clip box,
+            // and toggling `visible` on a z:-1 sibling never touches layout).
+            Item {
+                anchors.fill: parent
+                anchors.margins: -4
+                visible: delegate.bubbleShadowOpacity > 0
+                z: -1
+
+                Rectangle {
+                    anchors.fill: parent
+                    anchors.topMargin: 2
+                    radius: bubble.topLeftRadius
+                    color: ThemeEngine.withAlpha(Kirigami.Theme.textColor, delegate.bubbleShadowOpacity * 0.30)
+                }
+            }
 
             // Accent wash for highlighted lines, clipped to the bubble shape.
             Rectangle {

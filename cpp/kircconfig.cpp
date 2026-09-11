@@ -180,6 +180,124 @@ bool KircConfig::minimizeToTray() const
     return m_minimizeToTray;
 }
 
+bool KircConfig::showTimestamps() const
+{
+    return m_showTimestamps;
+}
+
+void KircConfig::setShowTimestamps(bool showTimestamps)
+{
+    if (m_showTimestamps == showTimestamps) {
+        return;
+    }
+    m_showTimestamps = showTimestamps;
+    Q_EMIT showTimestampsChanged();
+}
+
+int KircConfig::windowWidth() const
+{
+    return m_windowWidth;
+}
+
+void KircConfig::setWindowWidth(int windowWidth)
+{
+    if (m_windowWidth == windowWidth) {
+        return;
+    }
+    m_windowWidth = windowWidth;
+    Q_EMIT windowWidthChanged();
+}
+
+int KircConfig::windowHeight() const
+{
+    return m_windowHeight;
+}
+
+void KircConfig::setWindowHeight(int windowHeight)
+{
+    if (m_windowHeight == windowHeight) {
+        return;
+    }
+    m_windowHeight = windowHeight;
+    Q_EMIT windowHeightChanged();
+}
+
+int KircConfig::saslMechanism() const
+{
+    return m_saslMechanism;
+}
+
+void KircConfig::setSaslMechanism(int saslMechanism)
+{
+    if (saslMechanism < 0 || saslMechanism > 2) {
+        return;
+    }
+    if (m_saslMechanism == saslMechanism) {
+        return;
+    }
+    m_saslMechanism = saslMechanism;
+    Q_EMIT saslMechanismChanged();
+}
+
+bool KircConfig::notifyHighlights() const
+{
+    return m_notifyHighlights;
+}
+
+void KircConfig::setNotifyHighlights(bool notifyHighlights)
+{
+    if (m_notifyHighlights == notifyHighlights) {
+        return;
+    }
+    m_notifyHighlights = notifyHighlights;
+    Q_EMIT notifyHighlightsChanged();
+}
+
+bool KircConfig::notifyDirectMessages() const
+{
+    return m_notifyDirectMessages;
+}
+
+void KircConfig::setNotifyDirectMessages(bool notifyDirectMessages)
+{
+    if (m_notifyDirectMessages == notifyDirectMessages) {
+        return;
+    }
+    m_notifyDirectMessages = notifyDirectMessages;
+    Q_EMIT notifyDirectMessagesChanged();
+}
+
+int KircConfig::reconnectLimit() const
+{
+    return m_reconnectLimit;
+}
+
+void KircConfig::setReconnectLimit(int reconnectLimit)
+{
+    if (reconnectLimit < 0) {
+        reconnectLimit = 0;
+    }
+    if (m_reconnectLimit == reconnectLimit) {
+        return;
+    }
+    m_reconnectLimit = reconnectLimit;
+    Q_EMIT reconnectLimitChanged();
+}
+
+bool KircConfig::reconnectAfterAuthFailure() const
+{
+    return m_reconnectAfterAuthFailure;
+}
+
+void KircConfig::setReconnectAfterAuthFailure(bool reconnectAfterAuthFailure)
+{
+    if (m_reconnectAfterAuthFailure == reconnectAfterAuthFailure) {
+        return;
+    }
+    m_reconnectAfterAuthFailure = reconnectAfterAuthFailure;
+    Q_EMIT reconnectAfterAuthFailureChanged();
+}
+
 void KircConfig::setMinimizeToTray(bool minimizeToTray)
 {
     if (m_minimizeToTray == minimizeToTray) {
@@ -319,6 +437,21 @@ void KircConfig::load()
     m_autojoin = ui.readEntry(QStringLiteral("Autojoin"), m_autojoin);
     m_reconnect = ui.readEntry(QStringLiteral("Reconnect"), m_reconnect);
     m_fontDelta = ui.readEntry(QStringLiteral("FontDelta"), m_fontDelta);
+    m_windowWidth = ui.readEntry(QStringLiteral("WindowWidth"), m_windowWidth);
+    m_windowHeight = ui.readEntry(QStringLiteral("WindowHeight"), m_windowHeight);
+    m_saslMechanism = ui.readEntry(QStringLiteral("SaslMechanism"), m_saslMechanism);
+    if (m_saslMechanism < 0 || m_saslMechanism > 2) {
+        m_saslMechanism = 0;
+    }
+    m_notifyHighlights = ui.readEntry(QStringLiteral("NotifyHighlights"), m_notifyHighlights);
+    m_notifyDirectMessages = ui.readEntry(QStringLiteral("NotifyDirectMessages"), m_notifyDirectMessages);
+    m_reconnectLimit = ui.readEntry(QStringLiteral("ReconnectLimit"), m_reconnectLimit);
+    if (m_reconnectLimit < 0) {
+        m_reconnectLimit = 0;
+    }
+    m_reconnectAfterAuthFailure =
+        ui.readEntry(QStringLiteral("ReconnectAfterAuthFailure"), m_reconnectAfterAuthFailure);
+    m_showTimestamps = ui.readEntry(QStringLiteral("ShowTimestamps"), m_showTimestamps);
 
     const KConfigGroup services = config.group(QString::fromLatin1(kServicesGroup));
     m_identifyOnConnect = services.readEntry(QStringLiteral("IdentifyOnConnect"), m_identifyOnConnect);
@@ -346,6 +479,14 @@ void KircConfig::load()
     Q_EMIT tlsChanged();
     Q_EMIT nicknameChanged();
     Q_EMIT saslUserChanged();
+    Q_EMIT windowWidthChanged();
+    Q_EMIT windowHeightChanged();
+    Q_EMIT saslMechanismChanged();
+    Q_EMIT notifyHighlightsChanged();
+    Q_EMIT notifyDirectMessagesChanged();
+    Q_EMIT reconnectLimitChanged();
+    Q_EMIT reconnectAfterAuthFailureChanged();
+    Q_EMIT showTimestampsChanged();
     Q_EMIT minimizeToTrayChanged();
     Q_EMIT themeIdChanged();
     Q_EMIT autojoinChanged();
@@ -379,6 +520,14 @@ void KircConfig::save()
     ui.writeEntry(QStringLiteral("Autojoin"), m_autojoin);
     ui.writeEntry(QStringLiteral("Reconnect"), m_reconnect);
     ui.writeEntry(QStringLiteral("FontDelta"), m_fontDelta);
+    ui.writeEntry(QStringLiteral("WindowWidth"), m_windowWidth);
+    ui.writeEntry(QStringLiteral("WindowHeight"), m_windowHeight);
+    ui.writeEntry(QStringLiteral("SaslMechanism"), m_saslMechanism);
+    ui.writeEntry(QStringLiteral("NotifyHighlights"), m_notifyHighlights);
+    ui.writeEntry(QStringLiteral("NotifyDirectMessages"), m_notifyDirectMessages);
+    ui.writeEntry(QStringLiteral("ReconnectLimit"), m_reconnectLimit);
+    ui.writeEntry(QStringLiteral("ReconnectAfterAuthFailure"), m_reconnectAfterAuthFailure);
+    ui.writeEntry(QStringLiteral("ShowTimestamps"), m_showTimestamps);
 
     KConfigGroup services = config.group(QString::fromLatin1(kServicesGroup));
     services.writeEntry(QStringLiteral("IdentifyOnConnect"), m_identifyOnConnect);
