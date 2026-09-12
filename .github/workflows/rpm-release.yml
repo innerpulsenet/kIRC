@@ -86,7 +86,7 @@ jobs:
             qt6-qtbase-devel qt6-qtdeclarative-devel \
             kf6-kirigami-devel kf6-kconfig-devel kf6-knotifications-devel \
             kf6-kstatusnotifieritem-devel kf6-kwallet-devel \
-            desktop-file-utils libappstream-glib curl tar gzip
+            desktop-file-utils libappstream-glib curl tar gzip rsync
           rpmdev-setuptree
 
       - name: Stamp the tree with the release version
@@ -107,14 +107,21 @@ jobs:
           ( cd rust && cargo vendor vendor >/dev/null )
           tar czf "$sources/kirc-vendor-$ver.tar.gz" -C rust vendor
 
-          # Source0 — the whole tree under a single kirc-<version>/ directory.
-          # Built from the working tree (not `git archive`) because the step
-          # above has just stamped the version into it.  The transform strips
-          # the leading "./" so entries are kirc-<ver>/... and not kirc-<ver>/./...
-          tar czf "$sources/kirc-$ver.tar.gz" \
-            --exclude=.git --exclude=build --exclude=rust/target \
-            --exclude=rust/vendor --exclude=.hermes --exclude='*.tar.gz' \
-            --transform "s,^\./,kirc-$ver/," .
+          # Source0 — the tree under one kirc-<version>/ directory, staged with
+          # rsync rather than `tar --exclude`.  GNU tar matches its excludes
+          # against the archive name, and archiving "." stores names as
+          # "./rust/target/...", so `--exclude=rust/target` silently excludes
+          # nothing: a 365 MB tree of test binaries and a leaked cargo vendor
+          # directory went into the SRPM that way.  rsync's patterns match path
+          # components at any depth, which is what is actually wanted here.
+          stage="$(mktemp -d)"
+          mkdir -p "$stage/kirc-$ver"
+          rsync -a \
+            --exclude='.git/' --exclude='build/' --exclude='target/' \
+            --exclude='vendor/' --exclude='.hermes/' --exclude='*.tar.gz' \
+            ./ "$stage/kirc-$ver/"
+          tar czf "$sources/kirc-$ver.tar.gz" -C "$stage" "kirc-$ver"
+          rm -rf "$stage"
 
           # Source1 — cxx-qt-cmake, matching CMakeLists.txt's FetchContent tag.
           curl -fsSL -o "$sources/cxx-qt-cmake-$CXXQT_VERSION.tar.gz" \
@@ -122,6 +129,7 @@ jobs:
 
           cp packaging/kirc.spec "$HOME/rpmbuild/SPECS/"
           ls -la "$sources"
+          echo "::notice::Source0 is $(du -h "$sources/kirc-$ver.tar.gz" | cut -f1)"
 
       - name: rpmbuild
         run: rpmbuild -ba "$HOME/rpmbuild/SPECS/kirc.spec"
