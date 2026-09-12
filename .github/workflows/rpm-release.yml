@@ -216,9 +216,6 @@ jobs:
   publish:
     name: Publish the release
     needs: [version, rpm, windows]
-    # Tags publish; a workflow_dispatch run stops here, having built and
-    # checked everything, so a release can be rehearsed without creating one.
-    if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -251,10 +248,18 @@ jobs:
           ( cd dist && sha256sum -c ./*.sha256 )
           echo "::notice::release assets verified"
 
+      # Only the upload is tag-gated: a workflow_dispatch run still collects
+      # and verifies the assets above, so a release can be rehearsed in full
+      # without creating one.
       - name: Publish the release
+        if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
           files: dist/*
           fail_on_unmatched_files: true
           generate_release_notes: true
           name: kIRC ${{ needs.version.outputs.version }}
+
+      - name: Report a rehearsal
+        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+        run: echo "::notice::assets verified; nothing published because ${{ github.ref }} is not a tag"
