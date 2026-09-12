@@ -116,4 +116,5 @@ there are Qt5-era `libs/qt/*` blueprints with clashing short names.
     resources. The embedded Windows icons therefore use target-local
     `AUTORCC` with `cpp/kirc-windows.qrc` in `target_sources()`.
 - Linux build of the refactored tree: not yet re-verified on this Windows-only
-  machine; covered by the RPM CI workflow when the port branch merges.
+  machine; covered by the RPM CI workflow when the port branch merges, and on
+  this branch itself by the Linux CI workflow (`.github/workflows/linux-ci.yml`).

@@ -1,0 +1,109 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+#
+# Linux CI: compile-verify the Linux side of the tree and run the test suites
+# that work headless.  It mirrors the rpm-release workflow's model (a
+# fedora:latest container on a ubuntu host) but builds with CMake straight
+# from the tree — no packaging, no release artifacts, nothing published.
+#
+# Dependency list, and why each entry is here (keep in sync when
+# CMakeLists.txt or the test harnesses change):
+#   * cargo/rust/gcc/gcc-c++/perl — the engine-tests set proven by
+#     rpm-release.yml (the ring/rustls build needs a C compiler).
+#   * git                         — CMakeLists.txt FetchContent's cxx-qt-cmake
+#     at configure time (which in turn FetchContent's corrosion); the RPM
+#     build ships tarballs instead, CI simply clones over the network.
+#   * cmake/ninja-build           — the build system (Ninja generator).
+#   * python3                     — qml-tests stage 0 (check-theme-tokens.py).
+#   * pkgconf-pkg-config          — qml-tests/glass-config-test.sh probes Qt
+#     through pkg-config and links KF6ConfigCore/KF6Wallet by -l name.
+#   * dejavu fonts                — a bare container ships no fonts; the QML
+#     stages assert on text metrics, so fontconfig needs something to
+#     resolve (sans + mono, the two families the themes use).
+#   * Qt6/KF6 devel               — the same list the spec's BuildRequires
+#     uses (see packaging/kirc.spec); qt6-qtdeclarative-devel also owns
+#     /usr/lib64/qt6/bin/qml, the runtime qml-tests/run.sh executes.
+
+name: Linux CI
+
+on:
+  push:
+    branches:
+      - main
+      - codex/windows-port
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: linux-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # No display in the container: every GUI-touching stage runs headless.
+  QT_QPA_PLATFORM: offscreen
+
+jobs:
+  linux:
+    name: Fedora build + tests
+    runs-on: ubuntu-latest
+    container: fedora:latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          dnf -y --setopt=install_weak_deps=False install \
+            cargo rust gcc gcc-c++ perl git \
+            cmake ninja-build \
+            python3 pkgconf-pkg-config \
+            dejavu-sans-fonts dejavu-sans-mono-fonts \
+            qt6-qtbase-devel qt6-qtdeclarative-devel \
+            kf6-kirigami-devel kf6-kconfig-devel kf6-knotifications-devel \
+            kf6-kstatusnotifieritem-devel kf6-kwallet-devel
+
+      - name: Cache cargo registry and engine-build artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            rust/core/target
+          key: linux-ci-fedora-cargo-${{ hashFiles('rust/Cargo.lock', 'rust/core/Cargo.lock') }}
+          restore-keys: |
+            linux-ci-fedora-cargo-
+
+      # Same suite the rpm-release "engine-tests" job runs, pinned to the
+      # committed lockfile (both Cargo.lock files are in sync with their
+      # manifests; a --locked failure means a manifest/lockfile drift).
+      - name: Protocol engine tests (cargo)
+        run: cargo test --locked --manifest-path rust/core/Cargo.toml
+
+      # Fedora's system Qt6/KF6 live under /usr, so CMake finds them without
+      # any CMAKE_PREFIX_PATH; the qmake cxx-qt-build shells out to is
+      # resolved by CMakeLists.txt itself (find_program NAMES qmake6 qmake).
+      - name: Configure (Ninja, Release, tests on)
+        run: >
+          cmake -S . -B build -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
+          -DKIRC_BUILD_TESTS=ON
+
+      - name: Build (app + tst_config_secrets)
+        run: cmake --build build
+
+      # QTEST_GUILESS_MAIN: no display, no D-Bus session, no wallet — the
+      # test links only kircconfig.cpp, a scripted fake store, Qt6Test and
+      # KF6ConfigCore, and each case runs in its own QTemporaryDir.
+      - name: KircConfig secret-store tests
+        run: ./build/tst_config_secrets
+
+      # Headless by design (offscreen is run.sh's default QPA): theme-token
+      # completeness, UI smoke, slash commands, autoscroll, glass surfacing,
+      # and the C++ glass-config stage, which compiles tst_config_glass.cpp
+      # against the Fedora paths this container provides (moc, pkg-config,
+      # /usr/include/KF6).
+      - name: QML test harness
+        run: ./qml-tests/run.sh
