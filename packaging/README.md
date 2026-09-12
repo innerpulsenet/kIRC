@@ -1,5 +1,11 @@
 # Packaging kIRC
 
+Windows packaging lives in `packaging/windows`: `stage.ps1` creates the relocatable
+runtime plus a SHA-256 checked ZIP, and `make-installer.ps1` builds the per-user NSIS
+installer. The installer uses `kirc-shortcut.exe` to attach `org.kde.kirc` to its
+Start-menu shortcut so native toasts have a stable identity. See the root README for
+commands. The existing files described below are the Fedora/RPM path.
+
 RPM packaging for **kIRC**, the KDE Kirigami IRCv3 client.
 
 Everything needed to produce a Fedora RPM lives in this directory:

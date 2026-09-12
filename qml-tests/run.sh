@@ -43,6 +43,7 @@ run_qml() {
     env QML2_IMPORT_PATH="$tmp" \
         QT_FORCE_STDERR_LOGGING=1 \
         QT_QPA_PLATFORM="$qpa" \
+        QT_QUICK_CONTROLS_STYLE=Basic \
         "$qmlbin" "$1"
 }
 

@@ -94,6 +94,11 @@ void KircTray::setAvailable(bool available)
     m_available = available;
     qInfo("kIRC: tray host %s", available ? "available" : "not available");
     Q_EMIT availableChanged();
+    // Never leave a hidden process with no recovery surface after Explorer
+    // restarts or the desktop tray disappears.
+    if (!available && m_window && !m_window->isVisible()) {
+        showWindow();
+    }
 }
 
 void KircTray::attach(QQuickWindow *window, QObject *bridge)
@@ -224,9 +229,9 @@ void KircTray::onConnect()
     const QString serverPassword = m_config->sessionServerPassword().isEmpty()
         ? m_config->serverPassword()
         : m_config->sessionServerPassword();
-    if (!serverPassword.isEmpty() && !QMetaObject::invokeMethod(m_bridge,
-                                                                "set_server_password",
-                                                                Q_ARG(QString, serverPassword))) {
+    if (!QMetaObject::invokeMethod(m_bridge,
+                                   "set_server_password",
+                                   Q_ARG(QString, serverPassword))) {
         qWarning("kIRC: tray could not invoke IrcBridge::set_server_password");
     }
     // CTCP VERSION auto-reply preference, also BEFORE connect_server (same
@@ -243,6 +248,18 @@ void KircTray::onConnect()
     // (KircConfig::sessionSaslPassword, never on disk): empty unless the user
     // connected with SASL this session, in which case reuse it so the tray
     // reconnect does not SASL-904-loop.
+    // Seed QML's reconnect/profile state before a tray-originated session.
+    if (m_window) {
+        m_window->setProperty("lastHost", m_config->host());
+        m_window->setProperty("lastPort", m_config->port());
+        m_window->setProperty("lastTls", m_config->tls());
+        m_window->setProperty("lastNickname", m_config->nickname());
+        m_window->setProperty("lastSaslUser", m_config->saslUser());
+        m_window->setProperty("lastSaslPass", m_config->sessionSaslPassword());
+        m_window->setProperty("lastServerPass", serverPassword);
+        m_window->setProperty("userDisconnect", false);
+    }
+
     const bool ok = QMetaObject::invokeMethod(m_bridge,
                                               "connect_server",
                                               Q_ARG(QString, m_config->host()),

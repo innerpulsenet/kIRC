@@ -1,8 +1,0 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
-//
-// Windows resources for kIRC.  The icon gives the executable, its shortcuts
-// and the taskbar their identity.  Full VERSIONINFO block (file/product
-// version driven by the single project version) is added by the packaging
-// phase of the Windows port.
-
-IDI_ICON1 ICON "../packaging/kirc.ico"

@@ -1,6 +1,6 @@
 # kIRC
 
-A terminal-styled **IRCv3 client for KDE Plasma**. The protocol engine is Rust, the UI is
+A terminal-styled **IRCv3 desktop client for Windows 10/11 and KDE Plasma**. The protocol engine is Rust, the UI is
 Kirigami/QML, and the two are joined by a CXX-Qt bridge. It is deliberately a *console*:
 one monospace font, flat surfaces, aligned columns, box-drawing rules — no bubbles, no
 avatars, no rounded cards.
@@ -96,11 +96,14 @@ notifications and about.
 
 ![Settings](docs/screenshot-settings.png)
 
-**Desktop integration** — KConfig for preferences, KNotifications for highlights and
-private messages (honouring Plasma's Do-Not-Disturb), and a KStatusNotifierItem tray icon
-with an unread badge, quick connect/disconnect and hide-to-tray.
+**Desktop integration** — KConfig preferences on both platforms. Linux uses KWallet,
+KNotifications and KStatusNotifierItem; Windows uses Credential Manager, native WinRT
+toasts and QSystemTrayIcon. Both provide secure saved passwords, an unread badge,
+connect/disconnect actions and recoverable hide-to-tray.
 
 ## Requirements
+
+### Linux
 
 - Qt 6.6+ (Core, Gui, Widgets, DBus, Qml, Quick, QuickControls2, QmlImportScanner)
 - KDE Frameworks 6: Kirigami, Config, Notifications, StatusNotifierItem, Wallet
@@ -116,6 +119,13 @@ sudo dnf install cmake gcc-c++ rust cargo qt6-qtbase-devel qt6-qtdeclarative-dev
     kf6-kstatusnotifieritem-devel kf6-kwallet-devel
 ```
 
+### Windows 10/11 x64
+
+The validated native toolchain is Visual Studio 2022, Rust's
+`x86_64-pc-windows-msvc` target, CMake/Ninja, and Qt/KF6 supplied by KDE Craft.
+Exact versions and setup paths are recorded in [docs/windows/toolchain.md](docs/windows/toolchain.md).
+Do not mix MinGW dependencies with the MSVC build.
+
 ## Build
 
 ```sh
@@ -130,6 +140,20 @@ own:
 ```sh
 cargo test --offline --manifest-path rust/core/Cargo.toml
 ```
+
+On Windows, enter a VS 2022 x64 developer shell and configure against the Craft prefix:
+
+```powershell
+cmake -S . -B build/windows-release -G Ninja `
+  -DCMAKE_BUILD_TYPE=Release `
+  -DCMAKE_PREFIX_PATH="$env:KIRC_CRAFT_ROOT" `
+  -DKIRC_QMAKE_EXECUTABLE="$env:KIRC_CRAFT_ROOT/bin/qmake.exe" `
+  -DKIRC_BUILD_TESTS=ON
+cmake --build build/windows-release --parallel
+ctest --test-dir build/windows-release --output-on-failure
+```
+
+Set `KIRC_CRAFT_ROOT` to the Craft root (the validated machine uses `E:\CraftRoot`).
 
 ## Run
 
@@ -158,12 +182,25 @@ that RPM — plus the source RPM — as a GitHub Release via
 the AppStream metadata, the crate versions and the version the binary reports (`v1.0`
 normalizes to `1.0.0`).
 
+For Windows, stage a self-contained directory and checksummed ZIP, then build the
+per-user NSIS installer:
+
+```powershell
+./packaging/windows/stage.ps1 -Archive
+./packaging/windows/make-installer.ps1 -Makensis "$env:KIRC_MAKENSIS"
+```
+
+The installer writes no machine-wide state or requires elevation. It creates the
+AppUserModelID-bearing Start-menu shortcut required for reliable desktop toasts;
+uninstall preserves `%APPDATA%\kIRC\kirc.conf` and Credential Manager entries.
+
 ## Configuration
 
-Preferences live in `~/.config/kIRC/kirc.conf`. **Secrets are never written there** — the
-NickServ and server passwords are kept in KWallet (folder `kIRC`), or in memory for the
-session only if the wallet is unavailable or locked. The SASL password is never persisted
-at all: it is held in memory for the session.
+Preferences live in `~/.config/kIRC/kirc.conf` on Linux and
+`%APPDATA%\kIRC\kirc.conf` on Windows. **Secrets are never written there** — NickServ and
+server passwords are kept in KWallet on Linux or Windows Credential Manager on Windows,
+and remain memory-only if secure storage is unavailable. The SASL password is always
+session-only.
 
 The kIRC theme id is versioned: on upgrade, configs holding a retired stock theme id are
 moved to the current default once, and a theme you picked yourself is left alone.
