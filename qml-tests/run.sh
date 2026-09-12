@@ -8,6 +8,9 @@
 # Usage:  qml-tests/run.sh
 # Env:    QML_BIN (default /usr/lib64/qt6/bin/qml)
 #         QPA     (default offscreen; use "xcb" to watch the UI run)
+#         KIRC_QML_TEST_STAGE (default all) — run a single stage:
+#           tokens | smoke | cmds | scroll | glass | config
+#         CI uses this to report the failing stage in its step list.
 #
 # Exit code: 0 = every check passed.
 
@@ -64,11 +67,26 @@ run_qml() {
 # engine's token table (missing or extra token => FAIL), agree on every value,
 # carry the current schema version, and pass the palette contrast /
 # distinguishability floors.
+stage=${KIRC_QML_TEST_STAGE:-all}
 status=0
-python3 "$here/check-theme-tokens.py" || status=1
-run_qml "$tmp/tst_smoke.qml" || status=1
-run_qml "$tmp/tst_cmds.qml" || status=1
-run_qml "$tmp/tst_scroll.qml" || status=1
-run_qml "$tmp/tst_glass.qml" || status=1
-"$here/glass-config-test.sh" || status=1
+case "$stage" in
+  tokens) python3 "$here/check-theme-tokens.py" || exit 1 ;;
+  smoke)  run_qml "$tmp/tst_smoke.qml" || exit 1 ;;
+  cmds)   run_qml "$tmp/tst_cmds.qml" || exit 1 ;;
+  scroll) run_qml "$tmp/tst_scroll.qml" || exit 1 ;;
+  glass)  run_qml "$tmp/tst_glass.qml" || exit 1 ;;
+  config) "$here/glass-config-test.sh" || exit 1 ;;
+  all)
+    python3 "$here/check-theme-tokens.py" || status=1
+    run_qml "$tmp/tst_smoke.qml" || status=1
+    run_qml "$tmp/tst_cmds.qml" || status=1
+    run_qml "$tmp/tst_scroll.qml" || status=1
+    run_qml "$tmp/tst_glass.qml" || status=1
+    "$here/glass-config-test.sh" || status=1
+    ;;
+  *)
+    echo "run.sh: unknown KIRC_QML_TEST_STAGE '$stage'" >&2
+    exit 2
+    ;;
+esac
 exit "$status"
