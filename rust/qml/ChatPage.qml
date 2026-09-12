@@ -1714,8 +1714,8 @@ Kirigami.Page {
           "desc": "list channels on the network", "run": page.cmdList },
         { "names": ["motd"], "usage": "/motd [server]",
           "desc": "message of the day", "run": page.cmdMotd },
-        { "names": ["version"], "usage": "/version [server]",
-          "desc": "server version", "run": page.cmdVersion },
+        { "names": ["version"], "usage": "/version [nick]",
+          "desc": "no nick: the server's VERSION; with a nick: send that client a CTCP VERSION query", "run": page.cmdVersion },
         { "names": ["time"], "usage": "/time [server]",
           "desc": "server time", "run": page.cmdTime },
         { "names": ["ping"], "usage": "/ping [target]",
@@ -1735,7 +1735,7 @@ Kirigami.Page {
         { "names": ["setname"], "usage": "/setname <real name>",
           "desc": "change your real name (IRCv3 SETNAME)", "run": page.cmdSetname },
         { "names": ["ctcp"], "usage": "/ctcp <target> <message>",
-          "desc": "send a CTCP query", "run": page.cmdCtcp },
+          "desc": "general CTCP query (e.g. /ctcp alice VERSION); /version <nick> is the shortcut", "run": page.cmdCtcp },
         // -- channel moderation --------------------------------------------- //
         { "names": ["ban"], "usage": "/ban [#channel] [mask|nick]",
           "desc": "ban a mask or nick (no mask: list the bans)", "run": page.cmdBan },
@@ -2233,10 +2233,27 @@ Kirigami.Page {
         return true
     }
 
+    /// `/version` (no argument) is the server's own VERSION command.
+    /// `/version <nick>` is the shortcut for `/ctcp <nick> VERSION` — a CTCP
+    /// VERSION *query* to that nick's client — and says so in a local line so
+    /// the two behaviours can never be mistaken for one another.
     function cmdVersion(rest)
     {
         var bits = page.argTokens(rest)
-        page.sendRawLine(bits.length > 0 ? ("VERSION " + bits[0]) : "VERSION")
+        if (bits.length === 0) {
+            page.sendRawLine("VERSION")
+            return true
+        }
+        if (bits.length > 1) {
+            page.usageLine("/version [nick]")
+            return false
+        }
+        var nick = page.stripColon(bits[0])
+        if (!page.sendCtcpQuery(nick, "VERSION")) {
+            page.usageLine("/version [nick]")
+            return false
+        }
+        page.localLine(qsTr("CTCP VERSION query sent to %1").arg(nick))
         return true
     }
 
@@ -2341,6 +2358,22 @@ Kirigami.Page {
         return true
     }
 
+    /// Shared CTCP query sender behind `/ctcp <target> <message>` and
+    /// `/version <nick>`.  The query is a PRIVMSG through
+    /// `bridge.send_message()` (the core's sanctioned one-PRIVMSG-per-line
+    /// path), wrapped in the `\x01` delimiters, with the command name
+    /// uppercased — CTCP convention.  Returns false when there is nothing
+    /// sendable (the caller prints its usage line).
+    function sendCtcpQuery(target, message)
+    {
+        var name = page.foldToLine(message).toUpperCase()
+        if (target.length === 0 || name.length === 0 || page.bridge === null) {
+            return false
+        }
+        page.bridge.send_message(target, "\u0001" + name + "\u0001")
+        return true
+    }
+
     function cmdCtcp(rest)
     {
         var parts = page.splitFirst(rest)
@@ -2350,7 +2383,10 @@ Kirigami.Page {
             page.usageLine("/ctcp <target> <message>")
             return false
         }
-        page.bridge.send_message(target, "\u0001" + page.foldToLine(text).toUpperCase() + "\u0001")
+        if (!page.sendCtcpQuery(target, text)) {
+            page.usageLine("/ctcp <target> <message>")
+            return false
+        }
         return true
     }
 

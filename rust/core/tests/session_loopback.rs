@@ -272,6 +272,7 @@ fn base_config(port: u16, sasl: Option<SaslConfig>) -> ConnectionConfig {
         server_password: None,
         sasl,
         sasl_mechanism: 0,
+        ctcp_version_reply: true,
         request_caps: vec![],
     }
 }
@@ -1327,5 +1328,593 @@ async fn overlong_line_does_not_stall_the_session() {
         sent.iter().any(|l| l == "PONG :probe"),
         "the PING after the overlong line was not answered: {sent:?}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// CTCP
+//
+// The wire behaviour lives here: a real loopback socket, the real
+// `run_session` state machine, and assertions on (a) the exact lines the
+// client puts on the wire and (b) the events the UI would receive.
+// ---------------------------------------------------------------------------
+
+/// Mock server: completes registration (no SASL), then writes every line of
+/// `script` verbatim, then keeps reading and recording what the client sends.
+async fn server_ctcp_script(stream: TcpStream, lines: Lines, script: &'static [&'static str]) {
+    let (r, mut w) = stream.into_split();
+    let mut reader = BufReader::new(r).lines();
+    while let Ok(Some(line)) = reader.next_line().await {
+        record(&lines, &line);
+        if line.starts_with("CAP LS") {
+            send(&mut w, ":irc.test CAP * LS :server-time message-tags").await;
+        } else if apply_req(&line).is_some() {
+            let req = apply_req(&line).unwrap_or_default();
+            send(&mut w, &format!(":irc.test CAP * ACK :{req}")).await;
+        } else if line == "CAP END" {
+            send(&mut w, ":irc.test 001 kircuser :Welcome").await;
+            for entry in script {
+                send(&mut w, entry).await;
+            }
+        } else if line.starts_with("QUIT") {
+            break;
+        }
+    }
+}
+
+/// Collect the dim system lines (`nick == "*"`) naming CTCP kinds.
+fn ctcp_lines(events: &[IrcEvent]) -> Vec<String> {
+    events
+        .iter()
+        .filter_map(|e| match e {
+            IrcEvent::Msg { nick, text, .. } if nick == "*" => Some(text.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// A `\x01VERSION\x01` request sent as a PRIVMSG must be answered with
+/// `NOTICE <nick> :\x01VERSION kIRC <crate version>\x01`, and must never be
+/// rendered as the bare word "VERSION".
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ctcp_version_request_is_answered() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let lines: Lines = Arc::new(Mutex::new(Vec::new()));
+    {
+        let lines = lines.clone();
+        tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            server_ctcp_script(
+                stream,
+                lines,
+                &[":bob!b@host PRIVMSG kircuser :\u{1}VERSION\u{1}"],
+            )
+            .await;
+        });
+    }
+
+    let (etx, mut erx) = mpsc::channel::<IrcEvent>(64);
+    let (ctx, crx) = mpsc::channel::<ClientCommand>(16);
+    let handle = tokio::spawn(run_session(base_config(port, None), etx, crx));
+
+    // The version comes from the crate, never from a hand-written string.
+    let expected = format!(
+        "NOTICE bob :\u{1}VERSION kIRC {}\u{1}",
+        env!("CARGO_PKG_VERSION")
+    );
+    let sent = wait_until(&lines, Duration::from_secs(5), |seen| {
+        seen.iter().any(|l| l == &expected)
+    })
+    .await;
+    assert!(
+        sent.iter().any(|l| l == &expected),
+        "VERSION request not answered as expected: {sent:?}"
+    );
+
+    let events = collect_events(&mut erx, Duration::from_secs(5), |evs| {
+        evs.iter().any(|e| {
+            matches!(e, IrcEvent::Msg { nick, text, .. }
+                if nick == "*" && text == "CTCP VERSION request from bob")
+        })
+    })
+    .await;
+    assert!(
+        events.iter().any(|e| matches!(e, IrcEvent::Msg { nick, text, target, .. } if nick == "*" && target == "bob" && text == "CTCP VERSION request from bob")),
+        "the request must show as a dim system line: {events:?}"
+    );
+    assert!(
+        !events.iter().any(|e| matches!(e, IrcEvent::Msg { nick, .. } if nick == "bob")),
+        "a CTCP must not render as chat: {events:?}"
+    );
+
+    ctx.send(ClientCommand::Quit).await.ok();
+    let _ = tokio::time::timeout(Duration::from_secs(5), handle).await;
+}
+
+/// PING (payload echoed verbatim, empty payload included), CLIENTINFO and
+/// TIME are all answered.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ctcp_ping_clientinfo_and_time_are_answered() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let lines: Lines = Arc::new(Mutex::new(Vec::new()));
+    {
+        let lines = lines.clone();
+        tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            server_ctcp_script(
+                stream,
+                lines,
+                &[
+                    ":bob!b@host PRIVMSG kircuser :\u{1}PING  hello  42 \u{1}",
+                    ":bob!b@host PRIVMSG kircuser :\u{1}CLIENTINFO\u{1}",
+                    ":bob!b@host PRIVMSG kircuser :\u{1}TIME\u{1}",
+                ],
+            )
+            .await;
+        });
+    }
+
+    let (etx, mut erx) = mpsc::channel::<IrcEvent>(64);
+    let (ctx, crx) = mpsc::channel::<ClientCommand>(16);
+    let handle = tokio::spawn(run_session(base_config(port, None), etx, crx));
+
+    // The payload comes back verbatim, spacing included.
+    let ping = "NOTICE bob :\u{1}PING  hello  42 \u{1}";
+    let clientinfo = "NOTICE bob :\u{1}CLIENTINFO ACTION CLIENTINFO PING TIME VERSION\u{1}";
+    let sent = wait_until(&lines, Duration::from_secs(5), |seen| {
+        seen.iter().any(|l| l == ping)
+            && seen.iter().any(|l| l == clientinfo)
+            && seen.iter().any(|l| l.starts_with("NOTICE bob :\u{1}TIME "))
+    })
+    .await;
+    assert!(sent.iter().any(|l| l == ping), "PING not echoed: {sent:?}");
+    assert!(
+        sent.iter().any(|l| l == clientinfo),
+        "CLIENTINFO not answered: {sent:?}"
+    );
+    assert!(
+        sent.iter().any(|l| l.starts_with("NOTICE bob :\u{1}TIME ") && l.ends_with('\u{1}')),
+        "TIME not answered: {sent:?}"
+    );
+
+    let events = collect_events(&mut erx, Duration::from_secs(5), |evs| {
+        // Wait for the LAST of the three system lines: `collect_events`
+        // checks this before each receive, so stopping on the first one could
+        // leave a later line still queued.
+        let seen = ctcp_lines(evs);
+        ["PING", "CLIENTINFO", "TIME"].iter().all(|kind| {
+            seen.iter()
+                .any(|l| l == &format!("CTCP {kind} request from bob"))
+        })
+    })
+    .await;
+    let seen_lines = ctcp_lines(&events);
+    for kind in ["PING", "CLIENTINFO", "TIME"] {
+        assert!(
+            seen_lines
+                .iter()
+                .any(|l| l == &format!("CTCP {kind} request from bob")),
+            "the {kind} request must be visible as a system line: {events:?}"
+        );
+    }
+
+    ctx.send(ClientCommand::Quit).await.ok();
+    let _ = tokio::time::timeout(Duration::from_secs(5), handle).await;
+}
+
+/// A CTCP carried in a NOTICE is protocol-wise a reply: it must be displayed
+/// but NEVER answered — that is how reply loops start. A PING request later in
+/// the same stream acts as a fence: once its reply is on the wire, the NOTICE
+/// CTCP has demonstrably been processed and deliberately not answered.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ctcp_in_a_notice_is_never_answered() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let lines: Lines = Arc::new(Mutex::new(Vec::new()));
+    {
+        let lines = lines.clone();
+        tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            server_ctcp_script(
+                stream,
+                lines,
+                &[
+                    ":bob!b@host NOTICE kircuser :\u{1}VERSION\u{1}",
+                    ":bob!b@host PRIVMSG kircuser :\u{1}PING fence\u{1}",
+                ],
+            )
+            .await;
+        });
+    }
+
+    let (etx, mut erx) = mpsc::channel::<IrcEvent>(64);
+    let (ctx, crx) = mpsc::channel::<ClientCommand>(16);
+    let handle = tokio::spawn(run_session(base_config(port, None), etx, crx));
+
+    let sent = wait_until(&lines, Duration::from_secs(5), |seen| {
+        seen.iter().any(|l| l == "NOTICE bob :\u{1}PING fence\u{1}")
+    })
+    .await;
+    assert!(
+        sent.iter().any(|l| l == "NOTICE bob :\u{1}PING fence\u{1}"),
+        "the fence PING was not answered, test cannot prove anything: {sent:?}"
+    );
+    assert!(
+        !sent.iter().any(|l| l.contains("VERSION")),
+        "a CTCP inside a NOTICE must never be answered: {sent:?}"
+    );
+
+    let events = collect_events(&mut erx, Duration::from_secs(5), |evs| {
+        ctcp_lines(evs).iter().any(|l| l == "CTCP VERSION reply from bob")
+    })
+    .await;
+    assert!(
+        ctcp_lines(&events).iter().any(|l| l == "CTCP VERSION reply from bob"),
+        "the NOTICE CTCP must still be visible: {events:?}"
+    );
+
+    ctx.send(ClientCommand::Quit).await.ok();
+    let _ = tokio::time::timeout(Duration::from_secs(5), handle).await;
+}
+
+/// A VERSION *reply* (`\x01VERSION SomeClient 1.2\x01` inside a NOTICE) is
+/// displayed with the remote client's string and is not answered.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ctcp_version_reply_shows_the_remote_client_string() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let lines: Lines = Arc::new(Mutex::new(Vec::new()));
+    {
+        let lines = lines.clone();
+        tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            server_ctcp_script(
+                stream,
+                lines,
+                &[
+                    ":bob!b@host NOTICE kircuser :\u{1}VERSION SomeClient 1.2\u{1}",
+                    ":bob!b@host PRIVMSG kircuser :\u{1}PING fence\u{1}",
+                ],
+            )
+            .await;
+        });
+    }
+
+    let (etx, mut erx) = mpsc::channel::<IrcEvent>(64);
+    let (ctx, crx) = mpsc::channel::<ClientCommand>(16);
+    let handle = tokio::spawn(run_session(base_config(port, None), etx, crx));
+
+    let sent = wait_until(&lines, Duration::from_secs(5), |seen| {
+        seen.iter().any(|l| l == "NOTICE bob :\u{1}PING fence\u{1}")
+    })
+    .await;
+    assert!(
+        !sent.iter().any(|l| l.contains("VERSION")),
+        "a VERSION reply must not itself be answered: {sent:?}"
+    );
+
+    let events = collect_events(&mut erx, Duration::from_secs(5), |evs| {
+        ctcp_lines(evs)
+            .iter()
+            .any(|l| l == "CTCP VERSION reply from bob: SomeClient 1.2")
+    })
+    .await;
+    assert!(
+        ctcp_lines(&events)
+            .iter()
+            .any(|l| l == "CTCP VERSION reply from bob: SomeClient 1.2"),
+        "the remote client's string must be readable: {events:?}"
+    );
+
+    ctx.send(ClientCommand::Quit).await.ok();
+    let _ = tokio::time::timeout(Duration::from_secs(5), handle).await;
+}
+
+/// DCC is neither answered nor shown as chat: it becomes an explicit
+/// "not supported" system line. The PING fence proves the DCC line was
+/// processed before the assertion window closed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn dcc_is_not_answered_and_not_chat() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let lines: Lines = Arc::new(Mutex::new(Vec::new()));
+    {
+        let lines = lines.clone();
+        tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            server_ctcp_script(
+                stream,
+                lines,
+                &[
+                    ":bob!b@host PRIVMSG kircuser :\u{1}DCC SEND evil.exe 3232235777 6667 0\u{1}",
+                    ":bob!b@host PRIVMSG kircuser :\u{1}PING fence\u{1}",
+                ],
+            )
+            .await;
+        });
+    }
+
+    let (etx, mut erx) = mpsc::channel::<IrcEvent>(64);
+    let (ctx, crx) = mpsc::channel::<ClientCommand>(16);
+    let handle = tokio::spawn(run_session(base_config(port, None), etx, crx));
+
+    let sent = wait_until(&lines, Duration::from_secs(5), |seen| {
+        seen.iter().any(|l| l == "NOTICE bob :\u{1}PING fence\u{1}")
+    })
+    .await;
+    assert!(
+        !sent.iter().any(|l| l.contains("DCC")),
+        "DCC must never be answered: {sent:?}"
+    );
+
+    let events = collect_events(&mut erx, Duration::from_secs(5), |evs| {
+        ctcp_lines(evs)
+            .iter()
+            .any(|l| l.contains("DCC") && l.contains("not supported"))
+    })
+    .await;
+    assert!(
+        ctcp_lines(&events)
+            .iter()
+            .any(|l| l == "CTCP DCC from bob (DCC is not supported)"),
+        "DCC must be surfaced explicitly: {events:?}"
+    );
+    assert!(
+        !events.iter().any(|e| matches!(e, IrcEvent::Msg { nick, text, .. }
+            if nick == "bob" && (text.contains("DCC") || text.contains("evil.exe")))),
+        "DCC must not reach the chat log: {events:?}"
+    );
+
+    ctx.send(ClientCommand::Quit).await.ok();
+    let _ = tokio::time::timeout(Duration::from_secs(5), handle).await;
+}
+
+/// With `ctcp_version_reply = false` (set by
+/// `IrcBridge::set_ctcp_version_reply(false)` before connecting), VERSION is
+/// suppressed while PING still answers. The request itself stays visible.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ctcp_version_reply_switch_suppresses_version_only() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let lines: Lines = Arc::new(Mutex::new(Vec::new()));
+    {
+        let lines = lines.clone();
+        tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            server_ctcp_script(
+                stream,
+                lines,
+                &[
+                    ":bob!b@host PRIVMSG kircuser :\u{1}VERSION\u{1}",
+                    ":bob!b@host PRIVMSG kircuser :\u{1}PING still answered\u{1}",
+                ],
+            )
+            .await;
+        });
+    }
+
+    let (etx, mut erx) = mpsc::channel::<IrcEvent>(64);
+    let (ctx, crx) = mpsc::channel::<ClientCommand>(16);
+    let mut config = base_config(port, None);
+    config.ctcp_version_reply = false;
+    let handle = tokio::spawn(run_session(config, etx, crx));
+
+    let ping = "NOTICE bob :\u{1}PING still answered\u{1}";
+    let sent = wait_until(&lines, Duration::from_secs(5), |seen| {
+        seen.iter().any(|l| l == ping)
+    })
+    .await;
+    assert!(
+        sent.iter().any(|l| l == ping),
+        "PING must stay unconditional: {sent:?}"
+    );
+    assert!(
+        !sent.iter().any(|l| l.contains("VERSION")),
+        "the VERSION reply must be suppressed: {sent:?}"
+    );
+
+    let events = collect_events(&mut erx, Duration::from_secs(5), |evs| {
+        ctcp_lines(evs)
+            .iter()
+            .any(|l| l == "CTCP VERSION request from bob")
+    })
+    .await;
+    assert!(
+        ctcp_lines(&events)
+            .iter()
+            .any(|l| l == "CTCP VERSION request from bob"),
+        "the suppressed request must still be visible: {events:?}"
+    );
+
+    ctx.send(ClientCommand::Quit).await.ok();
+    let _ = tokio::time::timeout(Duration::from_secs(5), handle).await;
+}
+
+/// ACTION keeps its `/me` rendering: chat, not a system line, and never
+/// answered.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ctcp_action_still_renders_as_me() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let lines: Lines = Arc::new(Mutex::new(Vec::new()));
+    {
+        let lines = lines.clone();
+        tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            server_ctcp_script(
+                stream,
+                lines,
+                &[
+                    ":bob!b@host PRIVMSG #rust :\u{1}ACTION waves at everyone\u{1}",
+                    ":bob!b@host PRIVMSG kircuser :\u{1}PING fence\u{1}",
+                ],
+            )
+            .await;
+        });
+    }
+
+    let (etx, mut erx) = mpsc::channel::<IrcEvent>(64);
+    let (ctx, crx) = mpsc::channel::<ClientCommand>(16);
+    let handle = tokio::spawn(run_session(base_config(port, None), etx, crx));
+
+    let sent = wait_until(&lines, Duration::from_secs(5), |seen| {
+        seen.iter().any(|l| l == "NOTICE bob :\u{1}PING fence\u{1}")
+    })
+    .await;
+    assert!(
+        !sent.iter().any(|l| l.contains("ACTION")),
+        "ACTION must never be answered: {sent:?}"
+    );
+
+    let events = collect_events(&mut erx, Duration::from_secs(5), |evs| {
+        evs.iter().any(|e| matches!(e, IrcEvent::Msg { nick, text, target, .. }
+            if nick == "bob" && target == "#rust" && text == "* waves at everyone"))
+    })
+    .await;
+    assert!(
+        events.iter().any(|e| matches!(e, IrcEvent::Msg { nick, text, target, .. } if nick == "bob" && target == "#rust" && text == "* waves at everyone")),
+        "ACTION must keep its /me rendering: {events:?}"
+    );
+    assert!(
+        !ctcp_lines(&events).iter().any(|l| l.contains("ACTION")),
+        "ACTION is not a system line: {events:?}"
+    );
+
+    ctx.send(ClientCommand::Quit).await.ok();
+    let _ = tokio::time::timeout(Duration::from_secs(5), handle).await;
+}
+
+/// Outbound CTCP through the normal `send_message` path (`/ctcp <target>
+/// <message>`, `/version <nick>`): the query goes out on the wire and leaves
+/// no self chat row behind when the server does not support echo-message
+/// (the local-echo mirror must not show the bare command word "VERSION").
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn outbound_ctcp_leaves_no_self_chat_row() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let lines: Lines = Arc::new(Mutex::new(Vec::new()));
+    {
+        let lines = lines.clone();
+        tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            // No echo-message in the advertised set, so the local-echo path
+            // is the one under test.
+            server_ctcp_script(stream, lines, &[]).await;
+        });
+    }
+
+    let (etx, mut erx) = mpsc::channel::<IrcEvent>(64);
+    let (ctx, crx) = mpsc::channel::<ClientCommand>(16);
+    let handle = tokio::spawn(run_session(base_config(port, None), etx, crx));
+
+    // Let registration settle (the command channel is unbuffered until then).
+    let _ = collect_events(&mut erx, Duration::from_secs(5), |evs| {
+        evs.iter().any(|e| matches!(e, IrcEvent::Registered { .. }))
+    })
+    .await;
+
+    let query = format!("PRIVMSG alice :\u{1}VERSION\u{1}");
+    ctx.send(ClientCommand::Privmsg {
+        target: "alice".to_string(),
+        text: "\u{1}VERSION\u{1}".to_string(),
+    })
+    .await
+    .unwrap();
+    let sent = wait_until(&lines, Duration::from_secs(5), |seen| {
+        seen.iter().any(|l| l == &query)
+    })
+    .await;
+    assert!(
+        sent.iter().any(|l| l == &query),
+        "the CTCP query must reach the wire: {sent:?}"
+    );
+
+    // Drain everything the session emitted; the local echo of a CTCP must
+    // not be a chat row (that is the old "bare VERSION" display).
+    let events = collect_events(&mut erx, Duration::from_millis(300), |_| false).await;
+    assert!(
+        !events.iter().any(|e| matches!(e, IrcEvent::Msg { text, .. } if text.contains("VERSION"))),
+        "an outbound CTCP must not be echoed as chat: {events:?}"
+    );
+
+    ctx.send(ClientCommand::Quit).await.ok();
+    let _ = tokio::time::timeout(Duration::from_secs(5), handle).await;
+}
+
+/// Mock server with echo-message: ACKs it, then replays every PRIVMSG the
+/// client sends back at it, exactly as a server with the capability does.
+async fn server_echo_message(stream: TcpStream, lines: Lines) {
+    let (r, mut w) = stream.into_split();
+    let mut reader = BufReader::new(r).lines();
+    while let Ok(Some(line)) = reader.next_line().await {
+        record(&lines, &line);
+        if line.starts_with("CAP LS") {
+            send(&mut w, ":irc.test CAP * LS :echo-message message-tags").await;
+        } else if apply_req(&line).is_some() {
+            let req = apply_req(&line).unwrap_or_default();
+            send(&mut w, &format!(":irc.test CAP * ACK :{req}")).await;
+        } else if line == "CAP END" {
+            send(&mut w, ":irc.test 001 kircuser :Welcome").await;
+        } else if let Some(rest) = line.strip_prefix("PRIVMSG ") {
+            // rest == "<target> :<text>" — replay it as our own echo.
+            send(&mut w, &format!(":kircuser!k@host PRIVMSG {rest}")).await;
+        } else if line.starts_with("QUIT") {
+            break;
+        }
+    }
+}
+
+/// The echo-message replay of our own CTCP query must never be answered
+/// (that would be a reply to ourselves) and must not be shown as chat.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn own_ctcp_echo_is_never_answered() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let lines: Lines = Arc::new(Mutex::new(Vec::new()));
+    {
+        let lines = lines.clone();
+        tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            server_echo_message(stream, lines).await;
+        });
+    }
+
+    let (etx, mut erx) = mpsc::channel::<IrcEvent>(64);
+    let (ctx, crx) = mpsc::channel::<ClientCommand>(16);
+    let handle = tokio::spawn(run_session(base_config(port, None), etx, crx));
+
+    // Registration first: echo-message must be ACKed before we send, or the
+    // server would not replay the query at all.
+    let _ = collect_events(&mut erx, Duration::from_secs(5), |evs| {
+        evs.iter().any(|e| matches!(e, IrcEvent::Registered { .. }))
+    })
+    .await;
+
+    ctx.send(ClientCommand::Privmsg {
+        target: "alice".to_string(),
+        text: "\u{1}VERSION\u{1}".to_string(),
+    })
+    .await
+    .unwrap();
+
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let sent = lines.lock().unwrap().clone();
+    let version_lines: Vec<&String> = sent.iter().filter(|l| l.contains("VERSION")).collect();
+    assert_eq!(
+        version_lines.len(),
+        1,
+        "our own echo must not be answered — exactly one VERSION line on the wire: {sent:?}"
+    );
+    assert_eq!(version_lines[0], "PRIVMSG alice :\u{1}VERSION\u{1}");
+
+    let events = collect_events(&mut erx, Duration::from_millis(300), |_| false).await;
+    assert!(
+        !events.iter().any(|e| matches!(e, IrcEvent::Msg { is_self: true, .. })),
+        "the echoed CTCP must not render as a self chat row: {events:?}"
+    );
+
+    ctx.send(ClientCommand::Quit).await.ok();
+    let _ = tokio::time::timeout(Duration::from_secs(5), handle).await;
 }
 

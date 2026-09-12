@@ -186,7 +186,11 @@ Item {
             ["list patterns", "/list #kde #kde-devel", "send_raw(LIST #kde,#kde-devel)"],
             ["motd", "/motd", "send_raw(MOTD)"],
             ["motd server", "/motd irc.test.example", "send_raw(MOTD irc.test.example)"],
-            ["version", "/version", "send_raw(VERSION)"],
+            // /version with no argument stays the server VERSION command;
+            // /version <nick> is the CTCP VERSION query shortcut.
+            ["version alone is the server VERSION command", "/version", "send_raw(VERSION)"],
+            ["version with a nick sends a CTCP VERSION query", "/version alice",
+             "send_message(alice, " + C + "VERSION" + C + ")"],
             ["time", "/time", "send_raw(TIME)"],
             ["ping target", "/ping irc.test", "send_raw(PING :irc.test)"],
             ["ping defaults to server", "/ping", "send_raw(PING :irc.test.example)"],
@@ -249,6 +253,36 @@ Item {
         harness.localCase("unknown command prints a hint", "/frobnicate now", false, "unknown command")
         harness.localCase("raw with a newline is rejected", "/raw QUIT\nJOIN #evil", false, "/raw rejected")
         harness.localCase("empty raw is rejected", "/raw", false, "usage: /raw")
+        harness.localCase("version with two targets is rejected", "/version alice bob", false, "usage: /version")
+
+        // ---- /version <nick>: the query AND the local line -----------------
+        // The CTCP trace is asserted in the case table above; this proves the
+        // user is also told what was sent (one local row, nothing else).
+        harness.chat.openChannel("#kirc")
+        harness.bridge.clearCalls()
+        var vBefore = harness.modelCount()
+        var vConsumed = harness.chat.runSlash("/version alice")
+        var vAfter = harness.modelCount()
+        var vTrace = harness.bridge.callTrace()
+        harness.bridge.clearCalls()
+        var vRow = vAfter > 0 ? harness.rowText(vAfter - 1) : ""
+        harness.ok("version <nick> says what it sent",
+                   vConsumed === true && vTrace === ("send_message(alice, " + C + "VERSION" + C + ")")
+                   && vAfter === vBefore + 1 && vRow.indexOf("CTCP VERSION query sent to alice") !== -1,
+                   "trace=[" + vTrace + "] rows " + vBefore + "->" + vAfter + " last=[" + vRow + "]")
+
+        // ---- /ctcp is unchanged (same query, no local chatter) -------------
+        harness.chat.openChannel("#kirc")
+        harness.bridge.clearCalls()
+        var cBefore = harness.modelCount()
+        var cConsumed = harness.chat.runSlash("/ctcp bob VERSION")
+        var cAfter = harness.modelCount()
+        var cTrace = harness.bridge.callTrace()
+        harness.bridge.clearCalls()
+        harness.ok("ctcp bob VERSION sends the same query without a local line",
+                   cConsumed === true && cTrace === ("send_message(bob, " + C + "VERSION" + C + ")")
+                   && cAfter === cBefore,
+                   "trace=[" + cTrace + "] rows " + cBefore + "->" + cAfter)
 
         // ---- local lines ------------------------------------------------- //
         harness.localCase("echo prints a local line", "/echo hello world", true, "hello world")
@@ -276,7 +310,15 @@ Item {
         harness.ok("help rows carry a description",
                    helpText.indexOf("/ban [#channel] [mask|nick] — ban a mask or nick") !== -1,
                    "")
+        harness.ok("help documents both /version forms on one line",
+                   helpText.indexOf("/version [nick] — no nick: the server's VERSION; with a nick: send that client a CTCP VERSION query") !== -1,
+                   "")
+        harness.ok("help documents /ctcp as the general CTCP form",
+                   helpText.indexOf("/ctcp <target> <message> — general CTCP query (e.g. /ctcp alice VERSION); /version <nick> is the shortcut") !== -1,
+                   "")
         harness.localCase("help for one command", "/help chathistory", true, "/chathistory [target] [count]")
+        harness.localCase("help for /version", "/help version", true, "/version [nick]")
+        harness.localCase("help for /ctcp", "/help ctcp", true, "/ctcp <target> <message>")
         harness.localCase("help for an unknown command", "/help nope", false, "no such command")
 
         // ---- disconnect last (it resets the app state) -------------------- //
@@ -306,6 +348,10 @@ Item {
 
         comp = harness.chat.nextCompletion("/help", 5)
         harness.ok("command completes uniquely", comp !== null && comp.text === "/help ",
+                   comp === null ? "null" : comp.text)
+
+        comp = harness.chat.nextCompletion("/ver", 4)
+        harness.ok("command completes: /ver -> /version ", comp !== null && comp.text === "/version ",
                    comp === null ? "null" : comp.text)
 
         comp = harness.chat.nextCompletion("/le", 3)

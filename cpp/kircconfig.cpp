@@ -517,6 +517,20 @@ void KircConfig::setSessionServerPassword(const QString &sessionServerPassword)
     Q_EMIT sessionServerPasswordChanged();
 }
 
+bool KircConfig::respondToCtcpVersion() const
+{
+    return m_respondToCtcpVersion;
+}
+
+void KircConfig::setRespondToCtcpVersion(bool respondToCtcpVersion)
+{
+    if (m_respondToCtcpVersion == respondToCtcpVersion) {
+        return;
+    }
+    m_respondToCtcpVersion = respondToCtcpVersion;
+    Q_EMIT respondToCtcpVersionChanged();
+}
+
 void KircConfig::load()
 {
     KConfig config(configFilePath(), KConfig::SimpleConfig);
@@ -556,6 +570,8 @@ void KircConfig::load()
         m_historyLimit = 200;
     }
     m_defaultPartReason = ui.readEntry(QStringLiteral("DefaultPartReason"), m_defaultPartReason);
+    m_respondToCtcpVersion =
+        ui.readEntry(QStringLiteral("RespondToCtcpVersion"), m_respondToCtcpVersion);
 
     // ---- one-time theme-schema migration (< 3 -> 3; policy in the header) --
     // A config file that predates the key is version 1 by definition; a fresh
@@ -645,6 +661,7 @@ void KircConfig::load()
     Q_EMIT historyLimitChanged();
     Q_EMIT defaultPartReasonChanged();
     Q_EMIT serverPasswordChanged();
+    Q_EMIT respondToCtcpVersionChanged();
 }
 
 void KircConfig::save()
@@ -684,6 +701,7 @@ void KircConfig::save()
     ui.writeEntry(QStringLiteral("ShowTimestamps"), m_showTimestamps);
     ui.writeEntry(QStringLiteral("HistoryLimit"), m_historyLimit);
     ui.writeEntry(QStringLiteral("DefaultPartReason"), m_defaultPartReason);
+    ui.writeEntry(QStringLiteral("RespondToCtcpVersion"), m_respondToCtcpVersion);
 
     KConfigGroup services = config.group(QString::fromLatin1(kServicesGroup));
     services.writeEntry(QStringLiteral("IdentifyOnConnect"), m_identifyOnConnect);

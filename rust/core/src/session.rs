@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::error::Error;
 use std::io;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use log::{debug, info, warn};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader, ReadBuf};
@@ -81,6 +81,14 @@ pub struct ConnectionConfig {
     /// when the id names an explicit mechanism it overrides
     /// `sasl.mechanism`.
     pub sasl_mechanism: i32,
+    /// Whether to answer an incoming CTCP VERSION *request* (sent as a
+    /// PRIVMSG) with `NOTICE <nick> :\x01VERSION kIRC <version>\x01`.
+    /// Set by `IrcBridge::set_ctcp_version_reply`; default `true`.
+    ///
+    /// Only VERSION is gated: PING, TIME and CLIENTINFO are answered
+    /// unconditionally. A CTCP that arrives in a NOTICE is never answered,
+    /// whatever this switch says.
+    pub ctcp_version_reply: bool,
     /// Extra capabilities to request on top of the defaults.
     pub request_caps: Vec<String>,
 }
@@ -97,6 +105,7 @@ impl Default for ConnectionConfig {
             server_password: None,
             sasl: None,
             sasl_mechanism: 0,
+            ctcp_version_reply: true,
             request_caps: Vec::new(),
         }
     }
@@ -481,8 +490,8 @@ impl Session {
             "CAP" => self.handle_cap(&message).await?,
             "AUTHENTICATE" => self.handle_authenticate(&message).await?,
             "BATCH" => self.handle_batch(&message).await,
-            "PRIVMSG" => self.handle_privmsg(&message).await,
-            "NOTICE" => self.handle_notice(&message).await,
+            "PRIVMSG" => self.handle_privmsg(&message).await?,
+            "NOTICE" => self.handle_notice(&message).await?,
             "JOIN" => {
                 let channel = message.params.first().cloned().unwrap_or_default();
                 let nick = source_name(&message);
@@ -1020,22 +1029,32 @@ impl Session {
         }
     }
 
-    async fn handle_privmsg(&mut self, message: &IrcMessage) {
+    async fn handle_privmsg(&mut self, message: &IrcMessage) -> io::Result<()> {
         let raw_target = message.params.first().cloned().unwrap_or_default();
-        let text = message.params.get(1).cloned().unwrap_or_default();
+        let raw_text = message.params.get(1).cloned().unwrap_or_default();
         let nick = source_name(message);
         let timestamp = message.tags.get("time").cloned().flatten();
         let is_self = !nick.is_empty() && nick.eq_ignore_ascii_case(&self.config.nickname);
-        let is_highlight = !is_self && is_highlight(&text, &self.config.nickname);
+        let is_highlight = !is_self && is_highlight(&raw_text, &self.config.nickname);
         let target = conversation_target(&self.config.nickname, &nick, &raw_target, is_self);
-        let text = display_privmsg(&text);
+
+        // CTCP is routed separately from chat text: without this, the `\x01`
+        // delimiters are stripped as formatting and a request like
+        // `\x01VERSION\x01` is shown as the bare word "VERSION".
+        if let Some(ctcp) = parse_ctcp(&raw_text) {
+            return self
+                .handle_ctcp(ctcp, &nick, &target, is_self, is_highlight, timestamp, false)
+                .await;
+        }
+
+        let text = display_privmsg(&raw_text);
         if text.trim().is_empty() {
-            return;
+            return Ok(());
         }
         // Swallow only our own NickServ IDENTIFY echo (seen via
         // echo-message); channel traffic starting with "identify" displays.
         if is_self && is_identify_echo(&raw_target, &text) {
-            return;
+            return Ok(());
         }
         self.emit(IrcEvent::Msg {
             target,
@@ -1046,13 +1065,14 @@ impl Session {
             is_highlight,
         })
         .await;
+        Ok(())
     }
 
     /// User/service NOTICE (NickServ, ChanServ, queries) lands in that
     /// conversation. Server-wide NOTICE stays on the console.
-    async fn handle_notice(&mut self, message: &IrcMessage) {
+    async fn handle_notice(&mut self, message: &IrcMessage) -> io::Result<()> {
         let raw_target = message.params.first().cloned().unwrap_or_default();
-        let text = message
+        let raw_text = message
             .params
             .get(1)
             .cloned()
@@ -1065,24 +1085,103 @@ impl Session {
                     .is_some_and(|n| !n.contains('.'))
         });
         if !userish {
-            self.emit(IrcEvent::Notice { nick, text }).await;
-            return;
+            self.emit(IrcEvent::Notice { nick, text: raw_text }).await;
+            return Ok(());
         }
         let is_self = !nick.is_empty() && nick.eq_ignore_ascii_case(&self.config.nickname);
         let target = conversation_target(&self.config.nickname, &nick, &raw_target, is_self);
-        let text = display_privmsg(&text);
+        let timestamp = message.tags.get("time").cloned().flatten();
+        // A CTCP in a NOTICE is displayed like any other CTCP — and, crucially,
+        // is never answered: that is how CTCP reply loops start.
+        if let Some(ctcp) = parse_ctcp(&raw_text) {
+            return self
+                .handle_ctcp(ctcp, &nick, &target, is_self, false, timestamp, true)
+                .await;
+        }
+        let text = display_privmsg(&raw_text);
         if text.trim().is_empty() {
-            return;
+            return Ok(());
         }
         self.emit(IrcEvent::Msg {
             target,
             nick,
             text,
-            timestamp: message.tags.get("time").cloned().flatten(),
+            timestamp,
             is_self,
             is_highlight: false,
         })
         .await;
+        Ok(())
+    }
+
+    /// Handle one inbound CTCP message, from a PRIVMSG or a NOTICE.
+    ///
+    /// Loop safety: only a request that arrived as a PRIVMSG is ever
+    /// answered, our own echo is ignored outright, and every command that is
+    /// not an explicit request (DCC, SOURCE, FINGER, …) stays unanswered. An
+    /// answer goes back as `NOTICE <nick> :\x01<reply>\x01` addressed to the
+    /// sender.
+    ///
+    /// Display: ACTION keeps its `/me` rendering; every other CTCP becomes a
+    /// dim system-style line (the `"*"` nick is the existing event marker)
+    /// naming the kind and the sender, so a request or reply is never shown
+    /// as ordinary chat and never silently dropped.
+    async fn handle_ctcp(
+        &mut self,
+        ctcp: Ctcp,
+        nick: &str,
+        target: &str,
+        is_self: bool,
+        is_highlight: bool,
+        timestamp: Option<String>,
+        in_notice: bool,
+    ) -> io::Result<()> {
+        // ACTION is a CTCP but not a request: it stays chat, and is never
+        // answered — from a NOTICE either.
+        if let Ctcp::Action(action) = &ctcp {
+            let action = strip_irc_formatting(action);
+            if action.trim().is_empty() {
+                return Ok(());
+            }
+            self.emit(IrcEvent::Msg {
+                target: target.to_string(),
+                nick: nick.to_string(),
+                text: format!("* {action}"),
+                timestamp,
+                is_self,
+                is_highlight,
+            })
+            .await;
+            return Ok(());
+        }
+
+        // Our own echo (echo-message) must never be answered — it is not an
+        // incoming request — and a source we cannot address cannot be
+        // answered either.
+        if is_self || nick.is_empty() {
+            debug!("ignoring CTCP {} without an answerable sender", ctcp.kind());
+            return Ok(());
+        }
+
+        self.emit(IrcEvent::Msg {
+            target: target.to_string(),
+            nick: "*".to_string(),
+            text: ctcp_display_line(&ctcp, nick, in_notice),
+            timestamp,
+            is_self: false,
+            is_highlight: false,
+        })
+        .await;
+
+        if in_notice {
+            // Never answer a NOTICE: a CTCP in a NOTICE is protocol-wise a
+            // reply (a VERSION answer, for instance), not a request.
+            return Ok(());
+        }
+        if let Some(reply) = ctcp_reply(&ctcp, self.config.ctcp_version_reply, unix_now()) {
+            self.send(&format!("NOTICE {nick} :\u{1}{reply}\u{1}")).await?;
+        }
+        Ok(())
     }
 
     async fn handle_command(&mut self, command: ClientCommand) -> io::Result<()> {
@@ -1104,6 +1203,18 @@ impl Session {
                 }
                 if !self.echo_message {
                     for line in &lines {
+                        // An outbound CTCP query is not chat: the
+                        // echo-message replay takes the CTCP path and never
+                        // shows a self chat line, so the local mirror must
+                        // agree (this is the path `/ctcp` and
+                        // `/version <nick>` take — the UI prints its own
+                        // local line for those). ACTION is the exception:
+                        // `/me` stays a chat row in both modes.
+                        if let Some(ctcp) = parse_ctcp(line) {
+                            if !matches!(ctcp, Ctcp::Action(_)) {
+                                continue;
+                            }
+                        }
                         self.emit(IrcEvent::Msg {
                             target: target.clone(),
                             nick: self.config.nickname.clone(),
@@ -1282,6 +1393,189 @@ fn display_privmsg(text: &str) -> String {
         text.to_string()
     };
     strip_irc_formatting(&body)
+}
+
+// ===========================================================================
+// CTCP
+// ===========================================================================
+
+/// A CTCP message parsed out of an inbound PRIVMSG or NOTICE.
+///
+/// CTCP is a sub-protocol carried inside ordinary messages: the body is
+/// wrapped in `\x01` delimiters and starts with a command word, optionally
+/// followed by arguments. The delimiters are the only thing that
+/// distinguishes `\x01VERSION\x01` from a user typing the word VERSION, so
+/// detection happens before any chat-text rendering.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Ctcp {
+    /// `/me` text — rendered as chat, never answered.
+    Action(String),
+    Version(String),
+    Ping(String),
+    Time(String),
+    ClientInfo(String),
+    /// File transfer / chat requests — never answered, surfaced explicitly.
+    Dcc(String),
+    /// Any other CTCP command (`SOURCE`, `FINGER`, …) — never answered.
+    Other { kind: String, payload: String },
+}
+
+impl Ctcp {
+    /// The command word as shown to the user (normalized upper-case).
+    fn kind(&self) -> &str {
+        match self {
+            Ctcp::Action(_) => "ACTION",
+            Ctcp::Version(_) => "VERSION",
+            Ctcp::Ping(_) => "PING",
+            Ctcp::Time(_) => "TIME",
+            Ctcp::ClientInfo(_) => "CLIENTINFO",
+            Ctcp::Dcc(_) => "DCC",
+            Ctcp::Other { kind, .. } => kind,
+        }
+    }
+
+    /// Command arguments, `""` when the sender omitted them.
+    fn payload(&self) -> &str {
+        match self {
+            Ctcp::Action(p)
+            | Ctcp::Version(p)
+            | Ctcp::Ping(p)
+            | Ctcp::Time(p)
+            | Ctcp::ClientInfo(p)
+            | Ctcp::Dcc(p) => p,
+            Ctcp::Other { payload, .. } => payload,
+        }
+    }
+}
+
+/// Parse a message body as CTCP; `None` for ordinary chat text.
+///
+/// An unterminated body (`\x01VERSION` with no closing delimiter — some
+/// clients send it) and anything after the closing delimiter are tolerated;
+/// the command is everything before the first space.
+fn parse_ctcp(text: &str) -> Option<Ctcp> {
+    let body = text.strip_prefix('\u{1}')?;
+    let body = match body.find('\u{1}') {
+        Some(end) => &body[..end],
+        None => body,
+    };
+    let (kind, payload) = match body.split_once(' ') {
+        Some((kind, payload)) => (kind, payload),
+        None => (body, ""),
+    };
+    if kind.is_empty() {
+        return None;
+    }
+    // CTCP command words are case-insensitive on the wire.
+    let kind = kind.to_ascii_uppercase();
+    Some(match kind.as_str() {
+        "ACTION" => Ctcp::Action(payload.to_string()),
+        "VERSION" => Ctcp::Version(payload.to_string()),
+        "PING" => Ctcp::Ping(payload.to_string()),
+        "TIME" => Ctcp::Time(payload.to_string()),
+        "CLIENTINFO" => Ctcp::ClientInfo(payload.to_string()),
+        "DCC" => Ctcp::Dcc(payload.to_string()),
+        _ => Ctcp::Other {
+            kind,
+            payload: payload.to_string(),
+        },
+    })
+}
+
+/// Client name reported in the CTCP VERSION reply. The version part is the
+/// kirc-core crate version, which `packaging/set-version.sh` keeps in step
+/// with the release tag — never a hand-written string.
+const CTCP_CLIENT_NAME: &str = "kIRC";
+
+/// Commands advertised in the CLIENTINFO reply.
+const CTCP_CLIENTINFO: &str = "ACTION CLIENTINFO PING TIME VERSION";
+
+/// Seconds since the Unix epoch (0 if the clock is somehow before 1970).
+fn unix_now() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// The reply payload (without `\x01` delimiters) for an inbound CTCP
+/// *request*, or `None` when the command must not be answered.
+///
+/// `version_enabled` is [`ConnectionConfig::ctcp_version_reply`]: it gates
+/// VERSION only — PING, TIME and CLIENTINFO are unconditional. `now` is
+/// epoch seconds, injected so the TIME reply is testable.
+fn ctcp_reply(ctcp: &Ctcp, version_enabled: bool, now: u64) -> Option<String> {
+    match ctcp {
+        Ctcp::Version(_) => {
+            version_enabled.then(|| format!("VERSION {CTCP_CLIENT_NAME} {}", env!("CARGO_PKG_VERSION")))
+        }
+        // Echo the payload verbatim.
+        Ctcp::Ping(payload) if payload.is_empty() => Some("PING".to_string()),
+        Ctcp::Ping(payload) => Some(format!("PING {payload}")),
+        Ctcp::Time(_) => Some(format!("TIME {}", format_utc(now))),
+        Ctcp::ClientInfo(_) => Some(format!("CLIENTINFO {CTCP_CLIENTINFO}")),
+        // ACTION is chat, DCC is unsupported, and every other command
+        // (SOURCE, FINGER, …) gets no automatic reply.
+        Ctcp::Action(_) | Ctcp::Dcc(_) | Ctcp::Other { .. } => None,
+    }
+}
+
+/// The dim system-style line shown for an inbound CTCP that is not ACTION.
+///
+/// Emitted through the ordinary `Msg` vocabulary with nick `"*"` — the
+/// existing event-row marker — so no new model role is needed. A CTCP that
+/// arrived inside a NOTICE is protocol-wise a *reply* (a VERSION answer, for
+/// instance) and is labelled as one.
+fn ctcp_display_line(ctcp: &Ctcp, nick: &str, in_notice: bool) -> String {
+    let nick = strip_irc_formatting(nick);
+    let kind = strip_irc_formatting(ctcp.kind());
+    let payload = strip_irc_formatting(ctcp.payload());
+    if matches!(ctcp, Ctcp::Dcc(_)) {
+        return format!("CTCP DCC from {nick} (DCC is not supported)");
+    }
+    if !in_notice {
+        return format!("CTCP {kind} request from {nick}");
+    }
+    if payload.is_empty() {
+        format!("CTCP {kind} reply from {nick}")
+    } else {
+        format!("CTCP {kind} reply from {nick}: {payload}")
+    }
+}
+
+/// `Thu Sep 11 21:05:00 2026` (UTC) for a CTCP TIME reply.
+fn format_utc(timestamp: u64) -> String {
+    const WEEKDAYS: [&str; 7] = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+    const MONTHS: [&str; 12] = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
+    let days = (timestamp / 86_400) as i64;
+    let secs = timestamp % 86_400;
+    let (year, month, day) = civil_from_days(days);
+    // 1970-01-01 was a Thursday, so `days + 4` indexes a Sunday-first week.
+    let weekday = WEEKDAYS[(days + 4).rem_euclid(7) as usize];
+    format!(
+        "{weekday} {} {day:02} {:02}:{:02}:{:02} {year}",
+        MONTHS[(month - 1) as usize],
+        secs / 3600,
+        (secs % 3600) / 60,
+        secs % 60
+    )
+}
+
+/// Days since the epoch to `(year, month, day)` — Howard Hinnant's
+/// `civil_from_days`, proleptic Gregorian.
+fn civil_from_days(days: i64) -> (i64, u32, u32) {
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097); // [0, 146096]
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365; // [0, 399]
+    let year = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100); // [0, 365]
+    let mp = (5 * doy + 2) / 153; // [0, 11]
+    let day = (doy - (153 * mp + 2) / 5 + 1) as u32; // [1, 31]
+    let month = if mp < 10 { mp + 3 } else { mp - 9 } as u32; // [1, 12]
+    (if month <= 2 { year + 1 } else { year }, month, day)
 }
 
 /// Remove mIRC/IRC formatting codes (bold, italic, underline, colours, reset).
@@ -1864,6 +2158,7 @@ mod tests {
             server_password: None,
             sasl: None,
             sasl_mechanism: 0,
+            ctcp_version_reply: true,
             request_caps: vec![],
         };
         let (etx, mut erx) = tokio::sync::mpsc::channel::<IrcEvent>(8);
@@ -1971,6 +2266,7 @@ mod tests {
                 server_password: None,
                 sasl: None,
                 sasl_mechanism: 0,
+                ctcp_version_reply: true,
                 request_caps: vec![],
             },
             events,
@@ -2035,5 +2331,156 @@ mod tests {
             seen.iter().any(|l| l == "QUIT :Ping timeout"),
             "QUIT on ping timeout missing: {seen:?}"
         );
+    }
+
+    #[test]
+    fn ctcp_parsing_needs_delimiters_and_normalizes_the_kind() {
+        // Ordinary chat text is never CTCP, even when it is a command word.
+        assert_eq!(parse_ctcp("hello"), None);
+        assert_eq!(parse_ctcp("VERSION"), None);
+        assert_eq!(parse_ctcp(" PING 12345"), None);
+        assert_eq!(parse_ctcp("\u{1}"), None);
+        assert_eq!(parse_ctcp("\u{1}\u{1}"), None);
+
+        assert_eq!(
+            parse_ctcp("\u{1}VERSION\u{1}"),
+            Some(Ctcp::Version(String::new()))
+        );
+        // Case-insensitive on the wire.
+        assert_eq!(
+            parse_ctcp("\u{1}version\u{1}"),
+            Some(Ctcp::Version(String::new()))
+        );
+        // An unterminated body still parses.
+        assert_eq!(parse_ctcp("\u{1}VERSION"), Some(Ctcp::Version(String::new())));
+        assert_eq!(
+            parse_ctcp("\u{1}PING 12345\u{1}"),
+            Some(Ctcp::Ping("12345".to_string()))
+        );
+        // The payload keeps interior spacing so PING can be echoed verbatim.
+        assert_eq!(
+            parse_ctcp("\u{1}PING  hello  42 \u{1}"),
+            Some(Ctcp::Ping(" hello  42 ".to_string()))
+        );
+        assert_eq!(
+            parse_ctcp("\u{1}ACTION waves at you\u{1}"),
+            Some(Ctcp::Action("waves at you".to_string()))
+        );
+        assert_eq!(
+            parse_ctcp("\u{1}DCC SEND f.txt 1 2 3\u{1}"),
+            Some(Ctcp::Dcc("SEND f.txt 1 2 3".to_string()))
+        );
+        assert_eq!(
+            parse_ctcp("\u{1}source\u{1}"),
+            Some(Ctcp::Other {
+                kind: "SOURCE".to_string(),
+                payload: String::new(),
+            })
+        );
+        // Junk after the closing delimiter is dropped, never displayed.
+        assert_eq!(
+            parse_ctcp("\u{1}VERSION\u{1}trailing"),
+            Some(Ctcp::Version(String::new()))
+        );
+    }
+
+    #[test]
+    fn ctcp_replies_are_limited_to_requests() {
+        let version = ctcp_reply(&Ctcp::Version(String::new()), true, 0).unwrap();
+        assert_eq!(
+            version,
+            format!("VERSION kIRC {}", env!("CARGO_PKG_VERSION")),
+            "the reply must report the crate version, not an invented string"
+        );
+        // A request payload is not reflected back.
+        assert_eq!(
+            ctcp_reply(&Ctcp::Version("ignored".to_string()), true, 0).unwrap(),
+            version
+        );
+
+        // The toggle suppresses VERSION only.
+        assert_eq!(ctcp_reply(&Ctcp::Version(String::new()), false, 0), None);
+        assert_eq!(
+            ctcp_reply(&Ctcp::Ping("12345".to_string()), false, 0).unwrap(),
+            "PING 12345"
+        );
+        assert_eq!(
+            ctcp_reply(&Ctcp::Time(String::new()), false, 0).unwrap(),
+            "TIME Thu Jan 01 00:00:00 1970"
+        );
+        assert_eq!(
+            ctcp_reply(&Ctcp::ClientInfo(String::new()), false, 0).unwrap(),
+            "CLIENTINFO ACTION CLIENTINFO PING TIME VERSION"
+        );
+
+        // PING echoes the payload verbatim, empty payload included.
+        assert_eq!(
+            ctcp_reply(&Ctcp::Ping(String::new()), true, 0).unwrap(),
+            "PING"
+        );
+        assert_eq!(
+            ctcp_reply(&Ctcp::Ping(" hello  42 ".to_string()), true, 0).unwrap(),
+            "PING  hello  42 "
+        );
+        assert_eq!(
+            ctcp_reply(&Ctcp::Time(String::new()), true, 951_827_696).unwrap(),
+            "TIME Tue Feb 29 12:34:56 2000"
+        );
+
+        // Chat, file transfers and everything else are never answered.
+        assert_eq!(ctcp_reply(&Ctcp::Action("waves".to_string()), true, 0), None);
+        assert_eq!(
+            ctcp_reply(&Ctcp::Dcc("SEND f.txt 1 2 3".to_string()), true, 0),
+            None
+        );
+        assert_eq!(
+            ctcp_reply(
+                &Ctcp::Other {
+                    kind: "SOURCE".to_string(),
+                    payload: String::new(),
+                },
+                true,
+                0
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn ctcp_display_lines_name_kind_and_sender() {
+        let dcc = Ctcp::Dcc("SEND evil.exe 3232235777 6667 0".to_string());
+        let line = ctcp_display_line(&dcc, "alice", false);
+        assert!(
+            line.contains("DCC") && line.contains("alice") && line.contains("not supported"),
+            "DCC must be surfaced explicitly: {line}"
+        );
+        assert!(
+            !line.contains("evil.exe"),
+            "the DCC payload must not leak into the log line: {line}"
+        );
+
+        assert_eq!(
+            ctcp_display_line(&Ctcp::Version(String::new()), "alice", false),
+            "CTCP VERSION request from alice"
+        );
+        // A reply (a CTCP inside a NOTICE) shows the remote client's string.
+        assert_eq!(
+            ctcp_display_line(&Ctcp::Version("SomeClient 1.2".to_string()), "alice", true),
+            "CTCP VERSION reply from alice: SomeClient 1.2"
+        );
+        assert_eq!(
+            ctcp_display_line(&Ctcp::ClientInfo(String::new()), "bob", true),
+            "CTCP CLIENTINFO reply from bob"
+        );
+    }
+
+    #[test]
+    fn utc_formatting_matches_known_timestamps() {
+        assert_eq!(format_utc(0), "Thu Jan 01 00:00:00 1970");
+        assert_eq!(format_utc(951_827_696), "Tue Feb 29 12:34:56 2000"); // leap day
+        assert_eq!(format_utc(1_789_160_700), "Fri Sep 11 21:05:00 2026");
+        // 2100 is a century that is NOT a leap year.
+        assert_eq!(format_utc(4_107_542_400), "Mon Mar 01 00:00:00 2100");
+        assert_eq!(format_utc(1_735_689_599), "Tue Dec 31 23:59:59 2024");
     }
 }

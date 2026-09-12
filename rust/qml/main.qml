@@ -855,6 +855,7 @@ Kirigami.ApplicationWindow {
 
             root.applySaslMechanism()
             root.applyServerPassword()
+            root.applyCtcpVersionReply()
             root.bridge.connect_server(host, port, tls, nickname, saslUser, saslPass)
             root.openChat()
         }
@@ -947,6 +948,7 @@ Kirigami.ApplicationWindow {
         }
         root.applySaslMechanism()
         root.applyServerPassword()
+        root.applyCtcpVersionReply()
         root.bridge.connect_server(root.lastHost, root.lastPort, root.lastTls,
                                    root.lastNickname, root.lastSaslUser, root.lastSaslPass)
     }
@@ -1051,6 +1053,30 @@ Kirigami.ApplicationWindow {
             return
         }
         root.bridge.set_server_password(password)
+    }
+
+    /// The persisted "reply to CTCP VERSION" preference (default on).
+    /// Harnesses without prefs behave like the bridge default.
+    function respondToCtcpVersion()
+    {
+        if (root.appConfig !== null && root.appConfig.respondToCtcpVersion !== undefined) {
+            return root.appConfig.respondToCtcpVersion
+        }
+        return true
+    }
+
+    /// Hand the CTCP VERSION auto-reply choice to the bridge.  Must run BEFORE
+    /// connect_server (same contract as set_sasl_mechanism) and on EVERY
+    /// connect path, reconnects included: the bridge keeps the value for the
+    /// session, so a dropped connection that is retried without this call
+    /// would silently fall back to the default and start advertising the
+    /// client again.  Guarded with typeof so older doubles keep working.
+    function applyCtcpVersionReply()
+    {
+        if (typeof root.bridge.set_ctcp_version_reply !== "function") {
+            return
+        }
+        root.bridge.set_ctcp_version_reply(root.respondToCtcpVersion())
     }
 
     /// Open the chat page's join dialog when it exists; otherwise drive the

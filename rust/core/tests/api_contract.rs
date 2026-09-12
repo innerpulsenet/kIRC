@@ -78,6 +78,7 @@ fn connection_config_fields() {
             password: "p".into(),
         }),
         sasl_mechanism: 0,
+        ctcp_version_reply: true,
         request_caps: vec!["draft/example".into()],
     };
     let _: String = cfg.host;
@@ -88,6 +89,7 @@ fn connection_config_fields() {
     let _: String = cfg.realname;
     let _: Option<String> = cfg.server_password;
     let _: Option<SaslConfig> = cfg.sasl;
+    let _: bool = cfg.ctcp_version_reply;
     let _: Vec<String> = cfg.request_caps;
 }
 

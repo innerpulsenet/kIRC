@@ -498,6 +498,19 @@ pub mod qobject {
         #[qinvokable]
         fn set_server_password(self: Pin<&mut Self>, password: QString);
 
+        /// Whether to answer an incoming CTCP VERSION request with
+        /// `NOTICE <nick> :\x01VERSION kIRC <version>\x01`. Must be called
+        /// BEFORE `connect_server`, which snapshots it into the session
+        /// config (same contract as `set_sasl_mechanism`), so a reconnect
+        /// after changing it uses the new value. Defaults to `true`.
+        ///
+        /// Privacy-relevant: answering reveals the client's name and its
+        /// exact version to anyone who asks. Only VERSION is gated — CTCP
+        /// PING, TIME and CLIENTINFO are answered regardless of this switch.
+        /// A CTCP that arrives inside a NOTICE is never answered either way.
+        #[qinvokable]
+        fn set_ctcp_version_reply(self: Pin<&mut Self>, enabled: bool);
+
         /// Start a new IRC session (replacing any existing one).
         #[qinvokable]
         fn connect_server(
@@ -702,6 +715,11 @@ pub struct IrcBridgeRust {
     /// Memory only: never written to any settings store, never logged, and
     /// nulled as soon as the session is torn down. `None` sends no `PASS`.
     server_password: Option<String>,
+    /// Whether to answer an incoming CTCP VERSION request
+    /// (`set_ctcp_version_reply`); snapshotted by `connect_server` into the
+    /// session config. Defaults to `true`. Only VERSION is gated: CTCP
+    /// PING/TIME/CLIENTINFO are answered regardless.
+    ctcp_version_reply: bool,
     /// Monotonic id of the session whose events may still be applied.
     ///
     /// Bumped by `connect_server` / `disconnect_server`; the event pump and
@@ -725,6 +743,7 @@ impl Default for IrcBridgeRust {
             session: None,
             sasl_mechanism: 0,
             server_password: None,
+            ctcp_version_reply: true,
             session_epoch: 0,
         }
     }
@@ -1220,6 +1239,19 @@ impl qobject::IrcBridge {
         };
     }
 
+    /// Allow or suppress the CTCP VERSION reply used by the NEXT
+    /// `connect_server` call.
+    ///
+    /// Additive to the frozen bridge contract (same pattern as
+    /// `set_sasl_mechanism`): the value is snapshotted into the session
+    /// config, so it must be set before connecting and a reconnect picks up
+    /// the latest value. `false` suppresses VERSION only — CTCP PING, TIME
+    /// and CLIENTINFO are still answered, and a CTCP that arrived in a
+    /// NOTICE is never answered regardless.
+    pub fn set_ctcp_version_reply(mut self: Pin<&mut Self>, enabled: bool) {
+        self.as_mut().rust_mut().ctcp_version_reply = enabled;
+    }
+
     /// Invalidate every event the current session still has queued, and
     /// return the new epoch. See `IrcBridgeRust::session_epoch`.
     fn bump_session_epoch(mut self: Pin<&mut Self>) -> u64 {
@@ -1262,6 +1294,8 @@ impl qobject::IrcBridge {
         // at SASL start, so auto needs no advertisement data here — just the
         // preference id plus the raw creds.
         let mechanism_id = self.rust().sasl_mechanism;
+        // Snapshot the CTCP VERSION switch (default true) for the same reason.
+        let ctcp_version_reply = self.rust().ctcp_version_reply;
         let mechanism = match mechanism_id {
             1 => SaslMechanism::Plain,
             2 => SaslMechanism::External,
@@ -1293,6 +1327,7 @@ impl qobject::IrcBridge {
             server_password,
             sasl,
             sasl_mechanism: mechanism_id,
+            ctcp_version_reply,
             request_caps: Vec::new(),
         };
 

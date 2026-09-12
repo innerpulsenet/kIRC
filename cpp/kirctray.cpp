@@ -295,6 +295,16 @@ void KircTray::onConnect()
                                                                 Q_ARG(QString, serverPassword))) {
         qWarning("kIRC: tray could not invoke IrcBridge::set_server_password");
     }
+    // CTCP VERSION auto-reply preference, also BEFORE connect_server (same
+    // contract as set_sasl_mechanism).  A tray reconnect must carry the
+    // persisted choice, or a user who turned the reply off would silently
+    // start advertising the client again after a drop.  A bridge without the
+    // invokable is tolerated (it keeps its own default).
+    if (!QMetaObject::invokeMethod(m_bridge,
+                                   "set_ctcp_version_reply",
+                                   Q_ARG(bool, m_config->respondToCtcpVersion()))) {
+        qWarning("kIRC: tray could not invoke IrcBridge::set_ctcp_version_reply");
+    }
     // Reconnect from the last saved profile.  The SASL password is memory-only
     // (KircConfig::sessionSaslPassword, never on disk): empty unless the user
     // connected with SASL this session, in which case reuse it so the tray

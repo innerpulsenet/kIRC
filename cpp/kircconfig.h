@@ -84,6 +84,7 @@ class KircConfig : public QObject
     Q_PROPERTY(QString defaultPartReason READ defaultPartReason WRITE setDefaultPartReason NOTIFY defaultPartReasonChanged)
     Q_PROPERTY(QString serverPassword READ serverPassword WRITE setServerPassword NOTIFY serverPasswordChanged)
     Q_PROPERTY(QString sessionServerPassword READ sessionServerPassword WRITE setSessionServerPassword NOTIFY sessionServerPasswordChanged)
+    Q_PROPERTY(bool respondToCtcpVersion READ respondToCtcpVersion WRITE setRespondToCtcpVersion NOTIFY respondToCtcpVersionChanged)
 
 public:
     explicit KircConfig(QObject *parent = nullptr);
@@ -195,6 +196,13 @@ public:
     QString sessionServerPassword() const;
     void setSessionServerPassword(const QString &sessionServerPassword);
 
+    /// Whether an incoming CTCP VERSION request is answered (default on).
+    /// Privacy-relevant: the reply reveals the client name and version to
+    /// whoever asks, so it must be switchable off.  Pushed to the bridge via
+    /// IrcBridge::set_ctcp_version_reply BEFORE connect_server.
+    bool respondToCtcpVersion() const;
+    void setRespondToCtcpVersion(bool respondToCtcpVersion);
+
     /// Re-read every value from disk.  Called once at startup, before the QML
     /// engine is created, so the form is prefilled on first paint.
     void load();
@@ -231,6 +239,7 @@ Q_SIGNALS:
     void defaultPartReasonChanged();
     void serverPasswordChanged();
     void sessionServerPasswordChanged();
+    void respondToCtcpVersionChanged();
 
 private:
     // Defaults mirror the initial values in ConnectPage.qml so a first run
@@ -262,4 +271,6 @@ private:
     QString m_defaultPartReason = QStringLiteral("Leaving"); // empty = send none
     QString m_serverPassword;
     QString m_sessionServerPassword;
+    // Answer CTCP VERSION requests by default: the classic IRC behaviour.
+    bool m_respondToCtcpVersion = true;
 };

@@ -82,14 +82,14 @@ Kirigami.Page {
     // (used by the live filter).
     readonly property var sectionKeywords: [
         ["identity", "nickname", "nickserv", "account", "password", "sasl", "mechanism", "user", "plain", "external", "auto"],
-        ["connection", "autojoin", "channel", "password", "server", "pass", "history", "lines", "scrollback", "reconnect", "retry", "authentication", "identify", "part", "quit", "reason", "leave"],
+        ["connection", "autojoin", "channel", "password", "server", "pass", "history", "lines", "scrollback", "reconnect", "retry", "authentication", "identify", "part", "quit", "reason", "leave", "ctcp", "version", "client", "reply", "privacy"],
         ["appearance", "theme", "font", "size", "timestamps", "colour", "color", "palette"],
         ["notifications", "notification", "highlight", "direct message", "tray", "minimize"],
         ["about", "version", "kirc", "license", "kde", "passwords"]
     ]
     readonly property var sectionRowLabels: [
         ["Nickname", "NickServ account", "NickServ password", "SASL user", "SASL mechanism"],
-        ["Server password", "Identify", "Autojoin", "History", "Reconnect", "Retry limit", "Auth failures", "Part reason"],
+        ["Server password", "Identify", "CTCP version", "Autojoin", "History", "Reconnect", "Retry limit", "Auth failures", "Part reason"],
         ["Theme", "Font family", "Font size", "Timestamps"],
         ["Highlights", "Direct messages", "System tray"],
         ["Version", "Passwords"]
@@ -484,6 +484,9 @@ Kirigami.Page {
         if (page.hasPref("defaultPartReason")) {
             c.defaultPartReason = defaultPartReasonField.text
         }
+        if (page.hasPref("respondToCtcpVersion")) {
+            c.respondToCtcpVersion = ctcpVersionSwitch.checked
+        }
         // The server password is a secret like the others: it goes to KWallet
         // through KircConfig.save(), never into kirc.conf.
         c.serverPassword = serverPassField.text
@@ -583,6 +586,9 @@ Kirigami.Page {
             }
             if (page.hasPref("defaultPartReason")) {
                 defaultPartReasonField.text = c.defaultPartReason
+            }
+            if (page.hasPref("respondToCtcpVersion")) {
+                ctcpVersionSwitch.checked = c.respondToCtcpVersion
             }
             if (c.serverPassword !== undefined && c.serverPassword !== null) {
                 serverPassField.text = c.serverPassword
@@ -978,6 +984,37 @@ Kirigami.Page {
                                     onToggled: page.persist()
                                 }
                             }
+                            TermRule {}
+                        }
+
+                        // ---- CTCP VERSION auto-reply (privacy-relevant) ----
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            visible: page.rowVisible(qsTr("CTCP version")) && page.hasPref("respondToCtcpVersion")
+                            spacing: 0
+
+                            TermRow {
+                                label: qsTr("CTCP version")
+                                TermToggle {
+                                    id: ctcpVersionSwitch
+                                    text: qsTr("Reply to CTCP VERSION requests")
+                                    checked: true
+                                    onToggled: page.persist()
+                                }
+                            }
+
+                            Text {
+                                Layout.fillWidth: true
+                                Layout.leftMargin: 10
+                                Layout.rightMargin: 10
+                                Layout.bottomMargin: 5
+                                text: qsTr("answers CTCP VERSION with the client name and version — anyone who asks can see them")
+                                color: page.fgDim()
+                                font.family: page.mono
+                                font.pointSize: page.ptSmall
+                                elide: Text.ElideRight
+                            }
+
                             TermRule {}
                         }
 

@@ -46,6 +46,53 @@ Item {
         onStatusChanged: if (status === Loader.Error) { harness.failures++; console.error("FAIL ChatPage.qml load") }
     }
 
+    // Settings pane, standalone, with its own config double, created with
+    // `kircConfig` as an INITIAL property (the same order as the app's
+    // pageStack.push, so Component.onCompleted sees the config).  Seeded with
+    // respondToCtcpVersion OFF so the page must show that value and persist a
+    // change back — the settings half of the CTCP VERSION contract.
+    property var settingsPageItem: null
+    Component.onCompleted: {
+        var comp = Qt.createComponent("org/kde/kirc/SettingsPage.qml")
+        if (comp.status === Component.Ready) {
+            harness.settingsPageItem = comp.createObject(harness, { "kircConfig": settingsCfg })
+            if (harness.settingsPageItem === null) {
+                harness.failures++
+                console.error("FAIL SettingsPage.qml createObject")
+            }
+        } else {
+            harness.failures++
+            console.error("FAIL SettingsPage.qml load: " + comp.errorString())
+        }
+    }
+
+    QtObject {
+        id: settingsCfg
+        property string themeId: "tui"
+        property int fontDelta: 0
+        property string fontFamily: ""
+        property string autojoin: ""
+        property bool reconnect: true
+        property bool minimizeToTray: true
+        property bool identifyOnConnect: false
+        property string nickservNick: ""
+        property string nickservPassword: ""
+        property int saslMechanism: 0
+        property bool notifyHighlights: true
+        property bool notifyDirectMessages: true
+        property int reconnectLimit: 10
+        property bool reconnectAfterAuthFailure: false
+        property int historyLimit: 200
+        property string defaultPartReason: "Leaving"
+        property string serverPassword: ""
+        property bool showTimestamps: true
+        property string nickname: "kircuser"
+        // The pref under test, seeded OFF.
+        property bool respondToCtcpVersion: false
+        property bool saved: false
+        function save() { settingsCfg.saved = true }
+    }
+
     // ---- theme engine unit checks (independent of the UI) ------------------
     QtObject {
         id: themeTests
@@ -281,12 +328,34 @@ Item {
                 harness.ok("ConnectPage form valid after filling", cp.formValid === true)
                 cp.tryConnect()
                 break
-            case 3:
+            case 3: {
                 if (!harness.win) { break }
                 harness.ok("connect pushed the chat page", harness.win.pageStack.depth === 2, "depth=" + harness.win.pageStack.depth)
                 harness.ok("state = connected", harness.win.bridge.connection_state === 2)
                 harness.ok("header shows Connected", harness.win.statusText === "Connected", harness.win.statusText)
+                // The CTCP VERSION auto-reply choice must reach the bridge
+                // BEFORE connect_server (the double records every call, so the
+                // order is asserted, not eyeballed).
+                harness.ok("connect passes respondToCtcpVersion before connect_server",
+                           harness.callIndex("set_ctcp_version_reply") >= 0
+                           && harness.callIndex("set_ctcp_version_reply") < harness.callIndex("connect_server"),
+                           "ctcp=" + harness.callIndex("set_ctcp_version_reply")
+                           + " connect=" + harness.callIndex("connect_server"))
+                harness.ok("the value applied matches the persisted pref default (on)",
+                           harness.win.bridge.ctcp_version_reply === true,
+                           "ctcp_version_reply=" + harness.win.bridge.ctcp_version_reply)
+                // Reconnect path: a drop must not silently revert to the
+                // bridge default.  tryReconnect() is driven directly — the
+                // automatic path needs a real appConfig for the reconnect pref.
+                harness.win.bridge.clearCalls()
+                harness.win.tryReconnect()
+                harness.ok("reconnect passes respondToCtcpVersion before connect_server",
+                           harness.callIndex("set_ctcp_version_reply") >= 0
+                           && harness.callIndex("set_ctcp_version_reply") < harness.callIndex("connect_server"),
+                           "trace=[" + harness.win.bridge.callTrace() + "]")
+                harness.win.bridge.clearCalls()
                 break
+            }
             case 4:
                 // delegates must have been created from the model roles
                 if (!harness.win) { break }
@@ -321,13 +390,64 @@ Item {
                                "avatars are gone with the bubbles")
                 }
                 break
-            case 5:
+            case 5: {
+                // A CTCP request and a CTCP VERSION reply, seeded exactly as
+                // the core writes them: an event row (nick "*") whose text
+                // names the kind and the sender.
+                if (!harness.win) { break }
+                var ctcpView = harness.findMessageView(harness.win.pageStack.get(1), 0)
+                if (ctcpView === null) { harness.failures++; console.error("FAIL CTCP seed: no view"); break }
+                ctcpView.model.append_message("#kirc", "*", "CTCP VERSION request from alice", "12:08", false, false)
+                ctcpView.model.append_message("#kirc", "*", "CTCP VERSION reply from bob: irssi 1.4.5 (20240101)", "12:09", false, false)
+                ctcpView.positionViewAtEnd()
+                break
+            }
+            case 6: {
+                // A CTCP line must read as a dim system line and never as
+                // ordinary chat: it takes the event path (no nick column, "* "
+                // marker, dim colour) with the remote client's string visible,
+                // and the row carries no hover state that could reflow it.
+                if (!harness.win) { break }
+                var v = harness.findMessageView(harness.win.pageStack.get(1), 0)
+                if (v === null) { break }
+                var req = v.itemAtIndex(v.count - 2)
+                var rep = v.itemAtIndex(v.count - 1)
+                harness.ok("CTCP request renders on the event path",
+                           req !== null && req.isEvent === true
+                           && String(req.bodyText).indexOf("* CTCP VERSION request from alice") === 0,
+                           req === null ? "null" : ("isEvent=" + req.isEvent + " body=[" + req.bodyText + "]"))
+                harness.ok("CTCP request is dim, not chat-coloured",
+                           req !== null && req.bodyColor === req.fgDimColor && req.bodyColor !== req.fgPrimaryColor,
+                           req === null ? "null" : ("body=" + req.bodyColor + " dim=" + req.fgDimColor))
+                harness.ok("CTCP request has no hover state (nothing can reflow on hover)",
+                           req !== null && req.hovered === undefined,
+                           req === null ? "null" : ("hovered=" + req.hovered))
+                harness.ok("CTCP VERSION reply shows the remote client string",
+                           rep !== null && rep.isEvent === true
+                           && String(rep.bodyMarkup).indexOf("irssi 1.4.5") !== -1,
+                           rep === null ? "null" : ("markup=[" + rep.bodyMarkup + "]"))
+                harness.ok("CTCP reply is dim, not chat-coloured",
+                           rep !== null && rep.bodyColor === rep.fgDimColor && rep.bodyColor !== rep.fgPrimaryColor,
+                           rep === null ? "null" : ("body=" + rep.bodyColor + " dim=" + rep.fgDimColor))
+                harness.ok("both CTCP rows keep the same row height",
+                           req !== null && rep !== null && req.implicitHeight === rep.implicitHeight,
+                           (req !== null && rep !== null)
+                               ? (req.implicitHeight + " vs " + rep.implicitHeight) : "null")
+                var ordinary = v.itemAtIndex(0)
+                harness.ok("ordinary chat still renders as chat (contrast case)",
+                           ordinary !== null && ordinary.isEvent === false
+                           && String(ordinary.bodyText).indexOf("* ") !== 0,
+                           ordinary === null ? "null" : ("isEvent=" + ordinary.isEvent + " body=[" + ordinary.bodyText + "]"))
+                break
+            }
+            case 7: {
                 // the terminal palettes are all live-switchable
                 var outDense = ThemeEngine.applyBuiltinTheme("amber")
                 harness.ok("switch to amber", outDense === "" && ThemeEngine.mode === "dense"
                            && ThemeEngine.themeId === "amber")
                 break
-            case 6:
+            }
+            case 8: {
                 if (!harness.win) { break }
                 var viewDense = harness.findMessageView(harness.win.pageStack.get(1), 0)
                 if (viewDense) {
@@ -337,7 +457,8 @@ Item {
                                itD ? ("styleMode=" + itD.styleMode) : "null")
                 }
                 break
-            case 7:
+            }
+            case 9: {
                 // and back to the default terminal palette
                 var outBubble = ThemeEngine.applyBuiltinTheme("tui")
                 harness.ok("switch back to tui", outBubble === "" && ThemeEngine.mode === "dense"
@@ -352,18 +473,118 @@ Item {
                     }
                 }
                 break
-            case 8:
+            }
+            case 10: {
+                // Settings pane: the CTCP VERSION toggle lives in the
+                // Connection section, mirrors the persisted value (seeded OFF
+                // here) and persists a change back through its config.
+                var sp = harness.settingsPage()
+                harness.ok("SettingsPage instantiated standalone", sp !== null)
+                if (sp === null) { break }
+                var toggle = harness.findByText(sp, "Reply to CTCP VERSION requests", 0)
+                harness.ok("the CTCP VERSION toggle exists", toggle !== null)
+                harness.ok("the toggle shows the persisted value (off)",
+                           toggle !== null && toggle.checked === false,
+                           toggle === null ? "null" : ("checked=" + toggle.checked))
+                harness.ok("the CTCP hint says what the reply reveals",
+                           harness.findTextContaining(sp, "client name and version", 0) !== null, "")
+                // It belongs to the Connection section (index 1): selecting
+                // another section hides the row entirely.
+                sp.sectionIndex = 0
+                var hiddenElsewhere = toggle !== null && !harness.completelyVisible(toggle)
+                sp.sectionIndex = 1
+                harness.ok("the toggle is in the Connection section",
+                           hiddenElsewhere && toggle !== null && harness.completelyVisible(toggle),
+                           hiddenElsewhere ? "hidden in Identity, visible in Connection" : "visible outside Connection")
+                if (toggle !== null) {
+                    toggle.checked = true
+                    sp.persist()
+                    harness.ok("toggling persists respondToCtcpVersion",
+                               settingsCfg.respondToCtcpVersion === true && settingsCfg.saved === true,
+                               "value=" + settingsCfg.respondToCtcpVersion + " saved=" + settingsCfg.saved)
+                }
+                break
+            }
+            case 11: {
                 // disconnect must fall back to the connection form
                 if (harness.win) { harness.win.bridge.disconnect_server() }
                 break
-            case 9:
+            }
+            case 12: {
                 harness.ok("disconnect returned to the connection form", harness.win !== null && harness.win.pageStack.depth === 1,
                            "depth=" + (harness.win ? harness.win.pageStack.depth : -1))
                 console.error(harness.failures === 0 ? "SMOKE-RESULT: ALL PASS" : ("SMOKE-RESULT: " + harness.failures + " FAILURES"))
                 Qt.exit(harness.failures === 0 ? 0 : 1)
                 break
             }
+            }
         }
+    }
+
+    /// The settings pane instance (null until created / on failure).
+    function settingsPage() {
+        return harness.settingsPageItem
+    }
+
+    /// Depth-first search for a control whose `text` matches exactly and that
+    /// has a `checked` property (the settings toggle under test).
+    function findByText(root, text, depth) {
+        if (root === null || root === undefined || depth > 18) { return null }
+        if (root.text === text && root.checked !== undefined) { return root }
+        var kids = root.children || []
+        for (var i = 0; i < kids.length; ++i) {
+            var f = harness.findByText(kids[i], text, depth + 1)
+            if (f !== null) { return f }
+        }
+        if (root.contentItem !== undefined && root.contentItem !== null) {
+            var c = harness.findByText(root.contentItem, text, depth + 1)
+            if (c !== null) { return c }
+        }
+        return null
+    }
+
+    /// Depth-first search for any item whose `text` contains `fragment`.
+    function findTextContaining(root, fragment, depth) {
+        if (root === null || root === undefined || depth > 18) { return null }
+        if (root.text !== undefined && root.text !== null
+                && String(root.text).indexOf(fragment) !== -1) {
+            return root
+        }
+        var kids = root.children || []
+        for (var i = 0; i < kids.length; ++i) {
+            var f = harness.findTextContaining(kids[i], fragment, depth + 1)
+            if (f !== null) { return f }
+        }
+        if (root.contentItem !== undefined && root.contentItem !== null) {
+            var c = harness.findTextContaining(root.contentItem, fragment, depth + 1)
+            if (c !== null) { return c }
+        }
+        return null
+    }
+
+    /// True when the item and every ancestor is visible (proves a row belongs
+    /// to the section that is actually selected).
+    function completelyVisible(item) {
+        var it = item
+        while (it !== null && it !== undefined) {
+            if (it.visible === false) { return false }
+            it = it.parent
+        }
+        return true
+    }
+
+    /// Index of the first recorded call of `fn` in the bridge double's call
+    /// list (-1 when it was never called).  Used to assert call ORDER — the
+    /// CTCP VERSION reply preference must reach the bridge before
+    /// connect_server.
+    function callIndex(fn) {
+        var list = harness.win.bridge.calls
+        for (var i = 0; i < list.length; ++i) {
+            if (list[i].fn === fn) {
+                return i
+            }
+        }
+        return -1
     }
 
     // Depth-first search for the message ListView: the only ListView whose

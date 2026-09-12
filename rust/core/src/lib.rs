@@ -30,6 +30,7 @@
 //!     server_password: None,
 //!     sasl: None,
 //!     sasl_mechanism: 0,
+//!     ctcp_version_reply: true,
 //!     request_caps: vec![],
 //! };
 //! let (event_tx, mut event_rx) = mpsc::channel::<IrcEvent>(64);

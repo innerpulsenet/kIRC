@@ -14,6 +14,9 @@ QtObject {
     property int connection_state: 0
     property int unread_count: 0
     property int sasl_mechanism: 0
+    // Mirrors IrcBridge::set_ctcp_version_reply; kept so a test can assert
+    // the applied value, not just the call.
+    property bool ctcp_version_reply: true
     property string nickname: ""
     property string connected_server: ""
 
@@ -63,6 +66,14 @@ QtObject {
         bridge.record("set_sasl_mechanism", [mechanism])
         console.error("STUB set_sasl_mechanism(" + mechanism + ")")
         bridge.sasl_mechanism = mechanism
+    }
+    // Mirrors IrcBridge::set_ctcp_version_reply (whether an incoming CTCP
+    // VERSION query is answered).  Not a secret: the value stays in the call
+    // trace.
+    function set_ctcp_version_reply(enabled) {
+        bridge.record("set_ctcp_version_reply", [enabled])
+        console.error("STUB set_ctcp_version_reply(" + enabled + ")")
+        bridge.ctcp_version_reply = enabled
     }
     // Mirrors IrcBridge::set_server_password (PASS for the next connection).
     // The secret itself is never recorded or echoed, not even by a test

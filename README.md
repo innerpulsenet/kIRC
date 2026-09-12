@@ -28,6 +28,13 @@ avatars, no rounded cards.
 **PLAIN, SCRAM-SHA-256 and EXTERNAL**; the mechanism is selectable (default: negotiate
 SCRAM-SHA-256 when advertised, otherwise PLAIN).
 
+**CTCP** — answers `VERSION`, `PING`, `TIME` and `CLIENTINFO` requests, and shows every
+inbound CTCP as a dim system line so it never masquerades as chat. Replies are never sent
+for a CTCP that arrived inside a NOTICE (that is how reply loops start), and `DCC` is
+reported as unsupported rather than silently ignored. Answering `VERSION` is a toggle,
+since it tells anyone who asks what client and version you run; `/version <nick>` queries
+someone else's.
+
 **Login** — identify on connect via SASL or NickServ (account + password), then autojoin.
 If the nick was taken, the client falls back and can reclaim it: once identified it issues
 `GHOST` + `NICK` for your account exactly once per connection.
@@ -180,7 +187,9 @@ Everything is available from the composer; the server console accepts slash comm
 | `/who [channel\|mask]` | list users |
 | `/userhost` / `/ison <nick> [nick…]` | user@host / online-status replies |
 | `/oper <name> <password>` | become an IRC operator |
-| `/motd` `/version` `/time` `/ping [target]` | server queries |
+| `/motd` `/time [server]` `/ping [target]` | server queries |
+| `/version [nick]` | no nick: the server's VERSION; with a nick: send that client a CTCP VERSION query |
+| `/ctcp <target> <message>` | send a CTCP query (e.g. `/ctcp alice VERSION`); alias for both of the above |
 | `/quit [reason]` | disconnect from the server |
 
 ### IRCv3 and client

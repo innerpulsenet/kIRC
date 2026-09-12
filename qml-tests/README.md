@@ -20,12 +20,28 @@ What it covers:
 * Slash commands: `tst_cmds.qml` (second stage of `run.sh`) drives the real
   dispatcher with the exact lines a user types and asserts the recorded bridge
   calls — one wire line per command, `/help` output, local lines, malformed
-  argument rejection, and command tab-completion.
+  argument rejection, and command tab-completion. `/version` with no argument
+  is asserted as the server `VERSION` command; `/version <nick>` as the CTCP
+  `VERSION` query (`send_message(<nick>, \x01VERSION\x01)`) plus the local
+  "CTCP VERSION query sent to <nick>" line; `/ctcp <target> <message>` is
+  unchanged.
 * Filling the form and pressing Connect calls `bridge.connect_server(...)` and
-  pushes `ChatPage`.
+  pushes `ChatPage`. The window hands the persisted CTCP VERSION auto-reply
+  preference (`respondToCtcpVersion`, config double's default `true`) to the
+  bridge BEFORE `connect_server`, and again on the reconnect path — the call
+  order is asserted on the recording bridge double, so a drop can never
+  silently revert to the bridge default.
 * Messages arrive as `message_received` / `history_batch_received`, the model is
   reloaded, and `MessageDelegate` is created **from the model roles** (this is
   the check that catches role-name drift on the C++ side).
+* CTCP lines render legibly: a CTCP VERSION request/reply seeded as the core
+  writes it (event row, nick `"*"`) renders through the event path — `* `-marked,
+  dim body (never the chat colour), no nick column, no hover state — with the
+  remote client's string visible in the reply. An ordinary chat row is asserted
+  as the contrast case.
+* The settings pane's CTCP VERSION toggle (Connection section) exists, mirrors
+  the persisted value, hides with its section, carries the "client name and
+  version" hint and persists a change back through its config.
 * The delegate renders one dense console line per row (no bubbles, no avatars,
   no grouping): every row is its own line and the highlight / self roles map
   through. Grouping (`continuesPrevious` / `continuesNext`, neighbour lookups,
