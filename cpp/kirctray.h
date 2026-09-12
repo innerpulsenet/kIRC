@@ -1,17 +1,18 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //
-// KircTray — system tray presence for kIRC.
+// KircTray — system tray facade for kIRC.
 //
-// Owns a KStatusNotifierItem.  Note that in KF6 KStatusNotifierItem moved out
-// of KNotifications into its own framework (KF6::StatusNotifierItem).
+// Owns the context menu, the IrcBridge meta-object wiring and the shared
+// connect/disconnect action policy.  Platform presentation (StatusNotifierItem
+// on Linux, QSystemTrayIcon on Windows) lives in the backend selected by
+// makeKircTrayBackend() — see kirctraybackend.h.
 //
 // Responsibilities:
-//   * tray icon, category and tool tip;
+//   * tray icon, badge and tool tip via the backend;
 //   * mirror IrcBridge::unread_count as an overlay ("badge") icon;
 //   * a context menu with Show/Hide, Connect, Disconnect and Quit;
-//   * report whether a StatusNotifierItem *host* (Plasma panel) is actually
-//     present, so the QML side knows whether hiding the window on close would
-//     strangle the app.
+//   * report whether a tray host is actually present, so the QML side knows
+//     whether hiding the window on close would strangle the app.
 //
 // Hide-to-tray itself lives in QML (main.qml onClosing), because that is where
 // the window lifecycle is expressed and where the persisted setting is
@@ -23,11 +24,13 @@
 #include <QPointer>
 #include <QString>
 
+#include <memory>
+
 class QAction;
 class QMenu;
 class QQuickWindow;
-class KStatusNotifierItem;
 class KircConfig;
+class KircTrayBackend;
 
 class KircTray : public QObject
 {
@@ -39,7 +42,7 @@ public:
     ~KircTray() override;
 
     /// True when the window close may be turned into a hide, i.e. there is a
-    /// StatusNotifierItem host to get the window back from.
+    /// tray host to get the window back from.
     bool isAvailable() const;
 
     /// Second half of construction: wires up the window and the IrcBridge,
@@ -62,20 +65,16 @@ public Q_SLOTS:
 private:
     void updateIndicators();
     void updateShowHideAction();
-    void refreshAvailability();
+    void setAvailable(bool available);
 
     KircConfig *m_config;
     QPointer<QQuickWindow> m_window;
     QPointer<QObject> m_bridge;
-    KStatusNotifierItem *m_item = nullptr;
+    std::unique_ptr<KircTrayBackend> m_backend;
     QMenu *m_menu = nullptr;
     QAction *m_showHideAction = nullptr;
     QAction *m_connectAction = nullptr;
     QAction *m_disconnectAction = nullptr;
     QAction *m_quitAction = nullptr;
-    // Resolved once at construction: "kirc" when the icon theme has it, else
-    // the stock fallback (see kirctray.cpp).  Used for both the pixmap and the
-    // tooltip so they can never disagree.
-    QString m_iconName;
     bool m_available = false;
 };
