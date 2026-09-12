@@ -2348,8 +2348,11 @@ Kirigami.Page {
             page.usageLine("/whois [server] <nick>")
             return false
         }
-        page.addBuffer(who)
-        page.openChannel(who)
+        // Deliberately does NOT open a buffer for `who`: the reply is a
+        // command reply and lands in whatever the user is looking at, which
+        // is the point of typing /whois there.  Opening a query here is what
+        // used to make asking about someone look like starting a chat with
+        // them.  (/query and /msg still open one - those *are* conversations.)
         page.sendRawLine("WHOIS " + bits.join(" "))
         return true
     }
