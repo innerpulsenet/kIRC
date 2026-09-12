@@ -105,5 +105,25 @@ jobs:
       # and the C++ glass-config stage, which compiles tst_config_glass.cpp
       # against the Fedora paths this container provides (moc, pkg-config,
       # /usr/include/KF6).
-      - name: QML test harness
-        run: ./qml-tests/run.sh
+      #
+      # Each stage runs as its own step so a failure is visible in the step
+      # list without opening logs, plus one explicit environment assertion
+      # for the Kirigami QML runtime the QML stages import.
+      - name: Assert Kirigami QML runtime present
+        run: |
+          test -d /usr/lib64/qt6/qml/org/kde/kirigami \
+            || { echo 'MISSING: /usr/lib64/qt6/qml/org/kde/kirigami'; exit 1; }
+          test -d /usr/lib64/qt6/qml/org/kde/kirigami/layouts \
+            || { echo 'MISSING: .../kirigami/layouts'; exit 1; }
+      - name: Harness stage tokens (theme table)
+        run: KIRC_QML_TEST_STAGE=tokens ./qml-tests/run.sh
+      - name: Harness stage smoke (UI flow)
+        run: KIRC_QML_TEST_STAGE=smoke ./qml-tests/run.sh
+      - name: Harness stage cmds (slash commands)
+        run: KIRC_QML_TEST_STAGE=cmds ./qml-tests/run.sh
+      - name: Harness stage scroll (autoscroll)
+        run: KIRC_QML_TEST_STAGE=scroll ./qml-tests/run.sh
+      - name: Harness stage glass (QML effects)
+        run: KIRC_QML_TEST_STAGE=glass ./qml-tests/run.sh
+      - name: Harness stage config (C++ glass/CRT)
+        run: KIRC_QML_TEST_STAGE=config ./qml-tests/run.sh
