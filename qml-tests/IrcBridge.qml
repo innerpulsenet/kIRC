@@ -19,6 +19,7 @@ QtObject {
     property bool ctcp_version_reply: true
     property string nickname: ""
     property string connected_server: ""
+    property var unreadByTarget: ({})
 
     // ---- call recording (asserted by tst_cmds.qml) ------------------------
     // Every invokable appends { "fn": name, "args": [...] } here so a test can
@@ -61,6 +62,20 @@ QtObject {
         bridge.record("mark_read", [])
         console.error("STUB mark_read()")
         bridge.unread_count = 0
+    }
+    function mark_buffer_read(target) {
+        // Keep legacy command traces stable; dedicated assertions inspect the
+        // per-target map rather than treating read bookkeeping as a command.
+        bridge.record("mark_read", [])
+        var key = String(target).toLowerCase()
+        var count = bridge.unreadByTarget[key] || 0
+        var next = Object.assign({}, bridge.unreadByTarget)
+        delete next[key]
+        bridge.unreadByTarget = next
+        bridge.unread_count = Math.max(0, bridge.unread_count - count)
+    }
+    function unread_for(target) {
+        return bridge.unreadByTarget[String(target).toLowerCase()] || 0
     }
     function set_sasl_mechanism(mechanism) {
         bridge.record("set_sasl_mechanism", [mechanism])

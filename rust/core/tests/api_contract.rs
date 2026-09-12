@@ -200,6 +200,7 @@ fn irc_event_variants() {
             modes: "+o n".into(),
         },
         IrcEvent::HistoryBatch {
+            target: "#c".into(),
             messages: vec![HistoryMsg {
                 timestamp: None,
                 nick: "n".into(),

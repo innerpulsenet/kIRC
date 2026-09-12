@@ -47,6 +47,14 @@ pub const TLS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(15);
 /// no PING, no deadline, no commands — for the kernel's retransmission budget.
 pub const WRITE_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// Maximum IRC command payload excluding the terminating CRLF.
+pub const MAX_OUTBOUND_LINE_LEN: usize = 510;
+
+/// Defensive limits for server-controlled batch state.
+const MAX_OPEN_BATCHES: usize = 32;
+const MAX_HISTORY_BATCH_MESSAGES: usize = 5_000;
+const MAX_NAMES_PER_CHANNEL: usize = 50_000;
+
 /// How long the registration handshake (CAP LS/REQ/END, SASL, 001) may take.
 ///
 /// This is what stops a missed `CAP END` from being a *silent* connect hang: a
@@ -203,8 +211,15 @@ pub enum IrcEvent {
     },
     /// Our nick changed (433 fallback, or the nick the server accepted in 001).
     NickChanged { nick: String },
-    /// A resolved `chathistory` batch.
-    HistoryBatch { messages: Vec<HistoryMsg> },
+    /// A resolved `chathistory` batch, tied to the target named by the server.
+    ///
+    /// Carrying the target with the result is essential when several history
+    /// requests are in flight: servers may complete those batches in any
+    /// order, so a UI-side "last requested target" cannot route them safely.
+    HistoryBatch {
+        target: String,
+        messages: Vec<HistoryMsg>,
+    },
     /// Informational text (MOTD, numerics summary).
     Info { text: String },
     /// An error worth surfacing to the user.
@@ -430,6 +445,18 @@ struct Session {
 
 impl Session {
     async fn send(&mut self, line: &str) -> io::Result<()> {
+        if line.contains(['\r', '\n']) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "outbound IRC command contains a line break",
+            ));
+        }
+        if line.len() > MAX_OUTBOUND_LINE_LEN {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("outbound IRC command exceeds {MAX_OUTBOUND_LINE_LEN} bytes"),
+            ));
+        }
         debug!(">> {}", redact_log_line(line));
         write_line(&mut self.writer, line).await
     }
@@ -486,7 +513,10 @@ impl Session {
         if let Some(Some(batch_ref)) = message.tags.get("batch").map(|v| v.as_ref()) {
             let batch_ref = batch_ref.clone();
             if let Some(buffer) = self.batches.get_mut(&batch_ref) {
-                if buffer.kind == "chathistory" && message.command == "PRIVMSG" {
+                if buffer.kind == "chathistory"
+                    && message.command == "PRIVMSG"
+                    && buffer.messages.len() < MAX_HISTORY_BATCH_MESSAGES
+                {
                     buffer.messages.push(HistoryMsg {
                         timestamp: message.tags.get("time").cloned().flatten(),
                         nick: source_name(&message),
@@ -690,7 +720,7 @@ impl Session {
                         .entry(channel.to_ascii_lowercase())
                         .or_default();
                     for nick in names.split_whitespace() {
-                        if !nick.is_empty() {
+                        if !nick.is_empty() && entry.len() < MAX_NAMES_PER_CHANNEL {
                             entry.push(nick.to_string());
                         }
                     }
@@ -740,7 +770,7 @@ impl Session {
                 // (256-259).
                 self.command_reply(message).await;
             }
-            321 | 322 | 323 => {
+            321..=323 => {
                 // LIST / LISTSTART / LISTEND.
                 self.command_reply(message).await;
             }
@@ -814,7 +844,7 @@ impl Session {
                 let reason = numeric_summary(message);
                 self.emit(IrcEvent::JoinFailed { channel, reason }).await;
             }
-            463 | 464 | 465 | 466 if !self.registered => {
+            463..=466 if !self.registered => {
                 // Dead-session numerics: 463 (no permission for host), 464
                 // (bad password), 465 (banned), 466 (you will be banned). The
                 // server will never register this connection, and some daemons
@@ -919,7 +949,14 @@ impl Session {
                 }
             }
             "NAK" => {
-                let denied_sasl = cap.caps.iter().any(|c| c == "sasl");
+                // Capability names are case-insensitive.  A server is allowed
+                // to answer with `SASL` even though we requested `sasl`; an
+                // exact lower-case comparison would miss the rejection and
+                // leave registration waiting for SASL until its deadline.
+                let denied_sasl = cap
+                    .caps
+                    .iter()
+                    .any(|c| c.trim_start_matches('-').eq_ignore_ascii_case("sasl"));
                 if self.sasl_configured && denied_sasl {
                     self.abort("SASL capability was rejected by the server (CAP NAK)")
                         .await?;
@@ -1087,6 +1124,10 @@ impl Session {
             None => return,
         };
         if let Some(id) = reference.strip_prefix('+') {
+            if self.batches.len() >= MAX_OPEN_BATCHES {
+                warn!("ignoring BATCH {id}: too many batches are already open");
+                return;
+            }
             let kind = message.params.get(1).cloned().unwrap_or_default();
             let target = message.params.get(2).cloned().unwrap_or_default();
             self.batches.insert(
@@ -1101,6 +1142,7 @@ impl Session {
             if let Some(buffer) = self.batches.remove(id) {
                 if buffer.kind == "chathistory" {
                     self.emit(IrcEvent::HistoryBatch {
+                        target: buffer.target,
                         messages: buffer.messages,
                     })
                     .await;
@@ -1210,6 +1252,7 @@ impl Session {
     /// dim system-style line (the `"*"` nick is the existing event marker)
     /// naming the kind and the sender, so a request or reply is never shown
     /// as ordinary chat and never silently dropped.
+    #[allow(clippy::too_many_arguments)]
     async fn handle_ctcp(
         &mut self,
         ctcp: Ctcp,
@@ -1285,7 +1328,7 @@ impl Session {
             ClientCommand::Privmsg { target, text } => {
                 // One PRIVMSG per line: a raw newline must never go out in a
                 // single send(). Local echo mirrors the same split.
-                let lines = split_privmsg_lines(&text);
+                let lines = split_privmsg_lines(&target, &text)?;
                 for line in &lines {
                     self.send(&format!("PRIVMSG {target} :{line}")).await?;
                 }
@@ -1362,9 +1405,6 @@ impl Session {
     }
 }
 
-/// Display name of a message's source: the nick when the prefix is a user,
-/// otherwise the server name (so server NOTICEs are attributed, not blank).
-
 /// True when `target` is a channel name (`#`, `&`, `+`, `!` prefixes).
 pub fn is_channel(target: &str) -> bool {
     matches!(target.as_bytes().first(), Some(b'#' | b'&' | b'+' | b'!'))
@@ -1372,10 +1412,67 @@ pub fn is_channel(target: &str) -> bool {
 
 /// Split outbound PRIVMSG text into wire-safe lines: split on CR/LF and
 /// drop empty lines so no raw newline ever goes out in a single send().
-fn split_privmsg_lines(text: &str) -> Vec<&str> {
-    text.split(|c| c == '\n' || c == '\r')
-        .filter(|line| !line.is_empty())
-        .collect()
+fn split_privmsg_lines(target: &str, text: &str) -> io::Result<Vec<String>> {
+    let prefix_len = "PRIVMSG ".len() + target.len() + " :".len();
+    let budget = MAX_OUTBOUND_LINE_LEN.checked_sub(prefix_len).ok_or_else(|| {
+        io::Error::new(io::ErrorKind::InvalidInput, "message target is too long")
+    })?;
+    if budget == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "message target leaves no room for text",
+        ));
+    }
+
+    let mut output = Vec::new();
+    for line in text.split(['\n', '\r']).filter(|line| !line.is_empty()) {
+        if let Some(action) = line
+            .strip_prefix("\u{1}ACTION ")
+            .and_then(|body| body.strip_suffix('\u{1}'))
+        {
+            let action_budget = budget.checked_sub("\u{1}ACTION \u{1}".len()).ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidInput, "message target is too long")
+            })?;
+            if action_budget == 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "message target leaves no room for action text",
+                ));
+            }
+            for chunk in split_utf8_chunks(action, action_budget) {
+                output.push(format!("\u{1}ACTION {chunk}\u{1}"));
+            }
+        } else if parse_ctcp(line).is_some() && line.len() > budget {
+            // Splitting an arbitrary CTCP query would create malformed
+            // fragments that look like ordinary chat. Actions are the only
+            // CTCP payload whose semantics can safely be preserved in chunks.
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "CTCP query exceeds the IRC line limit",
+            ));
+        } else {
+            output.extend(split_utf8_chunks(line, budget).map(str::to_owned));
+        }
+    }
+    Ok(output)
+}
+
+fn split_utf8_chunks(mut text: &str, max_bytes: usize) -> impl Iterator<Item = &str> {
+    std::iter::from_fn(move || {
+        if text.is_empty() || max_bytes == 0 {
+            return None;
+        }
+        let mut end = text.len().min(max_bytes);
+        while end > 0 && !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        if end == 0 {
+            return None;
+        }
+        let (chunk, rest) = text.split_at(end);
+        text = rest;
+        Some(chunk)
+    })
 }
 
 /// Split an incoming INVITE into `(invitee, channel, is_for_us)`.
@@ -1763,6 +1860,68 @@ fn sanitize(text: &str) -> String {
     text.replace(['\r', '\n'], " ")
 }
 
+/// Validate fields that are interpolated into registration commands.
+///
+/// The QML form performs the same user-facing checks, but the engine is a
+/// public boundary and must not rely on one caller to prevent malformed NICK,
+/// USER or PASS lines (especially embedded CR/LF command injection).
+fn validate_config(config: &ConnectionConfig) -> io::Result<()> {
+    fn is_middle_param(value: &str) -> bool {
+        !value.is_empty()
+            && !value.starts_with(':')
+            && !value
+                .chars()
+                .any(|c| c.is_whitespace() || c.is_control() || c == ',')
+    }
+
+    if config.host.is_empty()
+        || config
+            .host
+            .chars()
+            .any(|c| c.is_whitespace() || c.is_control())
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "server host is empty or contains whitespace",
+        ));
+    }
+    if config.port == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "server port must be between 1 and 65535",
+        ));
+    }
+    if !is_middle_param(&config.nickname) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "nickname is empty or contains invalid characters",
+        ));
+    }
+    if !is_middle_param(&config.username) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "username is empty or contains invalid characters",
+        ));
+    }
+    if config.realname.contains(['\r', '\n', '\0']) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "real name contains an invalid control character",
+        ));
+    }
+    if config
+        .server_password
+        .as_deref()
+        .is_some_and(|password| password.contains(['\r', '\n', '\0']))
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "server password contains an invalid control character",
+        ));
+    }
+    Ok(())
+}
+
 /// Drive an IRC session until it ends.
 ///
 /// Events flow engine -> UI on `events`; commands flow UI -> engine on
@@ -1776,6 +1935,17 @@ pub async fn run_session(
     if events.send(IrcEvent::StateConnecting).await.is_err() {
         // The UI is already gone; nothing to do.
         return Ok(());
+    }
+
+    if let Err(error) = validate_config(&config) {
+        let reason = error.to_string();
+        let _ = events
+            .send(IrcEvent::Error {
+                message: reason.clone(),
+            })
+            .await;
+        let _ = events.send(IrcEvent::Disconnected { reason }).await;
+        return Err(error.into());
     }
 
     let transport = match connect(&config).await {
@@ -1878,6 +2048,10 @@ pub async fn run_session(
                 match command {
                     Some(cmd) => {
                         if let Err(e) = session.handle_command(cmd).await {
+                            if e.kind() == io::ErrorKind::InvalidInput {
+                                session.emit(IrcEvent::Error { message: e.to_string() }).await;
+                                continue;
+                            }
                             warn!("write error: {e}");
                             session.disconnect_reason = format!("write error: {e}");
                             break;
@@ -2120,15 +2294,56 @@ mod tests {
     }
 
     #[test]
+    fn registration_config_rejects_broken_or_injected_fields() {
+        let mut config = ConnectionConfig {
+            host: "irc.example.org".to_string(),
+            nickname: "kircuser".to_string(),
+            username: "kircuser".to_string(),
+            realname: "kIRC user".to_string(),
+            ..ConnectionConfig::default()
+        };
+        assert!(validate_config(&config).is_ok());
+
+        config.nickname = "bad nick".to_string();
+        assert!(validate_config(&config).is_err());
+        config.nickname = "kircuser".to_string();
+        config.server_password = Some("secret\r\nOPER attacker password".to_string());
+        assert!(validate_config(&config).is_err());
+        config.server_password = None;
+        config.port = 0;
+        assert!(validate_config(&config).is_err());
+    }
+
+    #[test]
     fn privmsg_split_skips_empty_lines() {
-        assert_eq!(split_privmsg_lines("one\ntwo"), vec!["one", "two"]);
+        assert_eq!(split_privmsg_lines("#c", "one\ntwo").unwrap(), vec!["one", "two"]);
         assert_eq!(
-            split_privmsg_lines("one\r\ntwo\n\nthree\r\n"),
+            split_privmsg_lines("#c", "one\r\ntwo\n\nthree\r\n").unwrap(),
             vec!["one", "two", "three"]
         );
-        assert!(split_privmsg_lines("\n\r\n").is_empty());
-        assert_eq!(split_privmsg_lines("single"), vec!["single"]);
-        for line in split_privmsg_lines("a\nb\r\nc") {
+        assert!(split_privmsg_lines("#c", "\n\r\n").unwrap().is_empty());
+        assert_eq!(split_privmsg_lines("#c", "single").unwrap(), vec!["single"]);
+    }
+
+    #[test]
+    fn privmsg_chunks_respect_wire_limit_and_utf8_boundaries() {
+        let text = "🙂".repeat(300);
+        let chunks = split_privmsg_lines("#rust", &text).unwrap();
+        assert!(chunks.len() > 1);
+        assert_eq!(chunks.concat(), text);
+        assert!(chunks.iter().all(|chunk| {
+            format!("PRIVMSG #rust :{chunk}").len() <= MAX_OUTBOUND_LINE_LEN
+        }));
+
+        let action = format!("\u{1}ACTION {}\u{1}", "waves ".repeat(200));
+        let actions = split_privmsg_lines("#rust", &action).unwrap();
+        assert!(actions.len() > 1);
+        assert!(actions
+            .iter()
+            .all(|chunk| chunk.starts_with("\u{1}ACTION ") && chunk.ends_with('\u{1}')));
+        let long_ctcp = format!("\u{1}VERSION {}\u{1}", "x".repeat(600));
+        assert!(split_privmsg_lines("#rust", &long_ctcp).is_err());
+        for line in split_privmsg_lines("#rust", "a\nb\r\nc").unwrap() {
             assert!(!line.contains('\n') && !line.contains('\r'));
         }
     }

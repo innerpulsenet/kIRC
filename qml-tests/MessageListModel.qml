@@ -217,6 +217,14 @@ ListModel {
         }
     }
 
+    function prepend_history(target) {
+        // The QML double has no persistent backing store; record the fast-path
+        // call without resetting its live rows.
+        if (String(target).toLowerCase() !== model.loadedTarget.toLowerCase()) {
+            return
+        }
+    }
+
     // Exactly the cxx-qt contract: one row via an insert, no reset, no-op for
     // any buffer that is not the loaded one (or when nothing is loaded).
     function append_message(target, nick, text, timestamp, is_self, is_highlight) {

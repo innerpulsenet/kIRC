@@ -417,6 +417,12 @@ Item {
                 harness.ok("main.qml instantiated", mainLoader.status === Loader.Ready)
                 harness.ok("ConnectPage instantiated standalone", connectLoader.status === Loader.Ready)
                 harness.ok("ChatPage instantiated standalone (bridge null)", chatLoader.status === Loader.Ready)
+                if (connectLoader.item) {
+                    connectLoader.item.host = "   "
+                    connectLoader.item.nickname = "   "
+                    harness.ok("whitespace-only host and nickname are invalid",
+                               connectLoader.item.formValid === false)
+                }
                 if (harness.win) {
                     harness.ok("initialPage is the connection form", harness.win.pageStack.depth === 1)
                     harness.ok("bridge exposed on window", harness.win.bridge !== null && harness.win.bridge.connection_state === 0)
@@ -426,8 +432,8 @@ Item {
             case 2:
                 if (!harness.win) { break }
                 var cp = harness.win.pageStack.initialPage
-                cp.host = "irc.test.example"
-                cp.nickname = "smoketester"
+                cp.host = "  irc.test.example  "
+                cp.nickname = "  smoketester  "
                 cp.port = "6697"
                 harness.ok("ConnectPage form valid after filling", cp.formValid === true)
                 cp.tryConnect()
@@ -437,6 +443,14 @@ Item {
                 harness.ok("connect pushed the chat page", harness.win.pageStack.depth === 2, "depth=" + harness.win.pageStack.depth)
                 harness.ok("state = connected", harness.win.bridge.connection_state === 2)
                 harness.ok("header shows Connected", harness.win.statusText === "Connected", harness.win.statusText)
+                var connectCall = harness.win.bridge.calls.filter(function(call) {
+                    return call.fn === "connect_server"
+                })[0]
+                harness.ok("connect trims host and nickname",
+                           connectCall !== undefined
+                           && connectCall.args[0] === "irc.test.example"
+                           && connectCall.args[3] === "smoketester",
+                           connectCall === undefined ? "missing call" : connectCall.args.join("|"))
                 // The CTCP VERSION auto-reply choice must reach the bridge
                 // BEFORE connect_server (the double records every call, so the
                 // order is asserted, not eyeballed).

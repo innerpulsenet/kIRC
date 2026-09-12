@@ -15,7 +15,7 @@
 
 use std::collections::BTreeMap;
 use std::pin::Pin;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use cxx_qt::{CxxQtType, Threading};
 use cxx_qt_lib::{QByteArray, QHash, QHashPair_i32_QByteArray, QModelIndex, QString, QVariant};
@@ -108,9 +108,24 @@ fn is_query_key(key: &str) -> bool {
 /// `IrcBridge` appends to it from the Qt thread; `MessageListModel` reads from
 /// it on `load_channel(..)`.  Nothing else may mutate it.
 pub static STORE: OnceLock<Mutex<BTreeMap<String, Vec<StoreMsg>>>> = OnceLock::new();
+const MAX_BUFFER_ROWS: usize = 20_000;
+const BUFFER_PRUNE_ROWS: usize = 1_000;
 
 fn store() -> &'static Mutex<BTreeMap<String, Vec<StoreMsg>>> {
     STORE.get_or_init(|| Mutex::new(BTreeMap::new()))
+}
+
+fn push_bounded(rows: &mut Vec<StoreMsg>, row: StoreMsg) {
+    if rows.len() >= MAX_BUFFER_ROWS {
+        let count = BUFFER_PRUNE_ROWS.min(rows.len());
+        rows.drain(..count);
+    }
+    rows.push(row);
+}
+
+static UNREAD: OnceLock<Mutex<BTreeMap<String, u32>>> = OnceLock::new();
+fn unread_store() -> &'static Mutex<BTreeMap<String, u32>> {
+    UNREAD.get_or_init(|| Mutex::new(BTreeMap::new()))
 }
 
 pub static NICKS: OnceLock<Mutex<BTreeMap<String, Vec<String>>>> = OnceLock::new();
@@ -159,6 +174,10 @@ fn clear_all_stores() {
         .unwrap_or_else(|e| e.into_inner())
         .clear();
     topic_store()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clear();
+    unread_store()
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .clear();
@@ -581,6 +600,12 @@ pub mod qobject {
         #[qinvokable]
         fn mark_read(self: Pin<&mut Self>);
 
+        /// Mark one buffer read and return unread count for a buffer.
+        #[qinvokable]
+        fn mark_buffer_read(self: Pin<&mut Self>, target: QString);
+        #[qinvokable]
+        fn unread_for(self: &Self, target: QString) -> i32;
+
         /// Join a channel.
         #[qinvokable]
         fn join_channel(self: Pin<&mut Self>, channel: QString);
@@ -632,6 +657,10 @@ pub mod qobject {
             is_self: bool,
             is_highlight: bool,
         );
+
+        /// Prepend newly received history without resetting the model.
+        #[qinvokable]
+        fn prepend_history(self: Pin<&mut Self>, target: QString);
 
         /// Empty the model.
         #[qinvokable]
@@ -833,10 +862,8 @@ fn push_console_line(mut obj: Pin<&mut qobject::IrcBridge>, text: &str, is_notic
     let stamp = now_string();
     {
         let mut guard = store().lock().unwrap_or_else(|e| e.into_inner());
-        guard
-            .entry(SERVER_BUFFER.to_owned())
-            .or_default()
-            .push(
+        push_bounded(
+            guard.entry(SERVER_BUFFER.to_owned()).or_default(),
                 StoreMsg::new(
                     "*".to_owned(),
                     text.to_owned(),
@@ -846,7 +873,7 @@ fn push_console_line(mut obj: Pin<&mut qobject::IrcBridge>, text: &str, is_notic
                     Some(now_day()),
                 )
                 .arrival(SERVER_BUFFER, is_notice, false),
-            );
+        );
     }
     obj.as_mut().message_received(
         qs(SERVER_BUFFER),
@@ -866,10 +893,8 @@ fn push_channel_line(mut obj: Pin<&mut qobject::IrcBridge>, channel: &str, text:
     let key = {
         let mut guard = store().lock().unwrap_or_else(|e| e.into_inner());
         let key = canon_map_key(&guard, channel);
-        guard
-            .entry(key.clone())
-            .or_default()
-            .push(
+        push_bounded(
+            guard.entry(key.clone()).or_default(),
                 StoreMsg::new(
                     "*".to_owned(),
                     text.to_owned(),
@@ -879,7 +904,7 @@ fn push_channel_line(mut obj: Pin<&mut qobject::IrcBridge>, channel: &str, text:
                     Some(now_day()),
                 )
                 .arrival(&key, false, false),
-            );
+        );
         key
     };
     obj.as_mut().message_received(
@@ -920,8 +945,14 @@ fn bump_unread_for(mut obj: Pin<&mut qobject::IrcBridge>, target: &str, is_self:
     if is_self || is_visible_target(target) || target == SERVER_BUFFER {
         return;
     }
-    let unread = *obj.as_ref().unread_count();
-    obj.as_mut().set_unread_count(unread.saturating_add(1));
+    {
+        let mut unread = unread_store().lock().unwrap_or_else(|e| e.into_inner());
+        let key = canon_map_key(&unread, target);
+        let count = unread.entry(key).or_default();
+        *count = count.saturating_add(1);
+    }
+    let total = *obj.as_ref().unread_count();
+    obj.as_mut().set_unread_count(total.saturating_add(1));
 }
 
 fn add_nick(channel: &str, nick: &str) {
@@ -933,7 +964,10 @@ fn add_nick(channel: &str, nick: &str) {
         .any(|n| bare_nick(n).eq_ignore_ascii_case(bare_nick(nick)))
     {
         list.push(nick.to_owned());
-        list.sort_by(|a, b| bare_nick(a).to_lowercase().cmp(&bare_nick(b).to_lowercase()));
+        // Keep server/insertion order here. ChatPage groups and sorts the
+        // people panel by rank, and tab completion sorts its own candidates;
+        // sorting this growing vector after every JOIN duplicated that work
+        // and made large join bursts unnecessarily O(n² log n).
     }
 }
 
@@ -1021,10 +1055,8 @@ fn handle_event(mut obj: Pin<&mut qobject::IrcBridge>, event: IrcEvent) {
             let target = {
                 let mut guard = store().lock().unwrap_or_else(|e| e.into_inner());
                 let key = canon_key(&guard, &target);
-                guard
-                    .entry(key.clone())
-                    .or_default()
-                    .push(
+                push_bounded(
+                    guard.entry(key.clone()).or_default(),
                         StoreMsg::new(
                             nick.clone(),
                             text.clone(),
@@ -1034,7 +1066,7 @@ fn handle_event(mut obj: Pin<&mut qobject::IrcBridge>, event: IrcEvent) {
                             day,
                         )
                         .arrival(&key, is_notice, is_action),
-                    );
+                );
                 key
             };
 
@@ -1076,10 +1108,8 @@ fn handle_event(mut obj: Pin<&mut qobject::IrcBridge>, event: IrcEvent) {
                 // lands in the buffer the user sees even when its case
                 // differs from what the session reported.
                 let key = canon_map_key(&guard, &command_reply_key(&visible));
-                guard
-                    .entry(key.clone())
-                    .or_default()
-                    .push(
+                push_bounded(
+                    guard.entry(key.clone()).or_default(),
                         StoreMsg::new(
                             "*".to_owned(),
                             text.clone(),
@@ -1089,7 +1119,7 @@ fn handle_event(mut obj: Pin<&mut qobject::IrcBridge>, event: IrcEvent) {
                             Some(now_day()),
                         )
                         .arrival(&key, false, false),
-                    );
+                );
                 key
             };
 
@@ -1103,14 +1133,14 @@ fn handle_event(mut obj: Pin<&mut qobject::IrcBridge>, event: IrcEvent) {
             );
         }
 
-        IrcEvent::HistoryBatch { messages } => {
+        IrcEvent::HistoryBatch { target, messages } => {
             // Scrollback is older than whatever is buffered live, so it goes
-            // in FRONT (oldest first). `history_target` records which buffer
-            // the batch was requested for.
+            // in FRONT (oldest first). The core carries the BATCH target with
+            // the result because multiple autojoin history requests can be in
+            // flight and complete out of order.
             let target = {
-                let requested = rs(obj.as_ref().history_target());
                 let guard = store().lock().unwrap_or_else(|e| e.into_inner());
-                canon_map_key(&guard, &requested)
+                canon_map_key(&guard, &target)
             };
             {
                 let mut guard = store().lock().unwrap_or_else(|e| e.into_inner());
@@ -1124,7 +1154,11 @@ fn handle_event(mut obj: Pin<&mut qobject::IrcBridge>, event: IrcEvent) {
                     })
                     .collect();
                 let entry = guard.entry(key).or_default();
-                entry.splice(..0, rows);
+                let room = MAX_BUFFER_ROWS.saturating_sub(entry.len());
+                if room > 0 {
+                    let skip = rows.len().saturating_sub(room);
+                    entry.splice(..0, rows.into_iter().skip(skip));
+                }
             }
             obj.as_mut().history_batch_received(qs(&target));
         }
@@ -1473,9 +1507,18 @@ impl qobject::IrcBridge {
 
         // ---- event pump: tokio -> Qt thread -----------------------------
         let qt_thread_events = qt_thread.clone();
+        // `queue()` itself is non-blocking, so without a second bound a flood
+        // could drain the Rust channel into an unbounded Qt event queue. Each
+        // permit is held until the Qt closure actually runs.
+        let qt_event_slots = Arc::new(tokio::sync::Semaphore::new(512));
         runtime().spawn(async move {
             while let Some(event) = event_rx.recv().await {
+                let permit = match qt_event_slots.clone().acquire_owned().await {
+                    Ok(permit) => permit,
+                    Err(_) => break,
+                };
                 let queued = qt_thread_events.queue(move |mut qobject| {
+                    let _permit = permit;
                     // An event from a session that has since been replaced is
                     // dropped: it would otherwise undo the new session's
                     // state and clear its buffers.
@@ -1557,26 +1600,23 @@ impl qobject::IrcBridge {
     /// Send a PRIVMSG. Local echo is the engine's job when the server did not
     /// ACK `echo-message`; with echo-message we wait for the replay so the
     /// line is not shown twice (the NickServ "help" duplication).
-    pub fn send_message(self: Pin<&mut Self>, target: QString, text: QString) {
+    pub fn send_message(mut self: Pin<&mut Self>, target: QString, text: QString) {
         let mut target_s = rs(&target);
         {
             let guard = store().lock().unwrap_or_else(|e| e.into_inner());
             target_s = canon_key(&guard, &target_s);
         }
         let text_s = rs(&text);
-        if let Some(tx) = self.rust().command_tx.as_ref() {
-            let _ = tx.try_send(ClientCommand::Privmsg {
-                target: target_s,
-                text: text_s,
-            });
-        }
+        self.as_mut().enqueue_command(ClientCommand::Privmsg {
+            target: target_s,
+            text: text_s,
+        });
     }
 
     /// Send a raw protocol line.
-    pub fn send_raw(self: Pin<&mut Self>, line: QString) {
-        if let Some(tx) = self.rust().command_tx.as_ref() {
-            let _ = tx.try_send(ClientCommand::Raw(rs(&line)));
-        }
+    pub fn send_raw(mut self: Pin<&mut Self>, line: QString) {
+        self.as_mut()
+            .enqueue_command(ClientCommand::Raw(rs(&line)));
     }
 
     /// Forget the local transcript of `target`.
@@ -1589,24 +1629,43 @@ impl qobject::IrcBridge {
 
     /// Zero the unread badge. QML calls this when a channel is opened.
     pub fn mark_read(mut self: Pin<&mut Self>) {
+        unread_store()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear();
         self.as_mut().set_unread_count(0);
     }
 
+    pub fn mark_buffer_read(mut self: Pin<&mut Self>, target: QString) {
+        let target = rs(&target);
+        let removed = {
+            let mut unread = unread_store().lock().unwrap_or_else(|e| e.into_inner());
+            let key = canon_map_key(&unread, &target);
+            unread.remove(&key).unwrap_or(0)
+        };
+        let total = (*self.as_ref().unread_count() as u32).saturating_sub(removed);
+        self.as_mut().set_unread_count(total.min(i32::MAX as u32) as i32);
+    }
+
+    pub fn unread_for(&self, target: QString) -> i32 {
+        let target = rs(&target);
+        let unread = unread_store().lock().unwrap_or_else(|e| e.into_inner());
+        let key = canon_map_key(&unread, &target);
+        unread.get(&key).copied().unwrap_or(0).min(i32::MAX as u32) as i32
+    }
+
     /// Join a channel.
-    pub fn join_channel(self: Pin<&mut Self>, channel: QString) {
-        if let Some(tx) = self.rust().command_tx.as_ref() {
-            let _ = tx.try_send(ClientCommand::Join(rs(&channel)));
-        }
+    pub fn join_channel(mut self: Pin<&mut Self>, channel: QString) {
+        self.as_mut()
+            .enqueue_command(ClientCommand::Join(rs(&channel)));
     }
 
     /// Leave a channel.
-    pub fn part_channel(self: Pin<&mut Self>, channel: QString) {
-        if let Some(tx) = self.rust().command_tx.as_ref() {
-            let _ = tx.try_send(ClientCommand::Part {
-                channel: rs(&channel),
-                reason: None,
-            });
-        }
+    pub fn part_channel(mut self: Pin<&mut Self>, channel: QString) {
+        self.as_mut().enqueue_command(ClientCommand::Part {
+            channel: rs(&channel),
+            reason: None,
+        });
     }
 
     pub fn nicks_for(self: &Self, channel: QString) -> QString {
@@ -1637,11 +1696,33 @@ impl qobject::IrcBridge {
         let target_s = rs(&target);
         self.as_mut().set_history_target(qs(&target_s));
 
-        if let Some(tx) = self.as_ref().rust().command_tx.as_ref() {
-            let _ = tx.try_send(ClientCommand::RequestHistory {
+        self.as_mut()
+            .enqueue_command(ClientCommand::RequestHistory {
                 target: target_s,
                 limit: limit.max(0) as u32,
             });
+    }
+
+    /// Queue a command without silently losing it under backpressure.
+    fn enqueue_command(mut self: Pin<&mut Self>, command: ClientCommand) {
+        let result = self
+            .as_ref()
+            .rust()
+            .command_tx
+            .as_ref()
+            .map(|tx| tx.try_send(command));
+        let message = match result {
+            None => Some("Not connected; command was not sent"),
+            Some(Err(tokio::sync::mpsc::error::TrySendError::Full(_))) => {
+                Some("Outbound queue is full; command was not sent")
+            }
+            Some(Err(tokio::sync::mpsc::error::TrySendError::Closed(_))) => {
+                Some("Connection closed; command was not sent")
+            }
+            Some(Ok(())) => None,
+        };
+        if let Some(message) = message {
+            self.as_mut().error_occurred(qs(message));
         }
     }
 }
@@ -1720,6 +1801,30 @@ impl qobject::MessageListModel {
         }
 
         let loaded_key = self.as_ref().rust().target.clone();
+        // STORE prunes old rows in chunks at its cap. Mirror that removal
+        // incrementally before appending the announced row.
+        let stored_len = {
+            let guard = store().lock().unwrap_or_else(|e| e.into_inner());
+            guard.get(&loaded_key).map(Vec::len).unwrap_or(0)
+        };
+        let model_len = self.as_ref().rust().rows.len();
+        let prune = model_len
+            .saturating_add(1)
+            .saturating_sub(stored_len)
+            .min(model_len);
+        if prune > 0 {
+            unsafe {
+                self.as_mut().begin_remove_rows(
+                    &QModelIndex::default(),
+                    0,
+                    prune.saturating_sub(1) as i32,
+                );
+            }
+            self.as_mut().rust_mut().rows.drain(..prune);
+            unsafe {
+                self.as_mut().end_remove_rows();
+            }
+        }
         // The live signal carries only the display payload; the row's other
         // raw facts — its calendar `day`, and the `isPrivate`/`isNotice`/
         // `isAction` arrival flags — are read from the STORE row the bridge
@@ -1758,6 +1863,44 @@ impl qobject::MessageListModel {
         self.as_mut().rust_mut().rows.push(row);
         unsafe {
             self.as_mut().end_insert_rows();
+        }
+    }
+
+    pub fn prepend_history(mut self: Pin<&mut Self>, target: QString) {
+        let target = rs(&target);
+        let loaded = self.as_ref().rust().target.clone();
+        if loaded.is_empty() || !loaded.eq_ignore_ascii_case(&target) {
+            return;
+        }
+        let mut stored = {
+            let guard = store().lock().unwrap_or_else(|e| e.into_inner());
+            guard.get(&loaded).cloned().unwrap_or_default()
+        };
+        let existing = self.as_ref().rust().rows.len();
+        if stored.len() <= existing {
+            return;
+        }
+        derive_rows(&mut stored);
+        let added = stored.len() - existing;
+        let prefix: Vec<StoreMsg> = stored.drain(..added).collect();
+        unsafe {
+            self.as_mut().begin_insert_rows(
+                &QModelIndex::default(),
+                0,
+                added.saturating_sub(1) as i32,
+            );
+        }
+        self.as_mut().rust_mut().rows.splice(..0, prefix);
+        unsafe {
+            self.as_mut().end_insert_rows();
+        }
+        // The first previously-live row is the only existing row whose day
+        // boundary can change. Its stored presentation is refreshed here; a
+        // subsequent viewport creation or reload observes the corrected role.
+        if existing > 0 {
+            let boundary = added;
+            let prev_day = self.as_ref().rust().rows[boundary - 1].day;
+            derive_row(prev_day, &mut self.as_mut().rust_mut().rows[boundary]);
         }
     }
 
@@ -1856,6 +1999,18 @@ mod tests {
 
     fn row(nick: &str, day: Option<NaiveDate>) -> StoreMsg {
         StoreMsg::new(nick.to_owned(), "text".to_owned(), "12:00".to_owned(), false, false, day)
+    }
+
+    #[test]
+    fn bounded_buffer_prunes_old_rows_in_chunks() {
+        let mut rows = (0..MAX_BUFFER_ROWS)
+            .map(|index| row(&index.to_string(), None))
+            .collect::<Vec<_>>();
+        push_bounded(&mut rows, row("new", None));
+
+        assert_eq!(rows.len(), MAX_BUFFER_ROWS - BUFFER_PRUNE_ROWS + 1);
+        assert_eq!(rows.first().map(|row| row.nick.as_str()), Some("1000"));
+        assert_eq!(rows.last().map(|row| row.nick.as_str()), Some("new"));
     }
 
     #[test]

@@ -39,6 +39,11 @@ someone else's.
 If the nick was taken, the client falls back and can reclaim it: once identified it issues
 `GHOST` + `NICK` for your account exactly once per connection.
 
+**Reliable connections** — TCP, TLS, registration and socket writes have explicit deadlines;
+PING/PONG detects half-open links; reconnects use capped exponential backoff with the next
+attempt shown in the header. Outbound chat is split at UTF-8 boundaries to stay within IRC's
+512-byte wire limit, and malformed registration values cannot inject protocol lines.
+
 ![Connect form](docs/screenshot-connect.png)
 
 **Console log**
@@ -56,6 +61,11 @@ rows, day rules, and failures in a warning colour with a `!` marker instead of `
 Nicknames are coloured deterministically from a hash, and highlight lines get an accent
 bar. Message grouping and day boundaries are computed in the model, so a row costs the
 same whether the buffer holds ten lines or ten thousand.
+
+Unread counts are tracked per channel/query, so opening one buffer does not clear or mark
+unrelated conversations. Transcripts are capped at 20,000 rows per buffer, history batches
+are prepended without resetting the visible model, and bounded Rust-to-Qt delivery prevents
+a traffic flood from growing the GUI event queue without limit.
 
 **Themes** — five built-in monospace palettes: `tui` (default), `phosphor`, `amber`,
 `ice`, and `breeze` (which follows your Plasma colour scheme). Font family and size are
@@ -126,10 +136,11 @@ An RPM spec is provided in `packaging/` for Fedora:
 rpmbuild -bb packaging/kirc.spec
 ```
 
-Pushing a version tag (`git tag v0.7.0 && git push origin v0.7.0`) builds and publishes
+Pushing a version tag (`git tag v1.0 && git push origin v1.0`) builds and publishes
 that RPM — plus the source RPM — as a GitHub Release via
 `.github/workflows/rpm-release.yml`. The tag is the source of truth: it stamps the spec,
-the AppStream metadata, the crate versions and the version the binary reports.
+the AppStream metadata, the crate versions and the version the binary reports (`v1.0`
+normalizes to `1.0.0`).
 
 ## Configuration
 

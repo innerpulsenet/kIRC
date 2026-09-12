@@ -124,6 +124,9 @@ async fn server_plain(stream: TcpStream, lines: Lines, sasl_seen: Lines) {
                 send(&mut w, ":alice!a@host JOIN #rust account/alice :Alice").await;
                 send(&mut w, ":irc.test NOTICE kircuser :hello notice").await;
                 send(&mut w, ":irc.test BATCH +1 chathistory #rust").await;
+                // Complete a second history batch first. Each result must keep
+                // the target named by its own BATCH opener.
+                send(&mut w, ":irc.test BATCH +2 chathistory #other").await;
                 send(
                     &mut w,
                     "@batch=1;time=2026-09-11T09:00:00.000Z :carol!c@host PRIVMSG #rust :old one",
@@ -134,6 +137,12 @@ async fn server_plain(stream: TcpStream, lines: Lines, sasl_seen: Lines) {
                     "@batch=1;time=2026-09-11T09:01:00.000Z :dave!d@host PRIVMSG #rust :old two",
                 )
                 .await;
+                send(
+                    &mut w,
+                    "@batch=2;time=2026-09-11T08:00:00.000Z :erin!e@host PRIVMSG #other :other old line",
+                )
+                .await;
+                send(&mut w, ":irc.test BATCH -2").await;
                 send(&mut w, ":irc.test BATCH -1").await;
             }
             l if l.starts_with("QUIT") => break,
@@ -254,7 +263,8 @@ async fn server_nak(stream: TcpStream, lines: Lines) {
         if line.starts_with("CAP LS") {
             send(&mut w, ":irc.test CAP * LS :server-time sasl=PLAIN").await;
         } else if apply_req(&line).is_some() {
-            send(&mut w, ":irc.test CAP * NAK :sasl server-time").await;
+            // Capability names are case-insensitive on the wire.
+            send(&mut w, ":irc.test CAP * NAK :SASL server-time").await;
         } else if line.starts_with("QUIT") {
             break;
         }
@@ -370,8 +380,14 @@ async fn plain_sasl_session_end_to_end() {
     let handle = tokio::spawn(run_session(base_config(port, Some(sasl)), etx, crx));
 
     let events = collect_events(&mut erx, Duration::from_secs(10), |evs| {
-        evs.iter()
-            .any(|e| matches!(e, IrcEvent::HistoryBatch { .. }))
+        let targets: Vec<&str> = evs
+            .iter()
+            .filter_map(|event| match event {
+                IrcEvent::HistoryBatch { target, .. } => Some(target.as_str()),
+                _ => None,
+            })
+            .collect();
+        targets.contains(&"#rust") && targets.contains(&"#other")
     })
     .await;
 
@@ -414,7 +430,9 @@ async fn plain_sasl_session_end_to_end() {
     let history = events
         .iter()
         .find_map(|e| match e {
-            IrcEvent::HistoryBatch { messages } => Some(messages.clone()),
+            IrcEvent::HistoryBatch { target, messages } if target == "#rust" => {
+                Some(messages.clone())
+            }
             _ => None,
         })
         .expect("HistoryBatch should have been emitted");
@@ -424,6 +442,16 @@ async fn plain_sasl_session_end_to_end() {
     assert_eq!(
         history[0].timestamp.as_deref(),
         Some("2026-09-11T09:00:00.000Z")
+    );
+    assert!(
+        events.iter().any(|e| matches!(
+            e,
+            IrcEvent::HistoryBatch { target, messages }
+                if target == "#other"
+                    && messages.len() == 1
+                    && messages[0].text == "other old line"
+        )),
+        "out-of-order history batch lost its target: {events:?}"
     );
 
     // SASL PLAIN payload decoded on the server: \0user\0pass
@@ -727,7 +755,7 @@ async fn nick_in_use_exhausted_aborts_and_disconnects() {
     let sent = lines.lock().unwrap().clone();
     let nick_sends = sent.iter().filter(|l| l.starts_with("NICK ")).count();
     assert!(
-        nick_sends >= 2 && nick_sends <= 5,
+        (2..=5).contains(&nick_sends),
         "expected a few NICK retries then QUIT, got {sent:?}"
     );
     assert!(
@@ -1273,7 +1301,10 @@ async fn half_open_link_is_detected_by_the_keepalive() {
         joined.is_ok(),
         "session did not stop after the keepalive timeout"
     );
-    joined.unwrap().expect("session task must not panic");
+    joined
+        .unwrap()
+        .expect("session task must not panic")
+        .expect("ping timeout should end the session cleanly");
 
     let sent = wait_until(&lines, Duration::from_secs(5), |seen| {
         seen.iter().any(|l| l.starts_with("QUIT :Ping timeout"))
@@ -1814,7 +1845,7 @@ async fn outbound_ctcp_leaves_no_self_chat_row() {
     })
     .await;
 
-    let query = format!("PRIVMSG alice :\u{1}VERSION\u{1}");
+    let query = "PRIVMSG alice :\u{1}VERSION\u{1}".to_string();
     ctx.send(ClientCommand::Privmsg {
         target: "alice".to_string(),
         text: "\u{1}VERSION\u{1}".to_string(),
@@ -2126,4 +2157,3 @@ async fn notice_and_action_carry_their_arrival_flags() {
     ctx.send(ClientCommand::Quit).await.ok();
     let _ = tokio::time::timeout(Duration::from_secs(5), handle).await;
 }
-

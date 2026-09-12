@@ -259,7 +259,11 @@ Kirigami.Page {
 
         function onHistory_batch_received(target) {
             if (page.sameTarget(target, page.currentChannel)) {
-                page.refreshHistory()
+                if (typeof msgModel.prepend_history === "function") {
+                    msgModel.prepend_history(target)
+                } else {
+                    page.refreshHistory()
+                }
                 page.scrollIfAtBottom()
             }
         }
@@ -481,8 +485,13 @@ Kirigami.Page {
                         required property int sectionCount
 
                         readonly property bool active: page.sameTarget(bufferDelegate.target, page.currentChannel)
-                        readonly property bool hasUnread: !bufferDelegate.active && !bufferDelegate.isServer
-                            && page.bridge !== null && page.bridge.unread_count > 0
+                        readonly property int unreadCount: page.bridge !== null
+                            && typeof page.bridge.unread_for === "function"
+                            ? (page.bridge.unread_count, page.bridge.unread_for(bufferDelegate.target))
+                            : ((!bufferDelegate.active && !bufferDelegate.isServer
+                                && page.bridge !== null && page.bridge.unread_count > 0) ? 1 : 0)
+                        readonly property bool hasUnread: !bufferDelegate.active
+                            && !bufferDelegate.isServer && bufferDelegate.unreadCount > 0
                         // Plain buffer name as it is typed (`#pain`, a query
                         // nick); the console row shows the network it is on.
                         readonly property string rowLabel: bufferDelegate.isServer
@@ -631,10 +640,7 @@ Kirigami.Page {
                                         elide: Text.ElideRight
                                     }
 
-                                    // Unread marker: ASCII `*` (the core only
-                                    // tracks a global counter, so every
-                                    // non-visible buffer carries the marker
-                                    // while it is non-zero).
+                                        // Per-buffer unread marker.
                                     Controls.Label {
                                         Layout.alignment: Qt.AlignVCenter
                                         visible: bufferDelegate.hasUnread
@@ -645,7 +651,7 @@ Kirigami.Page {
 
                                         Controls.ToolTip.visible: unreadHover.hovered
                                         Controls.ToolTip.text: page.bridge !== null
-                                            ? qsTr("%n unread message(s)", "", page.bridge.unread_count) : ""
+                                            ? qsTr("%n unread message(s)", "", bufferDelegate.unreadCount) : ""
 
                                         HoverHandler {
                                             id: unreadHover
@@ -1628,7 +1634,9 @@ Kirigami.Page {
         }
         var switching = !page.sameTarget(target, page.currentChannel)
         page.currentChannel = page.existingTarget(target)
-        if (page.bridge !== null && typeof page.bridge.mark_read === "function") {
+        if (page.bridge !== null && typeof page.bridge.mark_buffer_read === "function") {
+            page.bridge.mark_buffer_read(page.currentChannel)
+        } else if (page.bridge !== null && typeof page.bridge.mark_read === "function") {
             page.bridge.mark_read()
         }
         if (page.hostWindow !== null && page.hostWindow !== undefined) {

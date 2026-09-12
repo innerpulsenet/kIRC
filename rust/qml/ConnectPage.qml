@@ -88,10 +88,11 @@ Kirigami.Page {
         return isNaN(p) ? 0 : p
     }
     readonly property bool connecting: page.bridge !== null && page.bridge.connection_state === 1
-    readonly property bool formValid: hostField.text.length > 0
-                                      && nickField.text.length > 0
+    readonly property bool nicknameValid: /^[^\s,:\x00-\x1f]+$/.test(nickField.text.trim())
+    readonly property bool formValid: hostField.text.trim().length > 0
+                                      && nicknameValid
                                       && parsedPort > 0 && parsedPort <= 65535
-                                      && (!saslSwitch.checked || saslUserField.text.length > 0)
+                                      && (!saslSwitch.checked || saslUserField.text.trim().length > 0)
 
     // --- terminal type scale + colours (theme tokens, Kirigami fallbacks) ---
     readonly property string mono: ThemeEngine.fontFamily
@@ -399,6 +400,7 @@ Kirigami.Page {
 
                     TermField {
                         id: hostField
+                        Accessible.name: qsTr("IRC server host")
                         text: "irc.libera.chat"
                         placeholderText: qsTr("irc.example.org")
                         onAccepted: page.tryConnect()
@@ -417,6 +419,7 @@ Kirigami.Page {
 
                     TermField {
                         id: portField
+                        Accessible.name: qsTr("IRC server port")
                         Layout.fillWidth: false
                         Layout.preferredWidth: Math.round(Kirigami.Units.gridUnit * 5)
                         text: "6697"
@@ -455,6 +458,7 @@ Kirigami.Page {
 
                     TermField {
                         id: nickField
+                        Accessible.name: qsTr("Nickname")
                         text: "kircuser"
                         placeholderText: qsTr("yournick")
                         onAccepted: page.tryConnect()
@@ -473,6 +477,7 @@ Kirigami.Page {
 
                     TermField {
                         id: serverPassField
+                        Accessible.name: qsTr("Server password")
                         // Never written to disk from this form: the settings
                         // pane owns KWallet persistence (kirc.conf is plaintext).
                         placeholderText: qsTr("only if the server asks for one")
@@ -538,6 +543,7 @@ Kirigami.Page {
 
                             TermField {
                                 id: saslUserField
+                                Accessible.name: qsTr("SASL account name")
                                 placeholderText: qsTr("SASL account name")
                                 onAccepted: page.tryConnect()
                                 onTextEdited: page.lastError = ""
@@ -554,6 +560,7 @@ Kirigami.Page {
 
                             TermField {
                                 id: saslPassField
+                                Accessible.name: qsTr("SASL password")
                                 // Never written to disk: kirc.conf is plaintext.
                                 placeholderText: qsTr("SASL password (not saved)")
                                 echoMode: showSaslPass.checked ? TextInput.Normal : TextInput.Password
@@ -608,8 +615,8 @@ Kirigami.Page {
                     color: page.fgWarn()
                     font.family: page.mono
                     font.pointSize: page.ptSmall
-                    elide: Text.ElideRight
-                    maximumLineCount: 1
+                    wrapMode: Text.Wrap
+                    maximumLineCount: 3
                 }
 
                 Text {
@@ -702,11 +709,11 @@ Kirigami.Page {
             return
         }
         page.lastError = ""
-        page.connectRequested(hostField.text,
+        page.connectRequested(hostField.text.trim(),
                               page.parsedPort,
                               tlsSwitch.checked,
-                              nickField.text,
-                              saslSwitch.checked ? saslUserField.text : "",
+                              nickField.text.trim(),
+                              saslSwitch.checked ? saslUserField.text.trim() : "",
                               saslSwitch.checked ? saslPassField.text : "",
                               saslSwitch.checked ? page.saslMechanism : 0,
                               serverPassField.text)

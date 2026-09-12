@@ -162,6 +162,8 @@ Kirigami.ApplicationWindow {
     property int lastSaslMechanism: 0
     property bool userDisconnect: false
     property int reconnectAttempt: 0
+    property int reconnectSeconds: 0
+    property string lastConnectionError: ""
     // True when the last drop carried an authentication failure (904-907).
     // Cleared on every new attempt; when set, reconnects are skipped unless
     // the reconnectAfterAuthFailure pref allows them.
@@ -372,7 +374,18 @@ Kirigami.ApplicationWindow {
         id: reconnectTimer
         interval: 3000
         repeat: false
-        onTriggered: root.tryReconnect()
+        onTriggered: {
+            root.reconnectSeconds = 0
+            root.tryReconnect()
+        }
+    }
+
+    Timer {
+        id: reconnectCountdown
+        interval: 1000
+        repeat: true
+        running: reconnectTimer.running && root.reconnectSeconds > 0
+        onTriggered: root.reconnectSeconds = Math.max(0, root.reconnectSeconds - 1)
     }
 
     /// Buffer name for the window title.  "*server*" is internal and reads
@@ -423,6 +436,9 @@ Kirigami.ApplicationWindow {
     /// Header status as bracketed terminal text: `[connected]` / `[connecting]`
     /// / `[offline]` — no rounded pill, no dot.
     readonly property string statusTag: {
+        if (reconnectTimer.running) {
+            return "[" + qsTr("retry %1s").arg(root.reconnectSeconds) + "]"
+        }
         switch (root.bridge.connection_state) {
         case 0: return "[" + qsTr("offline") + "]"
         case 1: return "[" + qsTr("connecting") + "]"
@@ -463,8 +479,13 @@ Kirigami.ApplicationWindow {
             return ""
         }
         var server = root.bridge.connected_server
-        var cut = server.indexOf(":")
-        var shortServer = cut > 0 ? server.substring(0, cut) : server
+        // Strip a conventional host:port suffix, but leave IPv6 literals
+        // intact. Splitting at the first colon turned `2001:db8::1` into the
+        // misleading identity `2001` while a connection was in progress.
+        var firstColon = server.indexOf(":")
+        var lastColon = server.lastIndexOf(":")
+        var shortServer = firstColon > 0 && firstColon === lastColon
+                        ? server.substring(0, firstColon) : server
         if (shortServer.length === 0) {
             return ""
         }
@@ -493,6 +514,12 @@ Kirigami.ApplicationWindow {
         switch (root.bridge.connection_state) {
         case 2: return server.length > 0 ? qsTr("Connected to %1").arg(server) : qsTr("Connected")
         case 1: return server.length > 0 ? qsTr("Connecting to %1…").arg(server) : qsTr("Connecting…")
+        }
+        if (reconnectTimer.running) {
+            return qsTr("Reconnect attempt %1 in %2 seconds").arg(root.reconnectAttempt).arg(root.reconnectSeconds)
+        }
+        if (root.lastConnectionError.length > 0) {
+            return root.lastConnectionError
         }
         return server.length > 0 ? qsTr("Disconnected from %1").arg(server) : qsTr("Disconnected")
     }
@@ -1221,6 +1248,7 @@ Kirigami.ApplicationWindow {
             }
             root.userDisconnect = false
             root.lastDropWasAuthFailure = false
+            root.lastConnectionError = ""
             root.reconnectAttempt = 0
             reconnectTimer.stop()
 
@@ -1241,6 +1269,8 @@ Kirigami.ApplicationWindow {
         function onState_changed(state) {
             if (state === 2) {
                 root.reconnectAttempt = 0
+                root.reconnectSeconds = 0
+                root.lastConnectionError = ""
                 root.lastDropWasAuthFailure = false
                 reconnectTimer.stop()
                 root.saveProfile()
@@ -1269,6 +1299,7 @@ Kirigami.ApplicationWindow {
                     }
                     reconnectTimer.interval = Math.min(30000, 3000 * Math.pow(2, root.reconnectAttempt))
                     root.reconnectAttempt += 1
+                    root.reconnectSeconds = Math.ceil(reconnectTimer.interval / 1000)
                     reconnectTimer.start()
                     return
                 }
@@ -1288,6 +1319,7 @@ Kirigami.ApplicationWindow {
         }
 
         function onError_occurred(message) {
+            root.lastConnectionError = String(message)
             if (root.looksLikeAuthFailure(message)) {
                 root.lastDropWasAuthFailure = true
             }
