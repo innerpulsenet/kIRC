@@ -407,8 +407,8 @@ async fn plain_sasl_session_end_to_end() {
     assert!(
         events
             .iter()
-            .any(|e| matches!(e, IrcEvent::Info { text } if text.contains("MOTD"))),
-        "MOTD info missing"
+            .any(|e| matches!(e, IrcEvent::CommandReply { text } if text.contains("MOTD"))),
+        "MOTD command reply missing"
     );
 
     let history = events
@@ -1773,8 +1773,8 @@ async fn ctcp_action_still_renders_as_me() {
     })
     .await;
     assert!(
-        events.iter().any(|e| matches!(e, IrcEvent::Msg { nick, text, target, .. } if nick == "bob" && target == "#rust" && text == "* waves at everyone")),
-        "ACTION must keep its /me rendering: {events:?}"
+        events.iter().any(|e| matches!(e, IrcEvent::Msg { nick, text, target, is_action: true, is_notice: false, .. } if nick == "bob" && target == "#rust" && text == "* waves at everyone")),
+        "ACTION must keep its /me rendering (with is_action): {events:?}"
     );
     assert!(
         !ctcp_lines(&events).iter().any(|l| l.contains("ACTION")),
@@ -1912,6 +1912,215 @@ async fn own_ctcp_echo_is_never_answered() {
     assert!(
         !events.iter().any(|e| matches!(e, IrcEvent::Msg { is_self: true, .. })),
         "the echoed CTCP must not render as a self chat row: {events:?}"
+    );
+
+    ctx.send(ClientCommand::Quit).await.ok();
+    let _ = tokio::time::timeout(Duration::from_secs(5), handle).await;
+}
+
+// ---------------------------------------------------------------------------
+// Command replies (phase 7b)
+//
+// A reply to a command the user issued must arrive as `CommandReply` (the
+// bridge files it in the buffer the user is looking at) and must NEVER be a
+// `Msg` targeting the nick the command was about — that routing is what
+// opened a query window for every `/whois`.
+// ---------------------------------------------------------------------------
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn command_replies_never_target_the_queried_nick() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let lines: Lines = Arc::new(Mutex::new(Vec::new()));
+    {
+        let lines = lines.clone();
+        tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            server_ctcp_script(
+                stream,
+                lines,
+                &[
+                    // WHOIS for alice — the user report's exact case.
+                    ":irc.test 311 kircuser alice ident host * :Alice Example",
+                    ":irc.test 312 kircuser alice irc.test :Test server",
+                    ":irc.test 319 kircuser alice :#rust #kde",
+                    ":irc.test 318 kircuser alice :End of /WHOIS list",
+                    // WHOWAS / WHO / ISON / USERHOST for other nicks.
+                    ":irc.test 314 kircuser carol ident host * :Carol",
+                    ":irc.test 369 kircuser carol :End of WHOWAS",
+                    ":irc.test 352 kircuser #rust dave ident host irc.test dave H :0 Dave",
+                    ":irc.test 315 kircuser #rust :End of /WHO list",
+                    ":irc.test 303 kircuser :alice bob",
+                    ":irc.test 302 kircuser :alice=+ident@host",
+                    // A failed command names a nick that does not exist.
+                    ":irc.test 401 kircuser ghost :No such nick/channel",
+                    // The fence: a genuine PRIVMSG from alice IS a query.
+                    ":alice!a@host PRIVMSG kircuser :hey, it's me",
+                ],
+            )
+            .await;
+        });
+    }
+
+    let (etx, mut erx) = mpsc::channel::<IrcEvent>(64);
+    let (ctx, crx) = mpsc::channel::<ClientCommand>(16);
+    let handle = tokio::spawn(run_session(base_config(port, None), etx, crx));
+
+    // Wait for the fence message: every scripted line before it has then been
+    // processed (events arrive in order), so nothing is still in flight.
+    let events = collect_events(&mut erx, Duration::from_secs(10), |evs| {
+        evs.iter().any(|e| {
+            matches!(e, IrcEvent::Msg { nick, text, .. } if nick == "alice" && text == "hey, it's me")
+        })
+    })
+    .await;
+
+    let replies: Vec<&String> = events
+        .iter()
+        .filter_map(|e| match e {
+            IrcEvent::CommandReply { text } => Some(text),
+            _ => None,
+        })
+        .collect();
+    for prefix in [
+        "311 alice", "312 alice", "319 alice", "318 alice", // WHOIS
+        "314 carol", "369 carol",                           // WHOWAS
+        "352 #rust", "315 #rust",                           // WHO
+        "303 alice bob", "302 alice=+ident@host",           // ISON / USERHOST
+        "401 ghost",                                        // failed command
+    ] {
+        assert!(
+            replies.iter().any(|t| t.starts_with(prefix)),
+            "missing CommandReply {prefix:?} in {replies:?}"
+        );
+    }
+
+    // The contrast case: the ONLY Msg targeting a nick the commands named is
+    // the genuine PRIVMSG from alice. No reply may open a buffer.
+    let queried: Vec<&IrcEvent> = events
+        .iter()
+        .filter(|e| {
+            matches!(e, IrcEvent::Msg { target, .. }
+                if target == "alice" || target == "carol" || target == "dave"
+                    || target == "ghost" || target == "bob")
+        })
+        .collect();
+    assert_eq!(
+        queried.len(),
+        1,
+        "a command reply targeted the queried nick: {queried:?}"
+    );
+    assert!(
+        matches!(queried[0], IrcEvent::Msg { target, nick, text, .. }
+            if target == "alice" && nick == "alice" && text == "hey, it's me"),
+        "the one queried-nick Msg must be the genuine PRIVMSG: {:?}",
+        queried[0]
+    );
+
+    // 401 keeps its Error: the failure stays visible as a notification.
+    assert!(
+        events.iter().any(|e| matches!(e, IrcEvent::Error { message }
+            if message.contains("401") && message.contains("No such nick"))),
+        "the 401 must still surface as an Error: {events:?}"
+    );
+
+    ctx.send(ClientCommand::Quit).await.ok();
+    let _ = tokio::time::timeout(Duration::from_secs(5), handle).await;
+}
+
+/// The arrival facts behind the `isNotice`/`isAction` model roles: an inbound
+/// NOTICE carries `is_notice`, an inbound ACTION carries `is_action`, ordinary
+/// chat carries neither — and a locally echoed `/me` carries `is_action`
+/// (still rendered as the `* …` chat row it always was).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn notice_and_action_carry_their_arrival_flags() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let lines: Lines = Arc::new(Mutex::new(Vec::new()));
+    {
+        let lines = lines.clone();
+        tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            server_ctcp_script(
+                stream,
+                lines,
+                &[
+                    ":alice!a@host NOTICE kircuser :psst, a notice",
+                    ":alice!a@host PRIVMSG kircuser :\u{1}ACTION waves at you\u{1}",
+                    ":alice!a@host PRIVMSG kircuser :plain chat",
+                ],
+            )
+            .await;
+        });
+    }
+
+    let (etx, mut erx) = mpsc::channel::<IrcEvent>(64);
+    let (ctx, crx) = mpsc::channel::<ClientCommand>(16);
+    let handle = tokio::spawn(run_session(base_config(port, None), etx, crx));
+
+    let events = collect_events(&mut erx, Duration::from_secs(10), |evs| {
+        evs.iter().any(|e| {
+            matches!(e, IrcEvent::Msg { nick, text, .. } if nick == "alice" && text == "plain chat")
+        })
+    })
+    .await;
+
+    assert!(
+        events.iter().any(|e| matches!(e, IrcEvent::Msg { nick, text, is_notice: true, is_action: false, .. }
+            if nick == "alice" && text == "psst, a notice")),
+        "an inbound NOTICE must carry is_notice: {events:?}"
+    );
+    assert!(
+        events.iter().any(|e| matches!(e, IrcEvent::Msg { nick, text, is_notice: false, is_action: true, .. }
+            if nick == "alice" && text == "* waves at you")),
+        "an inbound ACTION must carry is_action: {events:?}"
+    );
+    assert!(
+        events.iter().any(|e| matches!(e, IrcEvent::Msg { nick, text, is_notice: false, is_action: false, .. }
+            if nick == "alice" && text == "plain chat")),
+        "plain chat must carry neither flag: {events:?}"
+    );
+
+    // Our own `/me` on the local-echo path (this server does not ACK
+    // echo-message): the row keeps its `/me` rendering, with the role set.
+    ctx.send(ClientCommand::Privmsg {
+        target: "#rust".to_string(),
+        text: "\u{1}ACTION raises a hand\u{1}".to_string(),
+    })
+    .await
+    .unwrap();
+    ctx.send(ClientCommand::Privmsg {
+        target: "#rust".to_string(),
+        text: "hello there".to_string(),
+    })
+    .await
+    .unwrap();
+
+    let sent = wait_until(&lines, Duration::from_secs(5), |seen| {
+        seen.iter().any(|l| l == "PRIVMSG #rust :hello there")
+    })
+    .await;
+    assert!(
+        sent.iter()
+            .any(|l| l == "PRIVMSG #rust :\u{1}ACTION raises a hand\u{1}"),
+        "the /me must reach the wire: {sent:?}"
+    );
+
+    let events = collect_events(&mut erx, Duration::from_millis(500), |evs| {
+        evs.iter().any(|e| {
+            matches!(e, IrcEvent::Msg { text, is_self: true, .. } if text == "hello there")
+        })
+    })
+    .await;
+    assert!(
+        events.iter().any(|e| matches!(e, IrcEvent::Msg { text, is_self: true, is_action: true, is_notice: false, .. }
+            if text == "* raises a hand")),
+        "the locally echoed /me must carry is_action: {events:?}"
+    );
+    assert!(
+        events.iter().any(|e| matches!(e, IrcEvent::Msg { text, is_self: true, is_action: false, .. }
+            if text == "hello there")),
+        "a plain local echo must not carry is_action: {events:?}"
     );
 
     ctx.send(ClientCommand::Quit).await.ok();

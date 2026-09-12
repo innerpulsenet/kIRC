@@ -136,6 +136,8 @@ fn irc_event_variants() {
             timestamp: Some("2026-09-11T00:00:00.000Z".into()),
             is_self: false,
             is_highlight: true,
+            is_notice: false,
+            is_action: false,
         },
         IrcEvent::Notice {
             nick: "n".into(),
@@ -208,8 +210,11 @@ fn irc_event_variants() {
         IrcEvent::Error {
             message: "e".into(),
         },
+        IrcEvent::CommandReply {
+            text: "311 n u h * :Real Name".into(),
+        },
     ];
-    assert_eq!(events.len(), 20);
+    assert_eq!(events.len(), 21);
 }
 
 #[test]

@@ -30,13 +30,16 @@ use kirc_core::{is_channel, ClientCommand, ConnectionConfig, IrcEvent, SaslConfi
 /// A single message as buffered for the QML models.
 ///
 /// `nick`/`text`/`timestamp`/`is_self`/`is_highlight` are the raw row data.
-/// `day` is the local calendar date the row's timestamp fell on (`None` when
-/// the timestamp was unparseable); it is what the day-boundary roles are
-/// computed from, because the display stamp alone ("HH:MM") carries no date.
-/// `is_event`/`is_error`/`show_day`/`day_label` are DERIVED presentation
-/// flags: they are left at their defaults in the [`STORE`] and filled in by
-/// [`qobject::MessageListModel`] when a row is produced (single pass in
-/// `load_channel`, O(1) in `append_message`).
+/// `is_private`/`is_notice`/`is_action` are RAW arrival facts (see
+/// [`StoreMsg::arrival`]) — they say which buffer the row landed in and how
+/// the line arrived, and feed the `isPrivate`/`isNotice`/`isAction` roles
+/// verbatim. `day` is the local calendar date the row's timestamp fell on
+/// (`None` when the timestamp was unparseable); it is what the day-boundary
+/// roles are computed from, because the display stamp alone ("HH:MM") carries
+/// no date. `is_event`/`is_error`/`show_day`/`day_label` are DERIVED
+/// presentation flags: they are left at their defaults in the [`STORE`] and
+/// filled in by [`qobject::MessageListModel`] when a row is produced (single
+/// pass in `load_channel`, O(1) in `append_message`).
 #[derive(Clone, Debug, Default)]
 pub struct StoreMsg {
     pub nick: String,
@@ -44,6 +47,14 @@ pub struct StoreMsg {
     pub timestamp: String,
     pub is_self: bool,
     pub is_highlight: bool,
+    /// The row belongs to a query buffer (an ordinary nick), not a channel
+    /// and not the server console.
+    pub is_private: bool,
+    /// The line arrived as a NOTICE; also set for the console lines a
+    /// server-wide NOTICE produces.
+    pub is_notice: bool,
+    /// The line is (the rendering of) a CTCP ACTION — `/me`.
+    pub is_action: bool,
     pub day: Option<chrono::NaiveDate>,
     pub is_event: bool,
     pub is_error: bool,
@@ -72,6 +83,24 @@ impl StoreMsg {
             ..Self::default()
         }
     }
+
+    /// Attach the row's arrival facts: the buffer `key` it is stored under
+    /// (a query buffer or not) and whether the line arrived as a NOTICE / a
+    /// CTCP ACTION. These are the raw values behind the `isPrivate` /
+    /// `isNotice` / `isAction` model roles and are preserved across both the
+    /// batch (`derive_rows`) and incremental (`append_message`) paths.
+    fn arrival(mut self, key: &str, is_notice: bool, is_action: bool) -> Self {
+        self.is_private = is_query_key(key);
+        self.is_notice = is_notice;
+        self.is_action = is_action;
+        self
+    }
+}
+
+/// True when a buffer key names a query (an ordinary nick) rather than a
+/// channel or the server console — the join of `isPrivate`.
+fn is_query_key(key: &str) -> bool {
+    !is_channel(key) && key != SERVER_BUFFER
 }
 
 /// Global `target -> messages` buffer.
@@ -384,6 +413,12 @@ pub mod qobject {
     ///
     /// `isEvent`/`isError`/`showDay`/`dayLabel` are computed in Rust when a row
     /// is produced (see `derive_rows` / `derive_row`); QML binds them directly.
+    ///
+    /// `isPrivate`/`isNotice`/`isAction` are the row's raw arrival facts (see
+    /// [`super::StoreMsg::arrival`]): which buffer the row belongs to (a query
+    /// rather than a channel) and how the line arrived (NOTICE / CTCP ACTION).
+    /// They are ADDITIVE — the existing names and order are frozen, so the new
+    /// roles are appended after `IsError`.
     #[qenum(MessageListModel)]
     enum Roles {
         Nick,
@@ -395,6 +430,9 @@ pub mod qobject {
         ShowDay,
         DayLabel,
         IsError,
+        IsPrivate,
+        IsNotice,
+        IsAction,
     }
 
     // -----------------------------------------------------------------------
@@ -778,7 +816,17 @@ pub const SERVER_BUFFER: &str = "*server*";
 /// Append one informational line to the server-console buffer and notify the
 /// UI through the regular `message_received` path (a page showing the buffer
 /// reloads; no popup, no unread badge inflation).
-fn info_to_store(mut obj: Pin<&mut qobject::IrcBridge>, text: &str) {
+fn info_to_store(obj: Pin<&mut qobject::IrcBridge>, text: &str) {
+    push_console_line(obj, text, false);
+}
+
+/// A console line that arrived as a NOTICE (server-wide notices): the
+/// `isNotice` role's source on the console path.
+fn notice_to_store(obj: Pin<&mut qobject::IrcBridge>, text: &str) {
+    push_console_line(obj, text, true);
+}
+
+fn push_console_line(mut obj: Pin<&mut qobject::IrcBridge>, text: &str, is_notice: bool) {
     // One clock read: the buffered row and the announced line must carry the
     // same stamp, or a later `load_channel` reload would show a different time
     // than the live insert did.
@@ -788,14 +836,17 @@ fn info_to_store(mut obj: Pin<&mut qobject::IrcBridge>, text: &str) {
         guard
             .entry(SERVER_BUFFER.to_owned())
             .or_default()
-            .push(StoreMsg::new(
-                "*".to_owned(),
-                text.to_owned(),
-                stamp.clone(),
-                false,
-                false,
-                Some(now_day()),
-            ));
+            .push(
+                StoreMsg::new(
+                    "*".to_owned(),
+                    text.to_owned(),
+                    stamp.clone(),
+                    false,
+                    false,
+                    Some(now_day()),
+                )
+                .arrival(SERVER_BUFFER, is_notice, false),
+            );
     }
     obj.as_mut().message_received(
         qs(SERVER_BUFFER),
@@ -818,14 +869,17 @@ fn push_channel_line(mut obj: Pin<&mut qobject::IrcBridge>, channel: &str, text:
         guard
             .entry(key.clone())
             .or_default()
-            .push(StoreMsg::new(
-                "*".to_owned(),
-                text.to_owned(),
-                stamp.clone(),
-                false,
-                false,
-                Some(now_day()),
-            ));
+            .push(
+                StoreMsg::new(
+                    "*".to_owned(),
+                    text.to_owned(),
+                    stamp.clone(),
+                    false,
+                    false,
+                    Some(now_day()),
+                )
+                .arrival(&key, false, false),
+            );
         key
     };
     obj.as_mut().message_received(
@@ -836,6 +890,21 @@ fn push_channel_line(mut obj: Pin<&mut qobject::IrcBridge>, channel: &str, text:
         false,
         false,
     );
+}
+
+/// The buffer a command reply is filed in: the one the user is currently
+/// looking at, or the server console when no buffer is visible (during
+/// registration, for instance).
+///
+/// The reply NEVER gets a buffer of its own — in particular it must not open
+/// a query window for the nick the command was about (`/whois alice` renders
+/// where the user typed it, not in a chat with alice).
+fn command_reply_key(visible: &str) -> String {
+    if visible.is_empty() {
+        SERVER_BUFFER.to_owned()
+    } else {
+        visible.to_owned()
+    }
 }
 
 /// True when the user is already looking at `target` (case-insensitive).
@@ -938,6 +1007,8 @@ fn handle_event(mut obj: Pin<&mut qobject::IrcBridge>, event: IrcEvent) {
             timestamp,
             is_self,
             is_highlight,
+            is_notice,
+            is_action,
         } => {
             if text.trim().is_empty() {
                 return;
@@ -950,14 +1021,20 @@ fn handle_event(mut obj: Pin<&mut qobject::IrcBridge>, event: IrcEvent) {
             let target = {
                 let mut guard = store().lock().unwrap_or_else(|e| e.into_inner());
                 let key = canon_key(&guard, &target);
-                guard.entry(key.clone()).or_default().push(StoreMsg::new(
-                    nick.clone(),
-                    text.clone(),
-                    stamp.clone(),
-                    is_self,
-                    is_highlight,
-                    day,
-                ));
+                guard
+                    .entry(key.clone())
+                    .or_default()
+                    .push(
+                        StoreMsg::new(
+                            nick.clone(),
+                            text.clone(),
+                            stamp.clone(),
+                            is_self,
+                            is_highlight,
+                            day,
+                        )
+                        .arrival(&key, is_notice, is_action),
+                    );
                 key
             };
 
@@ -981,6 +1058,51 @@ fn handle_event(mut obj: Pin<&mut qobject::IrcBridge>, event: IrcEvent) {
             }
         }
 
+        IrcEvent::CommandReply { text } => {
+            // Text that answers a command the user issued. It belongs in the
+            // buffer they are looking at right now; with no buffer visible
+            // yet (during registration, say) it falls back to the server
+            // console. Crucially it never opens a query window, never bumps
+            // unread, and never creates a buffer of its own — a `/whois`
+            // reply renders right where the user typed the command.
+            if text.trim().is_empty() {
+                return;
+            }
+            let stamp = now_string();
+            let target = {
+                let mut guard = store().lock().unwrap_or_else(|e| e.into_inner());
+                let visible = visible_target().lock().unwrap_or_else(|e| e.into_inner()).clone();
+                // Fold onto the key the UI actually opened, so the reply
+                // lands in the buffer the user sees even when its case
+                // differs from what the session reported.
+                let key = canon_map_key(&guard, &command_reply_key(&visible));
+                guard
+                    .entry(key.clone())
+                    .or_default()
+                    .push(
+                        StoreMsg::new(
+                            "*".to_owned(),
+                            text.clone(),
+                            stamp.clone(),
+                            false,
+                            false,
+                            Some(now_day()),
+                        )
+                        .arrival(&key, false, false),
+                    );
+                key
+            };
+
+            obj.as_mut().message_received(
+                qs(&target),
+                qs("*"),
+                qs(&text),
+                qs(&stamp),
+                false,
+                false,
+            );
+        }
+
         IrcEvent::HistoryBatch { messages } => {
             // Scrollback is older than whatever is buffered live, so it goes
             // in FRONT (oldest first). `history_target` records which buffer
@@ -998,6 +1120,7 @@ fn handle_event(mut obj: Pin<&mut qobject::IrcBridge>, event: IrcEvent) {
                     .map(|msg| {
                         let (timestamp, day) = fmt_timestamp(msg.timestamp);
                         StoreMsg::new(msg.nick, msg.text, timestamp, false, false, day)
+                            .arrival(&key, false, false)
                     })
                     .collect();
                 let entry = guard.entry(key).or_default();
@@ -1007,7 +1130,7 @@ fn handle_event(mut obj: Pin<&mut qobject::IrcBridge>, event: IrcEvent) {
         }
 
         IrcEvent::Notice { nick, text } => {
-            info_to_store(obj.as_mut(), &format!("-{nick}- {text}"));
+            notice_to_store(obj.as_mut(), &format!("-{nick}- {text}"));
         }
 
         IrcEvent::Join {
@@ -1597,12 +1720,18 @@ impl qobject::MessageListModel {
         }
 
         let loaded_key = self.as_ref().rust().target.clone();
-        let day = {
+        // The live signal carries only the display payload; the row's other
+        // raw facts — its calendar `day`, and the `isPrivate`/`isNotice`/
+        // `isAction` arrival flags — are read from the STORE row the bridge
+        // appended just before announcing this line. That is the same row
+        // `load_channel` would serve, so both paths agree.
+        let (day, is_private, is_notice, is_action) = {
             let guard = store().lock().unwrap_or_else(|e| e.into_inner());
             guard
                 .get(&loaded_key)
                 .and_then(|rows| rows.last())
-                .and_then(|row| row.day)
+                .map(|row| (row.day, row.is_private, row.is_notice, row.is_action))
+                .unwrap_or((None, false, false, false))
         };
 
         let mut row = StoreMsg::new(
@@ -1613,6 +1742,9 @@ impl qobject::MessageListModel {
             is_highlight,
             day,
         );
+        row.is_private = is_private;
+        row.is_notice = is_notice;
+        row.is_action = is_action;
         let prev_day = self.as_ref().rust().rows.last().and_then(|prev| prev.day);
         derive_row(prev_day, &mut row);
 
@@ -1664,6 +1796,9 @@ impl qobject::MessageListModel {
             qobject::Roles::IsHighlight => QVariant::from(&row.is_highlight),
             qobject::Roles::IsEvent => QVariant::from(&row.is_event),
             qobject::Roles::IsError => QVariant::from(&row.is_error),
+            qobject::Roles::IsPrivate => QVariant::from(&row.is_private),
+            qobject::Roles::IsNotice => QVariant::from(&row.is_notice),
+            qobject::Roles::IsAction => QVariant::from(&row.is_action),
             qobject::Roles::ShowDay => QVariant::from(&row.show_day),
             qobject::Roles::DayLabel => {
                 let value = qs(&row.day_label);
@@ -1696,6 +1831,12 @@ impl qobject::MessageListModel {
         roles.insert(qobject::Roles::IsError.repr, QByteArray::from("isError"));
         roles.insert(qobject::Roles::ShowDay.repr, QByteArray::from("showDay"));
         roles.insert(qobject::Roles::DayLabel.repr, QByteArray::from("dayLabel"));
+        roles.insert(
+            qobject::Roles::IsPrivate.repr,
+            QByteArray::from("isPrivate"),
+        );
+        roles.insert(qobject::Roles::IsNotice.repr, QByteArray::from("isNotice"));
+        roles.insert(qobject::Roles::IsAction.repr, QByteArray::from("isAction"));
         roles
     }
 }
@@ -1901,5 +2042,57 @@ mod tests {
         let mut motd = row_text("*", "372 - MOTD: welcome to the test network");
         derive_row(None, &mut motd);
         assert!(!motd.is_error);
+    }
+
+    #[test]
+    fn command_replies_fall_back_to_the_console_with_no_visible_buffer() {
+        // The frozen policy: a reply goes to the buffer the user is looking
+        // at; with none visible (registration time) it goes to the console.
+        // It never gets a buffer of its own.
+        assert_eq!(command_reply_key(""), SERVER_BUFFER);
+        assert_eq!(command_reply_key("#kirc"), "#kirc");
+        assert_eq!(command_reply_key("alice"), "alice");
+        assert_eq!(command_reply_key(SERVER_BUFFER), SERVER_BUFFER);
+    }
+
+    #[test]
+    fn query_keys_are_private_channels_and_console_are_not() {
+        // `isPrivate` is about the buffer a row belongs to: query buffers
+        // (ordinary nicks, services included) yes; channels and the server
+        // console no.
+        assert!(is_query_key("alice"));
+        assert!(is_query_key("NickServ"));
+        assert!(is_query_key("guest_12345"));
+        assert!(!is_query_key("#kirc"));
+        assert!(!is_query_key("&local"));
+        assert!(!is_query_key("!ABCDEchan"));
+        assert!(!is_query_key(SERVER_BUFFER));
+    }
+
+    #[test]
+    fn arrival_facts_survive_derivation() {
+        // A query row that arrived as a NOTICE (the isPrivate + isNotice case).
+        let mut notice = row("alice", date(2026, 9, 11)).arrival("alice", true, false);
+        assert!(notice.is_private && notice.is_notice && !notice.is_action);
+        // A channel row that is a CTCP ACTION (`/me`).
+        let mut action = row("bob", date(2026, 9, 11)).arrival("#kirc", false, true);
+        assert!(!action.is_private && !action.is_notice && action.is_action);
+        // A console row from a server NOTICE: not private, but a notice.
+        let console = row("*", date(2026, 9, 11)).arrival(SERVER_BUFFER, true, false);
+        assert!(!console.is_private && console.is_notice && !console.is_action);
+
+        // Neither derivation pass may clobber the arrival facts — they are
+        // raw, not derived.
+        derive_row(None, &mut notice);
+        derive_row(None, &mut action);
+        assert!(notice.is_private && notice.is_notice && !notice.is_action);
+        assert!(!action.is_private && action.is_action);
+        assert!(!notice.is_event);
+
+        let mut rows = vec![notice, action, console];
+        derive_rows(&mut rows);
+        assert!(rows[0].is_private && rows[0].is_notice);
+        assert!(rows[1].is_action && !rows[1].is_private);
+        assert!(!rows[2].is_private && rows[2].is_notice);
     }
 }

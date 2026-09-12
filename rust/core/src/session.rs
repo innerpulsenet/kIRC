@@ -159,6 +159,12 @@ pub enum IrcEvent {
         timestamp: Option<String>,
         is_self: bool,
         is_highlight: bool,
+        /// The line arrived as a `NOTICE`, not a `PRIVMSG`. The bridge
+        /// forwards this as the `isNotice` model role.
+        is_notice: bool,
+        /// The line is a CTCP `ACTION` (`/me`). The bridge forwards this as
+        /// the `isAction` model role.
+        is_action: bool,
     },
     /// A `NOTICE`.
     Notice { nick: String, text: String },
@@ -203,6 +209,15 @@ pub enum IrcEvent {
     Info { text: String },
     /// An error worth surfacing to the user.
     Error { message: String },
+    /// Text that answers something the user asked for: a reply to a command
+    /// they issued (`/whois`, `/whowas`, `/who`, `/ison`, `/userhost`,
+    /// `/motd`, `/list`, …).
+    ///
+    /// It belongs in the buffer the user is looking at, and it must never
+    /// open a query buffer — whatever nick or channel it happens to be
+    /// about. (Filing the WHOIS family under the queried nick is what used
+    /// to pop a chat window for every `/whois`.)
+    CommandReply { text: String },
 }
 
 /// Case-insensitive word-boundary match used for highlight detection.
@@ -425,6 +440,19 @@ impl Session {
         }
     }
 
+    /// File a numeric that answers a command the user issued (WHOIS, WHOWAS,
+    /// WHO, ISON, USERHOST, MOTD, LIST, …) as an [`IrcEvent::CommandReply`].
+    ///
+    /// The UI renders a command reply in the buffer the user is looking at.
+    /// It never opens a buffer — in particular never a query window for the
+    /// nick the command happened to mention.
+    async fn command_reply(&self, message: &IrcMessage) {
+        self.emit(IrcEvent::CommandReply {
+            text: numeric_summary(message),
+        })
+        .await;
+    }
+
     /// Emit an error, send a clean QUIT and stop the session.
     async fn abort(&mut self, reason: &str) -> io::Result<()> {
         let reason = sanitize(reason);
@@ -625,7 +653,10 @@ impl Session {
                 .await;
             }
             372 | 375 | 376 => {
-                self.emit(IrcEvent::Info {
+                // MOTD. It answers the user's `/motd` when they typed it,
+                // and at registration it falls back to the console (no
+                // buffer is visible yet), exactly as before.
+                self.emit(IrcEvent::CommandReply {
                     text: numeric_summary(message),
                 })
                 .await;
@@ -674,36 +705,85 @@ impl Session {
                     .unwrap_or_default();
                 self.emit(IrcEvent::Names { channel, nicks }).await;
             }
-            301 | 307 | 311 | 312 | 313 | 317 | 318 | 319 | 330 | 335 | 338 | 378 | 379 | 671 => {
-                // WHOIS family — file under the queried nick so NickServ/whois
-                // replies show in that query window, not as a toast.
-                let nick = message.params.get(1).cloned().unwrap_or_default();
-                if !nick.is_empty() {
-                    self.emit(IrcEvent::Msg {
-                        target: nick,
-                        nick: "*".to_string(),
-                        text: numeric_summary(message),
-                        timestamp: None,
-                        is_self: false,
-                        is_highlight: false,
-                    })
-                    .await;
-                }
+            // ---- Command replies ------------------------------------------
+            // Every numeric below answers something the user just issued
+            // (/whois, /whowas, /who, /ison, /userhost, /away, /monitor,
+            // /motd, /list, /version, /time, /stats, /lusers, /admin, /info,
+            // /links, /invite, mode/ban listings). A reply belongs in the
+            // buffer the user is looking at, never in a buffer keyed by the
+            // nick or channel it happens to be about: filing the WHOIS
+            // family under the queried nick is what popped a query window
+            // for every /whois.
+            301 | 307 | 311 | 312 | 313 | 317 | 318 | 319 | 330 | 335 | 338 | 378 | 379
+            | 671 => {
+                // WHOIS family.
+                self.command_reply(message).await;
+            }
+            302 | 303 => {
+                // USERHOST / ISON.
+                self.command_reply(message).await;
+            }
+            305 | 306 => {
+                // UNAWAY / NOWAWAY: the answer to /away.
+                self.command_reply(message).await;
+            }
+            314 | 369 => {
+                // WHOWAS / ENDOFWHOWAS.
+                self.command_reply(message).await;
+            }
+            315 | 352 => {
+                // WHO reply / end of WHO.
+                self.command_reply(message).await;
+            }
+            241..=259 | 265 | 266 => {
+                // STATS (241-250), LUSERS (251-255, 265, 266) and ADMIN
+                // (256-259).
+                self.command_reply(message).await;
+            }
+            321 | 322 | 323 => {
+                // LIST / LISTSTART / LISTEND.
+                self.command_reply(message).await;
+            }
+            324 | 329 | 346..=349 | 367 | 368 => {
+                // Channel mode reply, creation time, invite/except/ban
+                // listings — the output of /mode.
+                self.command_reply(message).await;
+            }
+            341 => {
+                // INVITING: the confirmation of /invite.
+                self.command_reply(message).await;
+            }
+            351 | 371 | 374 => {
+                // VERSION / INFO / ENDOFINFO.
+                self.command_reply(message).await;
+            }
+            364 | 365 => {
+                // LINKS / ENDOFLINKS.
+                self.command_reply(message).await;
+            }
+            381 => {
+                // YOUREOPER: the confirmation of /oper.
+                self.command_reply(message).await;
+            }
+            391 => {
+                // TIME.
+                self.command_reply(message).await;
+            }
+            730..=733 => {
+                // MONITOR online/offline notifications and list replies
+                // (/monitor), which arrive asynchronously after the command.
+                self.command_reply(message).await;
             }
             401 => {
-                let nick = message.params.get(1).cloned().unwrap_or_default();
+                // ERR_NOSUCHNICK answers the command that named the nick
+                // (/whois, /msg, …). It is a command reply, not a message
+                // from the nick: routing it as a `Msg` targeting that nick
+                // is what opened a query window for a nick that does not
+                // even exist. The Error keeps the failure visible as a
+                // notification, exactly as before.
                 let text = numeric_summary(message);
-                if !nick.is_empty() {
-                    self.emit(IrcEvent::Msg {
-                        target: nick.clone(),
-                        nick: "*".to_string(),
-                        text: text.clone(),
-                        timestamp: None,
-                        is_self: false,
-                        is_highlight: false,
-                    })
+                self.emit(IrcEvent::CommandReply { text: text.clone() })
                     .await;
-                }
                 self.emit(IrcEvent::Error { message: text }).await;
             }
             432 | 433 | 436 => {
@@ -1063,6 +1143,8 @@ impl Session {
             timestamp,
             is_self,
             is_highlight,
+            is_notice: false,
+            is_action: false,
         })
         .await;
         Ok(())
@@ -1109,6 +1191,8 @@ impl Session {
             timestamp,
             is_self,
             is_highlight: false,
+            is_notice: true,
+            is_action: false,
         })
         .await;
         Ok(())
@@ -1150,6 +1234,8 @@ impl Session {
                 timestamp,
                 is_self,
                 is_highlight,
+                is_notice: in_notice,
+                is_action: true,
             })
             .await;
             return Ok(());
@@ -1170,6 +1256,8 @@ impl Session {
             timestamp,
             is_self: false,
             is_highlight: false,
+            is_notice: in_notice,
+            is_action: false,
         })
         .await;
 
@@ -1210,11 +1298,11 @@ impl Session {
                         // `/version <nick>` take — the UI prints its own
                         // local line for those). ACTION is the exception:
                         // `/me` stays a chat row in both modes.
-                        if let Some(ctcp) = parse_ctcp(line) {
-                            if !matches!(ctcp, Ctcp::Action(_)) {
-                                continue;
-                            }
-                        }
+                        let is_action = match parse_ctcp(line) {
+                            Some(Ctcp::Action(_)) => true,
+                            Some(_) => continue,
+                            None => false,
+                        };
                         self.emit(IrcEvent::Msg {
                             target: target.clone(),
                             nick: self.config.nickname.clone(),
@@ -1222,6 +1310,8 @@ impl Session {
                             timestamp: None,
                             is_self: true,
                             is_highlight: false,
+                            is_notice: false,
+                            is_action,
                         })
                         .await;
                     }
