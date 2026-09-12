@@ -4,10 +4,11 @@
 
   SPDX-License-Identifier: GPL-2.0-or-later
 
-  Hand-tuned for the sizes where the main icon turns to mush: the window dots
-  and title rule are dropped (they only smear the top edge), the tile radius is
-  reduced, and the "#" is drawn larger with square caps so its strokes stay
-  separate instead of merging into a blob at 16px.
+  Hand-tuned for the sizes where the main icon turns to mush: the tile radius
+  is reduced and the "#" is drawn larger with SQUARE caps (round caps merge the
+  strokes into a blob at 16px).  Like the main icon the glyph is centred on the
+  tile: with stroke-width 30 the outer box is 59..197 on both axes, symmetric
+  about the tile centre 128,128.
 -->
 <svg xmlns="http://www.w3.org/2000/svg" width="256" height="256"
      viewBox="0 0 256 256" version="1.1">
@@ -15,9 +16,9 @@
         fill="#101417" stroke="#39434b" stroke-width="8"/>
 
   <g stroke="#4cc9dd" stroke-width="30">
-    <line x1="104" y1="88" x2="104" y2="200"/>
-    <line x1="152" y1="88" x2="152" y2="200"/>
-    <line x1="74" y1="122" x2="182" y2="122"/>
-    <line x1="74" y1="166" x2="182" y2="166"/>
+    <line x1="104" y1="84" x2="104" y2="172"/>
+    <line x1="152" y1="84" x2="152" y2="172"/>
+    <line x1="74" y1="106" x2="182" y2="106"/>
+    <line x1="74" y1="150" x2="182" y2="150"/>
   </g>
 </svg>

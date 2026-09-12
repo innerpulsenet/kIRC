@@ -4,35 +4,33 @@
 
   SPDX-License-Identifier: GPL-2.0-or-later
 
-  A terminal window, not a speech bubble: the client is an IRC console, so the
-  mark is a dark terminal tile with a title rule and a bold "#" channel glyph in
-  the palette of the default `tui` theme (bgPanel #101417, rule #2b3238, accent
-  #4cc9dd). Everything is drawn as geometry — no text element — so it
-  rasterises identically with rsvg, Inkscape or Qt without needing a font, and
-  the thick strokes survive down to 16px.
+  A dark tile with a bold "#" channel glyph in the palette of the default `tui`
+  theme (bgPanel #101417, rule #2b3238, accent #4cc9dd).
+
+  The glyph is centred on the TILE (its bounding box is symmetric about the tile
+  centre), not on the space below some chrome.  An earlier revision drew a
+  window title rule with the "#" below it, which is geometrically centred in the
+  body but reads as bottom-heavy — the thin rule looks like empty space, so the
+  glyph appears to sag.  Everything is geometry, no text element, so it
+  rasterises identically with rsvg, Inkscape or Qt without needing a font.
 -->
 <svg xmlns="http://www.w3.org/2000/svg" width="256" height="256"
      viewBox="0 0 256 256" version="1.1">
-  <!-- Terminal tile -->
+  <!-- Tile: 8..248, so the drawing area is centred on 128,128 -->
   <rect x="8" y="8" width="240" height="240" rx="44" ry="44"
         fill="#101417" stroke="#2b3238" stroke-width="4"/>
 
-  <!-- Window controls in the title band -->
-  <g fill="#4a565f">
-    <circle cx="42" cy="38" r="6"/>
-    <circle cx="64" cy="38" r="6"/>
-    <circle cx="86" cy="38" r="6"/>
-  </g>
-
-  <!-- Title rule, inset so it never crosses the rounded corners -->
-  <line x1="30" y1="62" x2="226" y2="62"
-        stroke="#2b3238" stroke-width="4" stroke-linecap="round"/>
-
-  <!-- "#" channel glyph, drawn as strokes so no font is required -->
+  <!--
+    "#" centred on 128,128.
+      verticals   x = 108, 148   y = 90 .. 166
+      horizontals y = 106, 150   x = 90 .. 166
+    With stroke-width 22 the outer bounding box is 79..177 on BOTH axes, i.e.
+    symmetric about the tile centre.
+  -->
   <g stroke="#4cc9dd" stroke-width="22" stroke-linecap="round">
-    <line x1="108" y1="117" x2="108" y2="193"/>
-    <line x1="148" y1="117" x2="148" y2="193"/>
-    <line x1="90" y1="133" x2="166" y2="133"/>
-    <line x1="90" y1="177" x2="166" y2="177"/>
+    <line x1="108" y1="90" x2="108" y2="166"/>
+    <line x1="148" y1="90" x2="148" y2="166"/>
+    <line x1="90" y1="106" x2="166" y2="106"/>
+    <line x1="90" y1="150" x2="166" y2="150"/>
   </g>
 </svg>
