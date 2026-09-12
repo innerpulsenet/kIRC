@@ -22,9 +22,10 @@ avatars, no rounded cards.
 
 ## Features
 
-**IRCv3** — requested and negotiated at connect: `server-time`, `message-tags`,
-`account-tag`, `extended-join`, `batch`, `echo-message`, `chathistory`, `sasl`, plus
-`MONITOR`, `SETNAME` and `draft/markread` where the network offers them. SASL supports
+**IRCv3** — negotiated at connect where the network offers them: `server-time`,
+`message-tags`, `account-tag`, `extended-join`, `batch`, `echo-message` and
+`chathistory`, plus `sasl` when SASL credentials are configured. `MONITOR`, `SETNAME` and
+`MARKREAD` are used as commands rather than capability-negotiated. SASL supports
 **PLAIN, SCRAM-SHA-256 and EXTERNAL**; the mechanism is selectable (default: negotiate
 SCRAM-SHA-256 when advertised, otherwise PLAIN).
 
@@ -59,24 +60,39 @@ attempt shown in the header. Outbound chat is split at UTF-8 boundaries to stay 
 Fixed time gutter, aligned nick column, hanging indent on wrapped lines, muted `*` event
 rows, day rules, and failures in a warning colour with a `!` marker instead of `*`.
 Nicknames are coloured deterministically from a hash, and highlight lines get an accent
-bar. Message grouping and day boundaries are computed in the model, so a row costs the
-same whether the buffer holds ten lines or ten thousand.
+bar. Day boundaries and the event/error flags on a row are computed in the model, so a
+row costs the same whether the buffer holds ten lines or ten thousand. There is no
+message grouping: every row is its own line.
 
 Unread counts are tracked per channel/query, so opening one buffer does not clear or mark
 unrelated conversations. Transcripts are capped at 20,000 rows per buffer, history batches
 are prepended without resetting the visible model, and bounded Rust-to-Qt delivery prevents
 a traffic flood from growing the GUI event queue without limit.
 
-**Themes** — five built-in monospace palettes: `tui` (default), `phosphor`, `amber`,
-`ice`, and `breeze` (which follows your Plasma colour scheme). Font family and size are
-adjustable.
+**Themes** — fourteen built-in monospace palettes: `tui` (default), `phosphor`, `amber`,
+`ice`, `breeze` (which follows your Plasma colour scheme), `bbs`, `c64`, `vt`, `ega`,
+`synthwave`, `ai-slop`, `crt`, `paper` (light) and `gruvbox`. Font family and size are
+adjustable; the theme menu is the `[theme]` control in the header.
+
+![Theme menu](docs/screenshot-themes.png)
 
 ![Light theme](docs/screenshot-light.png)
 
+**Effects** — two families under one `[effects]` control in the header, and the same
+settings in Settings › Effects. The *glass* family surfaces each pane: frost (a static
+blur of the pane's own underlay, never of the scrolling log), a themed tint, a diagonal
+sheen, deterministic grain and lit edges. The *CRT* family overlays the whole window:
+scanlines, vignette, grain, a hum bar and a stepped flicker, each with its own toggle and
+intensity. Both are global display settings — a theme cannot change them — and with every
+effect off the chrome is pixel-identical to a build with no effects at all. Frosting is
+in-app only: kIRC blurs its own static underlays, never the desktop behind the window.
+
+![CRT effects](docs/screenshot-effects.png)
+
 **Settings** — a two-pane terminal surface with live search: identity (nickname, NickServ
 account/password, SASL user and mechanism), connection (server password, autojoin list,
-on-join history limit, reconnect policy, default part/quit reason), appearance, and
-notification toggles.
+on-join history limit, reconnect policy, default part/quit reason), appearance, effects,
+notifications and about.
 
 ![Settings](docs/screenshot-settings.png)
 
@@ -86,11 +102,11 @@ with an unread badge, quick connect/disconnect and hide-to-tray.
 
 ## Requirements
 
-- Qt 6 (Core, Gui, Widgets, Qml, Quick, QuickControls2)
+- Qt 6.6+ (Core, Gui, Widgets, DBus, Qml, Quick, QuickControls2, QmlImportScanner)
 - KDE Frameworks 6: Kirigami, Config, Notifications, StatusNotifierItem, Wallet
-- Rust (edition 2021 toolchain) and Cargo
-- CMake 3.21+ and a C++17 compiler
-- `qqc2-desktop-style` at runtime (Kirigami uses it for the native widget style)
+- Rust (edition 2021; the engine declares MSRV 1.75) and Cargo
+- CMake 3.24+ and a C++17 compiler
+- `kf6-qqc2-desktop-style` at runtime (the app selects the `org.kde.desktop` style)
 
 On Fedora the build dependencies are:
 
@@ -133,7 +149,7 @@ sudo cmake --install build --prefix /usr
 An RPM spec is provided in `packaging/` for Fedora:
 
 ```sh
-rpmbuild -bb packaging/kirc.spec
+rpmbuild -ba packaging/kirc.spec   # binary RPM and source RPM
 ```
 
 Pushing a version tag (`git tag v1.0 && git push origin v1.0`) builds and publishes
@@ -145,8 +161,9 @@ normalizes to `1.0.0`).
 ## Configuration
 
 Preferences live in `~/.config/kIRC/kirc.conf`. **Secrets are never written there** — the
-NickServ, SASL and server passwords are kept in KWallet (folder `kIRC`), or in memory for
-the session only if the wallet is unavailable or locked.
+NickServ and server passwords are kept in KWallet (folder `kIRC`), or in memory for the
+session only if the wallet is unavailable or locked. The SASL password is never persisted
+at all: it is held in memory for the session.
 
 The kIRC theme id is versioned: on upgrade, configs holding a retired stock theme id are
 moved to the current default once, and a theme you picked yourself is left alone.
@@ -192,7 +209,7 @@ Everything is available from the composer; the server console accepts slash comm
 |---|---|
 | `/nick <new nick>` | change your nickname |
 | `/setname <real name>` | change your real name (IRCv3 SETNAME) |
-| `/away [reason]` / `/back` | set or clear away status |
+| `/away <reason>` / `/back` | set away with a reason; a bare `/away` or `/back` clears it |
 | `/whois [server] <nick>` | user information |
 | `/whowas <nick> [count]` | past user information |
 | `/who [channel\|mask]` | list users |
@@ -200,7 +217,6 @@ Everything is available from the composer; the server console accepts slash comm
 | `/oper <name> <password>` | become an IRC operator |
 | `/motd` `/time [server]` `/ping [target]` | server queries |
 | `/version [nick]` | no nick: the server's VERSION; with a nick: send that client a CTCP VERSION query |
-| `/ctcp <target> <message>` | send a CTCP query (e.g. `/ctcp alice VERSION`); alias for both of the above |
 | `/quit [reason]` | disconnect from the server |
 
 ### IRCv3 and client
@@ -226,7 +242,9 @@ rust/core/        protocol engine — no Qt: parser, session state machine, CAP,
 rust/src/         CXX-Qt bridge: IrcBridge (connection + invokables) and
                   MessageListModel (QAbstractListModel). Rust owns IRC state.
 rust/qml/         Kirigami UI: main.qml, ChatPage, MessageDelegate, SettingsPage,
-                  ConnectPage, ThemeEngine + Theme.js + themes/*.json.
+                  ConnectPage, ThemeEngine + Theme.js + themes/*.json, and the
+                  effects layer: GlassSurface.qml (per-pane frost/sheen/edges)
+                  and ScanlineOverlay.qml (the whole-window CRT stack).
 cpp/              thin C++ shell: KConfig, KWallet, KNotifications, tray.
 packaging/        RPM spec, desktop entry, AppStream metainfo, hicolor icons.
 ```
@@ -243,8 +261,11 @@ cd qml-tests && ./run.sh                                    # UI smoke + command
 cd qml-tests && ./perf.sh                                   # append path and switch cost
 ```
 
-The QML suites run headless against test doubles for the bridge objects, and assert on
-what the UI would send — including every slash command's wire output.
+The QML suites run headless against test doubles for the bridge objects: a smoke flow, the
+slash-command contract (each command's wire line, `/help` output, malformed-argument
+rejection, tab completion), the autoscroll contract, and the glass-surfacing contract.
+Two further stages need no QML runtime — the theme-token completeness check and the C++
+half of the glass settings round-trip through a real `kirc.conf`.
 
 ## License
 
