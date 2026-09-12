@@ -51,7 +51,14 @@ run_qml() {
 # log stays pinned while following (including a row whose delegate height
 # resolves after insertion), that appends never yank a scrolled-up user,
 # and that the pill / a manual return / a buffer switch recover following.
+#
+# Stage 0 (python, no QML runtime needed): the theme token-completeness check —
+# every built-in theme file and the Theme.js mirror must define EXACTLY the
+# engine's token table (missing or extra token => FAIL), agree on every value,
+# carry the current schema version, and pass the palette contrast /
+# distinguishability floors.
 status=0
+python3 "$here/check-theme-tokens.py" || status=1
 run_qml "$tmp/tst_smoke.qml" || status=1
 run_qml "$tmp/tst_cmds.qml" || status=1
 run_qml "$tmp/tst_scroll.qml" || status=1

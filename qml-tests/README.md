@@ -17,6 +17,13 @@ What it covers:
 
 * `main.qml` instantiates; the page stack starts on `ConnectPage`; header state
   text follows `connection_state`.
+* **Theme token completeness (stage 0, `check-theme-tokens.py`):** the token
+  table in `Theme.js` (`THEME_TOKENS`) is enumerated against every
+  `themes/*.json` AND every `Theme.js` builtin — a missing token, an extra
+  token, a JSON/JS value drift, a stale `schema`, or a palette below the
+  contrast / kind-distinguishability floors all fail the run, before any QML
+  starts. This is the regression test for the "new token never reached a
+  shipped theme" failure mode.
 * Slash commands: `tst_cmds.qml` (second stage of `run.sh`) drives the real
   dispatcher with the exact lines a user types and asserts the recorded bridge
   calls — one wire line per command, `/help` output, local lines, malformed
@@ -48,7 +55,16 @@ What it covers:
   `settle()`) was removed with the bubbles — `tst_perf.qml` proves no delegate
   scans the view any more.
 * Switching to `amber` and back to `tui` repaints the log in the terminal
-  palettes (every built-in theme is a dense monospace palette).
+  palettes (every built-in theme is a dense monospace palette). Schema 4 adds
+  the per-kind tokens: the smoke run asserts that every per-kind token is set
+  and distinct (and that a stored config naming any built-in, legacy or
+  retired id resolves to a schema-4 theme), and that the delegate renders a
+  NOTICE (with the `- ` marker and the notice colour), a `/me` action (action
+  colour) and a query row (private colour) from the roles alone.
+* The settings theme list offers all ten built-ins and its live search finds
+  the retro set by id, name and keyword (`c64`, `commodore`, `bbs`, `dial-up`,
+  `dos`, `outrun`); the picker filters down to the matching theme row.
+
 * `disconnect_server()` / `state_changed(0)` falls back to the connection form.
 * Follow-the-tail autoscroll (`tst_scroll.qml`): position-based assertions
   that the log stays pinned at the end while following — no cumulative
@@ -79,9 +95,11 @@ Caveats:
 
 ## Command harness
 
-`qml-tests/run.sh` runs three stages: the UI smoke flow (`tst_smoke.qml`),
-the slash-command contract (`tst_cmds.qml`) and the follow-the-tail
-autoscroll contract (`tst_scroll.qml`). The command stage loads the real
+`qml-tests/run.sh` runs a token-completeness stage (`check-theme-tokens.py`,
+no QML runtime needed) and then three QML stages: the UI smoke flow
+(`tst_smoke.qml`), the slash-command contract (`tst_cmds.qml`) and the
+follow-the-tail autoscroll contract (`tst_scroll.qml`). The command stage
+loads the real
 `ChatPage.qml` against the recording `IrcBridge` double (`calls` / `callTrace()`,
 cleared per case) and drives `runSlash()` with the lines a user types, asserting
 the exact call sequence each one produces: the wire line for hand-built
@@ -137,7 +155,9 @@ The same run exercises the render side — the channel-switch pause. A tall
 `ListView` hosts the real `MessageDelegate` over a second model instance, every
 row of a 500-row transcript is instantiated, and the harness reports the
 wall-clock cost of `load_channel` + full delegate creation and the number of
-`ListView.itemAtIndex()` calls the delegates made. `perf.sh` greps the delegate
+`ListView.itemAtIndex()` calls the delegates made. The canned snapshot the
+delegate checks run on has 12 rows (the theme-schema-4 addition: a NOTICE, a
+`/me` action and a query row). `perf.sh` greps the delegate
 for `itemAtIndex` call sites and instruments the throwaway copy with a counter
 when any are found, so the same harness reports the pre-fix scan count (about
 3.5 full view scans per delegate, i.e. O(n²)) and the current 0. It also checks

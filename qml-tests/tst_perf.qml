@@ -43,7 +43,8 @@ Item {
     property int appends: 6000
 
     // The canned snapshot of the double (tst_smoke.qml asserts on it too).
-    property int snapshotRows: 9
+    // 12 rows since theme schema 4 added the NOTICE / /me / query rows.
+    property int snapshotRows: 12
 
     // Channel-switch benchmark: rows per transcript, timed repetitions.
     property int switchRows: 500
@@ -347,10 +348,11 @@ Item {
             return false
         }
         var last = switchView.itemAtIndex(switchModel.count - 1)
-        // The last row of the snapshot is the "372 - MOTD ..." line; the row
-        // before it is the failing 473 line.
-        return last !== null && last.text === "372 - MOTD: incorrect settings are denied"
-            && last.isEvent === true && last.isError === false
+        // The last row of the (schema-4) snapshot is the query row; before the
+        // per-kind additions it was the "372 - MOTD ..." line (which is still
+        // index 8 and still asserted below).
+        return last !== null && last.text === "this line came from a query buffer"
+            && last.isPrivate === true && last.isEvent === false
     }
 
     Timer {

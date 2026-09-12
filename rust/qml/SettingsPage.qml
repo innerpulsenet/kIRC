@@ -83,7 +83,9 @@ Kirigami.Page {
     readonly property var sectionKeywords: [
         ["identity", "nickname", "nickserv", "account", "password", "sasl", "mechanism", "user", "plain", "external", "auto"],
         ["connection", "autojoin", "channel", "password", "server", "pass", "history", "lines", "scrollback", "reconnect", "retry", "authentication", "identify", "part", "quit", "reason", "leave", "ctcp", "version", "client", "reply", "privacy"],
-        ["appearance", "theme", "font", "size", "timestamps", "colour", "color", "palette"],
+        ["appearance", "theme", "font", "size", "timestamps", "colour", "color", "palette",
+         "retro", "bbs", "ansi", "dial-up", "c64", "commodore", "vt", "dec", "ega", "dos",
+         "synthwave", "neon", "outrun", "phosphor", "amber"],
         ["notifications", "notification", "highlight", "direct message", "tray", "minimize"],
         ["about", "version", "kirc", "license", "kde", "passwords"]
     ]
@@ -125,6 +127,13 @@ Kirigami.Page {
                 ++n
             }
         }
+        // The Appearance section's theme picker is a list of rows of its own:
+        // a filter that matches a theme (id, name or keyword) counts as a
+        // matching row, so the picker is shown instead of the "no matching
+        // rows" hint.
+        if (i === 2 && n === 0 && page.themeKeywordMatch()) {
+            n = 1
+        }
         return n
     }
 
@@ -160,6 +169,64 @@ Kirigami.Page {
     function rowVisible(label)
     {
         return page.filter.length === 0 || page.matches(label, page.filter)
+    }
+
+    // --- theme picker search ------------------------------------------------
+    // The Appearance section's theme picker is a list of themes, so a live
+    // filter must find them like a row label. Each theme id carries search
+    // keywords ("bbs", "commodore", "dos", "outrun", ...), and the rows
+    // filter down to the matches instead of the whole list disappearing.
+    readonly property var themeSearchKeywords: {
+        "tui": "terminal console monospace default neutral",
+        "phosphor": "green p1 crt tube retro",
+        "amber": "orange p3 crt tube retro",
+        "ice": "cold blue warp",
+        "breeze": "desktop scheme kde palette light dark",
+        "bbs": "bbs bulletin board dial-up ansi sysop door",
+        "c64": "commodore 64 breadbin vic-20 home computer blue",
+        "vt": "dec vt100 vt220 terminal phosphor",
+        "ega": "ega dos ibm pc bios vga 16-colour 16-color",
+        "synthwave": "neon outrun synth eighties 80s retro"
+    }
+
+    /// True when a theme id (or its display name / keywords) matches the
+    /// filter; an empty filter matches everything.
+    function themeRowMatches(id)
+    {
+        if (page.filter.length === 0) {
+            return true
+        }
+        var kw = page.themeSearchKeywords[id]
+        return page.matches(String(id), page.filter)
+                || page.matches(ThemeEngine.themeDisplayName(id), page.filter)
+                || (kw !== undefined && page.matches(kw, page.filter))
+    }
+
+    /// True when any theme in the picker matches the filter.
+    function themeKeywordMatch()
+    {
+        var ids = ThemeEngine.availableThemeIds
+        for (var i = 0; i < ids.length; ++i) {
+            if (page.themeRowMatches(ids[i])) {
+                return true
+            }
+        }
+        return false
+    }
+
+    /// Visibility of one theme row: everything shows while the filter is off
+    /// (or literally searches for "Theme"), otherwise only the matches.
+    function themeRowVisible(id)
+    {
+        return page.rowVisible(qsTr("Theme")) || page.themeRowMatches(id)
+    }
+
+    /// Visibility of the whole picker: shown when a theme matches, so
+    /// searching "bbs" / "commodore" / "neon" lands on the theme list.
+    function themeListVisible()
+    {
+        return page.filter.length === 0 || page.rowVisible(qsTr("Theme"))
+                || page.themeKeywordMatch()
     }
 
     /// Filtering rows across sections: apply the text, and keep the pane on a
@@ -1278,10 +1345,10 @@ Kirigami.Page {
 
                         SectionHeader { title: page.sectionName(2) }
 
-                        // ---- theme picker: flat monospace rows ----
+                        // ---- theme picker: flat monospace rows -----------------------------
                         ColumnLayout {
                             Layout.fillWidth: true
-                            visible: page.rowVisible(qsTr("Theme"))
+                            visible: page.themeListVisible()
                             spacing: 0
 
                             Text {
@@ -1316,6 +1383,9 @@ Kirigami.Page {
                                     Layout.topMargin: 1
                                     implicitHeight: Math.round(Kirigami.Units.gridUnit * 1.7)
                                     radius: 0
+                                    // The picker filters with the live search:
+                                    // a matching theme stays, the rest hide.
+                                    visible: page.themeRowVisible(themeRow.modelData)
                                     color: themeRow.active ? page.selC()
                                                            : (themeMouse.containsMouse ? page.hoverC() : "transparent")
                                     border.width: 1

@@ -1,6 +1,7 @@
 {
     "id": "amber",
     "name": "Amber",
+    "schema": 4,
     "mode": "dense",
     "bubble": {
         "radius": 0,
@@ -77,11 +78,18 @@
         "nickColumn": 9,
         "ruleColor": "#402d0a",
         "fgPrimary": "#ffb000",
-        "fgDim": "#9a6a1a",
+        "fgDim": "#a87a20",
         "fgAccent": "#ffd27a",
         "fgWarn": "#ff5f52",
         "bgPanel": "#120c02",
         "bgLog": "#0c0700",
-        "bgInput": "#0f0a02"
+        "bgInput": "#0f0a02",
+        "fgEvent": "#a87a20",
+        "fgMessage": "#ffb000",
+        "fgPrivate": "#ffd85e",
+        "fgNotice": "#ffcf9a",
+        "fgAction": "#e88f2a",
+        "fgHighlight": "#fff0cc",
+        "fgSelf": "#ffcf7a"
     }
 }

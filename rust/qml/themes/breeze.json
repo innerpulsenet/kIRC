@@ -1,6 +1,7 @@
 {
     "id": "breeze",
     "name": "Breeze",
+    "schema": 4,
     "mode": "dense",
     "bubble": {
         "radius": 0,
@@ -82,6 +83,13 @@
         "fgWarn": "",
         "bgPanel": "",
         "bgLog": "",
-        "bgInput": ""
+        "bgInput": "",
+        "fgEvent": "",
+        "fgMessage": "",
+        "fgPrivate": "",
+        "fgNotice": "",
+        "fgAction": "",
+        "fgHighlight": "",
+        "fgSelf": ""
     }
 }

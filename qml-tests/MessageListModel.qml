@@ -4,7 +4,12 @@ import QtQuick
 // the exact contract role names.
 //
 // Roles (must match rust/src/bridge.rs): nick, text, timestamp, isSelf,
-// isHighlight, isEvent, showDay, dayLabel, isError.
+// isHighlight, isEvent, showDay, dayLabel, isError, isPrivate, isNotice,
+// isAction.
+//
+// `isPrivate`/`isNotice`/`isAction` are RAW arrival facts (bridge roles
+// 9/10/11): the double carries them through row()/append_message verbatim, so
+// MessageDelegate's required properties bind on every path.
 //
 // `isEvent`/`isError`/`showDay`/`dayLabel` are DERIVED roles: the real model
 // computes them once per row when a row is produced (single pass on
@@ -17,8 +22,9 @@ import QtQuick
 //
 // The canned snapshot exercises every role path (plain, self, highlight,
 // event rows, a failing 473 line, a MOTD line whose text sounds alarming but
-// must stay non-error) plus two day boundaries, so the smoke test can assert
-// the contract without a live server.
+// must stay non-error, a NOTICE, a /me action and a query row) plus two day
+// boundaries, so the smoke test can assert the contract without a live
+// server.
 //
 // It mirrors the two write paths of the real bridge so a harness can tell them
 // apart (and count them):
@@ -125,15 +131,21 @@ ListModel {
     }
 
     /// Build one row with the derived roles, given the previous row (or null).
-    function row(prev, nick, text, timestamp, isSelf, isHighlight, dayKey) {
+    /// `arrival` (optional) carries the raw arrival facts:
+    /// {"private": bool, "notice": bool, "action": bool}.
+    function row(prev, nick, text, timestamp, isSelf, isHighlight, dayKey, arrival) {
         var key = model.dayKeyOf(dayKey)
         var prevKey = prev === null || prev === undefined ? "" : model.dayKeyOf(prev.dayKey)
         var showDay = key.length > 0 && prevKey.length > 0 && key !== prevKey
+        var a = arrival === undefined || arrival === null ? {} : arrival
         return {
             "nick": nick, "text": text, "timestamp": timestamp,
             "isSelf": isSelf, "isHighlight": isHighlight,
             "isEvent": String(nick) === "*",
             "isError": model.isErrorLine(nick, text),
+            "isPrivate": a.private === true,
+            "isNotice": a.notice === true,
+            "isAction": a.action === true,
             "showDay": showDay,
             "dayLabel": key.length > 0 ? model.dayLabelFor(key) : "",
             "dayKey": key
@@ -185,11 +197,21 @@ ListModel {
             // channel (+i)") and a MOTD line whose text *sounds* like a
             // failure — the numeric range must keep the MOTD non-error.
             ["*", "473 #pain Cannot join channel (+i)", "12:04", false, false, today],
-            ["*", "372 - MOTD: incorrect settings are denied", "12:05", false, false, today]
+            ["*", "372 - MOTD: incorrect settings are denied", "12:05", false, false, today],
+            // Per-kind coverage (theme schema 4): a NOTICE in a conversation,
+            // a CTCP ACTION and a query row, each flagged with its raw
+            // arrival fact so the delegate's role branches are all exercised.
+            ["alice", "psst - are you around?", "12:06", false, false, today,
+             {"notice": true}],
+            ["carol", "* does a little dance", "12:07", false, false, today,
+             {"action": true}],
+            ["dave", "this line came from a query buffer", "12:08", false, false, today,
+             {"private": true}]
         ]
         var prev = null
         for (var j = 0; j < raw.length; ++j) {
-            var r = model.row(prev, raw[j][0], raw[j][1], raw[j][2], raw[j][3], raw[j][4], raw[j][5])
+            var r = model.row(prev, raw[j][0], raw[j][1], raw[j][2], raw[j][3], raw[j][4],
+                              raw[j][5], raw[j][6])
             model.append(r)
             prev = r
         }

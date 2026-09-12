@@ -4,20 +4,29 @@
 //
 // A pure, O(1) console/TUI renderer. No bubbles, no avatars, no grouping:
 //
-//     [17:41] alice  │ hello there
-//     [17:41] * bob joined #pain              <- event rows: dim, no nick column
-//     [17:41] alice  │ * waves             <- /me action (the core bakes "* ")
-//     [17:41] ! 473 #pain Cannot join channel (+i)  <- failures: warn + "!"
-//     ───────── Today ──────────              <- day rule (showDay/dayLabel)
+//     [17:41] alice  │ hello there              <- channel chat (fgMessage)
+//     [17:41] * bob joined #pain                <- event rows: no nick column
+//     [17:41] alice  │ * waves                  <- /me action (fgAction)
+//     [17:41] bob    │ - psst                   <- NOTICE (fgNotice)
+//     [17:41] ! 473 #pain Cannot join channel (+i)  <- failures: fgWarn + "!"
+//     ───────── Today ──────────                <- day rule (showDay/dayLabel)
 //
 // Every row renders from the model roles ALONE — nick, text, timestamp,
-// isSelf, isHighlight plus the model-computed isEvent, isError, showDay and
-// dayLabel.
+// isSelf, isHighlight plus the model-computed isEvent, isError, isPrivate,
+// isNotice, isAction, showDay and dayLabel.
 // The delegate never scans the view for its own row, is never asked to look
 // at another delegate, and holds no neighbour/grouping state, so creating a
 // row costs the same whether the log holds ten rows or ten thousand.
 // `showDay`/`dayLabel` are derived in Rust (rust/src/bridge.rs) when the row
-// is produced.
+// is produced; the arrival facts (`isPrivate`/`isNotice`/`isAction`) are
+// recorded there too.
+//
+// PER-KIND COLOUR (theme schema 4): the body colour is chosen from the roles
+// with one fixed precedence — failure, system/event, highlight, notice,
+// action, query, own line, channel chat. Each kind has its own theme token
+// (fgWarn/fgEvent/fgHighlight/fgNotice/fgAction/fgPrivate/fgSelf/fgMessage)
+// and a palette-driven theme (breeze) leaves the tokens empty so the resolver
+// falls back to a distinct Kirigami role per kind.
 //
 // Layout is three fixed columns: the `[HH:MM]` time gutter (`gutterWidth`),
 // the nick column padded to `nickColumn` characters, and the message body.
@@ -54,6 +63,12 @@ Item {
     // Model-computed presentation flags (rust/src/bridge.rs).
     required property bool isEvent
     required property bool isError
+    // Arrival facts (bridge roles 9/10/11): the row is a query message, a
+    // NOTICE, a CTCP ACTION. Raw, not derived — the bridge preserves them on
+    // both the reload and the O(1) append path.
+    required property bool isPrivate
+    required property bool isNotice
+    required property bool isAction
     required property bool showDay
     required property string dayLabel
 
@@ -73,11 +88,27 @@ Item {
     readonly property color fgWarnColor: ThemeEngine.fgWarnColor(Kirigami.Theme.negativeTextColor)
     readonly property color ruleColor: ThemeEngine.ruleColorValue(Kirigami.Theme.textColor)
 
+    // Per-kind body colours (theme schema 4). A fixed palette theme sets the
+    // token; a palette-driven theme (breeze) leaves it empty and the resolver
+    // falls back to the distinct Kirigami role passed here, so the kinds stay
+    // distinguishable on any desktop scheme.
+    readonly property color fgEventColor: ThemeEngine.fgEventColor(delegate.fgDimColor)
+    readonly property color fgMessageColor: ThemeEngine.fgMessageColor(delegate.fgPrimaryColor)
+    readonly property color fgPrivateColor: ThemeEngine.fgPrivateColor(Kirigami.Theme.linkColor)
+    readonly property color fgNoticeColor: ThemeEngine.fgNoticeColor(Kirigami.Theme.neutralTextColor)
+    readonly property color fgActionColor: ThemeEngine.fgActionColor(Kirigami.Theme.visitedLinkColor)
+    readonly property color fgHighlightColor: ThemeEngine.fgHighlightColor(delegate.fgAccentColor)
+    readonly property color fgSelfColor: ThemeEngine.fgSelfColor(delegate.fgPrimaryColor)
+
     // Own lines reuse the accent so they stand out without any alignment
-    // change; everybody else keeps their deterministic nick colour.
+    // change; everybody else keeps their deterministic nick colour — a NOTICE
+    // is not "somebody talking", so its nick takes the notice colour and the
+    // whole row reads as a notice at a glance.
     readonly property color nickColor: delegate.isSelf
         ? delegate.fgAccentColor
-        : ThemeEngine.nickColor(delegate.nick, delegate.darkTheme)
+        : (delegate.isNotice
+           ? delegate.fgNoticeColor
+           : ThemeEngine.nickColor(delegate.nick, delegate.darkTheme))
 
     // --- geometry ----------------------------------------------------------
     readonly property int inset: Math.round(Kirigami.Units.smallSpacing)
@@ -129,16 +160,52 @@ Item {
     // ("* waves"), so it shares the normal line.
     //
     // Failure rows (isError) swap the marker for "!" and render in the warn
-    // colour. The marker is the same two characters as the event star, so the
-    // text column never moves and nothing reflows.
-    readonly property string bodyText: delegate.isError
-        ? "! " + delegate.text
-        : (delegate.isEvent ? "* " + delegate.text : delegate.text)
+    // colour; notices (a NOTICE in a conversation, i.e. not an event row)
+    // swap it for "- " — the classic notice shape. All three markers are two
+    // characters wide, so the text column never moves and nothing reflows.
+    readonly property string bodyText: {
+        if (delegate.isError) {
+            return "! " + delegate.text
+        }
+        if (delegate.isEvent) {
+            return "* " + delegate.text
+        }
+        if (delegate.isNotice) {
+            return "- " + delegate.text
+        }
+        return delegate.text
+    }
 
-    // Body colour: failures warn, then the event/console dim, then normal.
-    readonly property color bodyColor: delegate.isError
-        ? delegate.fgWarnColor
-        : (delegate.isEvent ? delegate.fgDimColor : delegate.fgPrimaryColor)
+    // Body colour, one fixed role-only precedence:
+    //   failure > system/event > highlight > notice > action > query >
+    //   own line > channel chat
+    // A highlighted row keeps the bar AND wins the text colour; a /me keeps
+    // its "* waves" text and takes the action colour; a query's rows take the
+    // private colour; everything else is the plain message colour.
+    readonly property color bodyColor: {
+        if (delegate.isError) {
+            return delegate.fgWarnColor
+        }
+        if (delegate.isEvent) {
+            return delegate.fgEventColor
+        }
+        if (delegate.isHighlight) {
+            return delegate.fgHighlightColor
+        }
+        if (delegate.isNotice) {
+            return delegate.fgNoticeColor
+        }
+        if (delegate.isAction) {
+            return delegate.fgActionColor
+        }
+        if (delegate.isPrivate) {
+            return delegate.fgPrivateColor
+        }
+        if (delegate.isSelf) {
+            return delegate.fgSelfColor
+        }
+        return delegate.fgMessageColor
+    }
 
     readonly property string bodyMarkup: ThemeEngine.formatMessage(
         delegate.bodyText,

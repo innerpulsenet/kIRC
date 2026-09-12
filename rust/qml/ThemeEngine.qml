@@ -34,6 +34,18 @@ QtObject {
     readonly property string themeName: theme.name
     // Always "dense" for anything that went through mergeTheme.
     readonly property string mode: theme.mode
+    // Token-set schema of the active theme (4 = per-kind message tokens).
+    // A theme file written against an older schema still loads (missing tokens
+    // fall back to the TUI defaults) — this reports what the *active* theme
+    // declares, so the settings surface can say a user theme is outdated.
+    readonly property int themeSchema: (typeof theme.schema === "number")
+        ? theme.schema
+        : ThemeLib.THEME_SCHEMA_VERSION
+    // The token schema this build ships (Theme.js THEME_SCHEMA_VERSION). Bump
+    // it when tokens are added/removed, together with [UI]
+    // ThemeSchemaVersion in cpp/kircconfig.cpp, so a config that already
+    // names a theme is re-examined instead of silently keeping the old set.
+    readonly property int themeSchemaVersion: ThemeLib.THEME_SCHEMA_VERSION
 
     // --- flat, bindable views into `theme` ---------------------------------
     // MessageDelegate / ChatPage bind to these directly so that a theme switch
@@ -107,6 +119,21 @@ QtObject {
     readonly property string fgAccent: theme.terminal.fgAccent
     /// Errors, join failures, disconnects.
     readonly property string fgWarn: theme.terminal.fgWarn
+    /// System/event rows: joins, parts, MOTD, command replies (the console's
+    /// `* …` lines). Distinct from fgDim so timestamps and events can differ.
+    readonly property string fgEvent: theme.terminal.fgEvent
+    /// Channel message body.
+    readonly property string fgMessage: theme.terminal.fgMessage
+    /// Query (private) message body.
+    readonly property string fgPrivate: theme.terminal.fgPrivate
+    /// NOTICE body (server-wide notices and notices in queries).
+    readonly property string fgNotice: theme.terminal.fgNotice
+    /// CTCP ACTION (`/me`) body.
+    readonly property string fgAction: theme.terminal.fgAction
+    /// Text of a row that highlighted your nick (the bar uses fgAccent).
+    readonly property string fgHighlight: theme.terminal.fgHighlight
+    /// Own lines' body text (the nick keeps fgAccent).
+    readonly property string fgSelf: theme.terminal.fgSelf
     /// Sidebar / people panel surface.
     readonly property string bgPanel: theme.terminal.bgPanel
     /// Message log surface.
@@ -208,8 +235,9 @@ QtObject {
     }
 
     // Load one of the compiled-in themes by id (tui, phosphor, amber, ice,
-    // breeze). Retired ids are aliased to `tui`, legacy ids still resolve.
-    // Returns "" on success, an error string otherwise.
+    // breeze, bbs, c64, vt, ega, synthwave). Retired ids are aliased to `tui`,
+    // legacy ids still resolve. Returns "" on success, an error string
+    // otherwise.
     function applyBuiltinTheme(id)
     {
         var key = ThemeLib.canonicalId(id)
@@ -462,7 +490,8 @@ QtObject {
     // --- terminal resolvers -------------------------------------------------
     // Every terminal colour token may be "" (theme says "use the desktop
     // palette"). The pages and the delegate pass their Kirigami fallback in;
-    // a fixed palette theme (tui/phosphor/amber/ice) wins when set.
+    // a fixed palette theme (tui/phosphor/amber/ice/bbs/c64/vt/ega/synthwave)
+    // wins when set.
 
     function ruleColorValue(fallback)
     {
@@ -487,6 +516,46 @@ QtObject {
     function fgWarnColor(fallback)
     {
         return engine.fgWarn !== "" ? engine.fgWarn : fallback
+    }
+
+    // --- per-kind message resolvers (schema 4) ------------------------------
+    // Same contract as the other terminal resolvers: a fixed palette theme
+    // wins, an empty token means "use the caller's fallback" (the caller
+    // passes a *distinct* Kirigami role per kind, so even a palette-driven
+    // theme keeps the kinds apart).
+    function fgEventColor(fallback)
+    {
+        return engine.fgEvent !== "" ? engine.fgEvent : fallback
+    }
+
+    function fgMessageColor(fallback)
+    {
+        return engine.fgMessage !== "" ? engine.fgMessage : fallback
+    }
+
+    function fgPrivateColor(fallback)
+    {
+        return engine.fgPrivate !== "" ? engine.fgPrivate : fallback
+    }
+
+    function fgNoticeColor(fallback)
+    {
+        return engine.fgNotice !== "" ? engine.fgNotice : fallback
+    }
+
+    function fgActionColor(fallback)
+    {
+        return engine.fgAction !== "" ? engine.fgAction : fallback
+    }
+
+    function fgHighlightColor(fallback)
+    {
+        return engine.fgHighlight !== "" ? engine.fgHighlight : fallback
+    }
+
+    function fgSelfColor(fallback)
+    {
+        return engine.fgSelf !== "" ? engine.fgSelf : fallback
     }
 
     function bgPanelColor(fallback)

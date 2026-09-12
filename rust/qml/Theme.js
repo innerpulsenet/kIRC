@@ -8,15 +8,24 @@
 // The JSON files are the canonical, user-facing schema (documented in
 // qml/README.md); the C++ side reads ~/.config/kIRC/themes/*.json and pushes
 // the parsed object into ThemeEngine.applyThemeJson(). QML cannot do file I/O
-// itself, so the built-ins are duplicated here as JS objects.
+// itself, so the built-ins are duplicated here as JS objects. The two copies
+// are byte-for-byte equivalent per token — `qml-tests/check-theme-tokens.py`
+// fails the build on any drift.
 //
-// TERMINAL LOOK (schema version 3): bubbles are cancelled. Every built-in is
-// `mode: "dense"` — monospace, one line per message, flat surfaces, no
+// TERMINAL LOOK (schema version 4): bubbles are cancelled and every built-in
+// is `mode: "dense"` — monospace, one line per message, flat surfaces, no
 // avatars, no grouping pills. The retired bubble/glass themes (fluent,
 // fluent-light, oxygen, neon, breeze-classic) live on only as *aliases* to the
 // TUI default, so a stale config id can never leave the window unstyled; the
-// C++ migration (`ThemeSchemaVersion` 3, see cpp/kircconfig.cpp) rewrites them
+// C++ migration (`ThemeSchemaVersion`, see cpp/kircconfig.cpp) rewrites them
 // on disk.
+//
+// Schema 4 added the per-kind message tokens (fgEvent / fgMessage / fgPrivate
+// / fgNotice / fgAction / fgHighlight / fgSelf) so the console log can tell
+// system lines, channel chat, queries, NOTICEs, /me actions, failures and
+// highlight mentions apart by colour. EVERY theme defines EVERY token — a
+// missing token is a silent fallback and an extra one is a typo that never
+// applies; the checker in qml-tests/ enforces the exact token set.
 //
 // NOTE: this file is the *only* JS module shipped next to the QML (see
 // EXTRA_RESOURCES in rust/build.rs), so every shared JS helper — theme maths,
@@ -27,8 +36,11 @@
 // --- built-in theme ids -----------------------------------------------------
 // Order matters: this is the order of the theme menu. "tui" is first: it is
 // the default for fresh installs and the migration target for every config
-// written before schema version 3.
-var BUILTIN_IDS = ["tui", "phosphor", "amber", "ice", "breeze"]
+// written before schema version 3. The retro/BBS palettes follow the neutral
+// set and exist to be *different rooms of the same museum*, not tints of one
+// another (see the palette notes above each theme).
+var BUILTIN_IDS = ["tui", "phosphor", "amber", "ice", "breeze",
+                   "bbs", "c64", "vt", "ega", "synthwave"]
 
 // Older builds shipped other default ids; keep them working. The retired
 // bubble/glass ids resolve to the TUI default so applying one can never leave
@@ -43,18 +55,25 @@ var ALIASES = {
 }
 
 // --- built-in themes (mirror of qml/themes/*.json) --------------------------
-// All five are dense terminal palettes: monospace, flat, one line per message.
-//  * tui       neutral terminal — near-black log, grey text, cyan accent
-//  * phosphor  green on black (P1 tube)
-//  * amber     amber on black (classic CRT)
-//  * ice       light text on dark blue (C64-ish)
-//  * breeze    dense geometry, Kirigami palette colours ("follows the desktop")
+// All ten are dense terminal palettes: monospace, flat, one line per message.
+//  * tui        neutral terminal — near-black log, grey text, cyan accent
+//  * phosphor   green on black (P1 tube)
+//  * amber      amber on black (classic CRT)
+//  * ice        light text on dark blue (cold blue)
+//  * breeze     dense geometry, Kirigami palette colours ("follows the desktop")
+//  * bbs        ANSI/BBS door colours on black (dial-up era)
+//  * c64        Commodore 64 light-blue on dark blue
+//  * vt         DEC VT-style yellow-green phosphor
+//  * ega        EGA/DOS 16-colour on black
+//  * synthwave  neon pink/cyan on deep purple
 // Colour tokens that are "" mean "fall back to the Kirigami palette at the
 // call site"; the geometry tokens carry the (flat) character.
 var builtins = {
+    // Neutral terminal — near-black log, grey text, cyan accent.
     "tui": {
         "id": "tui",
         "name": "TUI",
+        "schema": 4,
         "mode": "dense",
         "bubble": {
             "radius": 0,
@@ -65,16 +84,16 @@ var builtins = {
             "selfColor": "",
             "otherColor": ""
         },
-        "dense": {"lineSpacing": 2},
-        "avatar": {"enabled": false, "size": 0},
-        "grouping": {"enabled": true, "windowMinutes": 5},
-        "motion": {"enabled": true, "duration": 90},
-        "sidebar": {"width": 0},
-        "fonts": {"messageSize": 0, "timestampSize": 0, "nickSize": 0},
+        "dense": { "lineSpacing": 2 },
+        "avatar": { "enabled": false, "size": 0 },
+        "grouping": { "enabled": true, "windowMinutes": 5 },
+        "motion": { "enabled": true, "duration": 90 },
+        "sidebar": { "width": 0 },
+        "fonts": { "messageSize": 0, "timestampSize": 0, "nickSize": 0 },
         "colors": {
-            "nickSatMin": 0.50,
-            "nickSatMax": 0.80,
-            "nickLightnessDark": 0.70,
+            "nickSatMin": 0.5,
+            "nickSatMax": 0.8,
+            "nickLightnessDark": 0.7,
             "nickLightnessLight": 0.34,
             "linkify": true,
             "highlightIsBold": true,
@@ -119,13 +138,21 @@ var builtins = {
             "fgWarn": "#ff6b5f",
             "bgPanel": "#101417",
             "bgLog": "#0b0d0f",
-            "bgInput": "#0e1215"
+            "bgInput": "#0e1215",
+            "fgEvent": "#7c858c",
+            "fgMessage": "#c9ced3",
+            "fgPrivate": "#e0cfae",
+            "fgNotice": "#7fd8e6",
+            "fgAction": "#c3a8ea",
+            "fgHighlight": "#f0f6fa",
+            "fgSelf": "#e4ebf0"
         }
     },
     // Green on black — a P1 phosphor tube.
     "phosphor": {
         "id": "phosphor",
         "name": "Phosphor",
+        "schema": 4,
         "mode": "dense",
         "bubble": {
             "radius": 0,
@@ -136,17 +163,17 @@ var builtins = {
             "selfColor": "",
             "otherColor": ""
         },
-        "dense": {"lineSpacing": 2},
-        "avatar": {"enabled": false, "size": 0},
-        "grouping": {"enabled": true, "windowMinutes": 5},
-        "motion": {"enabled": true, "duration": 90},
-        "sidebar": {"width": 0},
-        "fonts": {"messageSize": 0, "timestampSize": 0, "nickSize": 0},
+        "dense": { "lineSpacing": 2 },
+        "avatar": { "enabled": false, "size": 0 },
+        "grouping": { "enabled": true, "windowMinutes": 5 },
+        "motion": { "enabled": true, "duration": 90 },
+        "sidebar": { "width": 0 },
+        "fonts": { "messageSize": 0, "timestampSize": 0, "nickSize": 0 },
         "colors": {
             "nickSatMin": 0.45,
             "nickSatMax": 0.75,
             "nickLightnessDark": 0.72,
-            "nickLightnessLight": 0.30,
+            "nickLightnessLight": 0.3,
             "linkify": true,
             "highlightIsBold": true,
             "linkColor": ""
@@ -190,13 +217,21 @@ var builtins = {
             "fgWarn": "#ff6359",
             "bgPanel": "#061006",
             "bgLog": "#030803",
-            "bgInput": "#040b04"
+            "bgInput": "#040b04",
+            "fgEvent": "#1f9e46",
+            "fgMessage": "#3fe05f",
+            "fgPrivate": "#cdee4c",
+            "fgNotice": "#6cf0d0",
+            "fgAction": "#b49cff",
+            "fgHighlight": "#d8ffe8",
+            "fgSelf": "#9fffbe"
         }
     },
     // Amber on black — the classic CRT terminal.
     "amber": {
         "id": "amber",
         "name": "Amber",
+        "schema": 4,
         "mode": "dense",
         "bubble": {
             "radius": 0,
@@ -207,15 +242,15 @@ var builtins = {
             "selfColor": "",
             "otherColor": ""
         },
-        "dense": {"lineSpacing": 2},
-        "avatar": {"enabled": false, "size": 0},
-        "grouping": {"enabled": true, "windowMinutes": 5},
-        "motion": {"enabled": true, "duration": 90},
-        "sidebar": {"width": 0},
-        "fonts": {"messageSize": 0, "timestampSize": 0, "nickSize": 0},
+        "dense": { "lineSpacing": 2 },
+        "avatar": { "enabled": false, "size": 0 },
+        "grouping": { "enabled": true, "windowMinutes": 5 },
+        "motion": { "enabled": true, "duration": 90 },
+        "sidebar": { "width": 0 },
+        "fonts": { "messageSize": 0, "timestampSize": 0, "nickSize": 0 },
         "colors": {
-            "nickSatMin": 0.50,
-            "nickSatMax": 0.80,
+            "nickSatMin": 0.5,
+            "nickSatMax": 0.8,
             "nickLightnessDark": 0.72,
             "nickLightnessLight": 0.32,
             "linkify": true,
@@ -256,18 +291,26 @@ var builtins = {
             "nickColumn": 9,
             "ruleColor": "#402d0a",
             "fgPrimary": "#ffb000",
-            "fgDim": "#9a6a1a",
+            "fgDim": "#a87a20",
             "fgAccent": "#ffd27a",
             "fgWarn": "#ff5f52",
             "bgPanel": "#120c02",
             "bgLog": "#0c0700",
-            "bgInput": "#0f0a02"
+            "bgInput": "#0f0a02",
+            "fgEvent": "#a87a20",
+            "fgMessage": "#ffb000",
+            "fgPrivate": "#ffd85e",
+            "fgNotice": "#ffcf9a",
+            "fgAction": "#e88f2a",
+            "fgHighlight": "#fff0cc",
+            "fgSelf": "#ffcf7a"
         }
     },
-    // Light text on dark blue — C64-ish.
+    // Light text on dark blue — cold Warp-era blue.
     "ice": {
         "id": "ice",
         "name": "Ice",
+        "schema": 4,
         "mode": "dense",
         "bubble": {
             "radius": 0,
@@ -278,12 +321,12 @@ var builtins = {
             "selfColor": "",
             "otherColor": ""
         },
-        "dense": {"lineSpacing": 2},
-        "avatar": {"enabled": false, "size": 0},
-        "grouping": {"enabled": true, "windowMinutes": 5},
-        "motion": {"enabled": true, "duration": 90},
-        "sidebar": {"width": 0},
-        "fonts": {"messageSize": 0, "timestampSize": 0, "nickSize": 0},
+        "dense": { "lineSpacing": 2 },
+        "avatar": { "enabled": false, "size": 0 },
+        "grouping": { "enabled": true, "windowMinutes": 5 },
+        "motion": { "enabled": true, "duration": 90 },
+        "sidebar": { "width": 0 },
+        "fonts": { "messageSize": 0, "timestampSize": 0, "nickSize": 0 },
         "colors": {
             "nickSatMin": 0.45,
             "nickSatMax": 0.75,
@@ -332,15 +375,23 @@ var builtins = {
             "fgWarn": "#e08a80",
             "bgPanel": "#151645",
             "bgLog": "#101134",
-            "bgInput": "#121339"
+            "bgInput": "#121339",
+            "fgEvent": "#8ea0d8",
+            "fgMessage": "#d7e2ff",
+            "fgPrivate": "#ecc9a0",
+            "fgNotice": "#8ff0e8",
+            "fgAction": "#b8a0ff",
+            "fgHighlight": "#ffffff",
+            "fgSelf": "#eaf3ff"
         }
     },
-    // Dense geometry, Kirigami palette colours: the same console layout as the
-    // others, but every colour is "" = "use the desktop scheme", so it matches
-    // Breeze Light, Breeze Dark and any custom colour scheme.
+    // Dense geometry, Kirigami palette colours: the same console layout
+    // as the others, but every colour is "" = "use the desktop scheme", so it
+    // matches Breeze Light, Breeze Dark and any custom colour scheme.
     "breeze": {
         "id": "breeze",
         "name": "Breeze",
+        "schema": 4,
         "mode": "dense",
         "bubble": {
             "radius": 0,
@@ -351,15 +402,15 @@ var builtins = {
             "selfColor": "",
             "otherColor": ""
         },
-        "dense": {"lineSpacing": 2},
-        "avatar": {"enabled": false, "size": 0},
-        "grouping": {"enabled": true, "windowMinutes": 5},
-        "motion": {"enabled": true, "duration": 90},
-        "sidebar": {"width": 0},
-        "fonts": {"messageSize": 0, "timestampSize": 0, "nickSize": 0},
+        "dense": { "lineSpacing": 2 },
+        "avatar": { "enabled": false, "size": 0 },
+        "grouping": { "enabled": true, "windowMinutes": 5 },
+        "motion": { "enabled": true, "duration": 90 },
+        "sidebar": { "width": 0 },
+        "fonts": { "messageSize": 0, "timestampSize": 0, "nickSize": 0 },
         "colors": {
             "nickSatMin": 0.55,
-            "nickSatMax": 0.70,
+            "nickSatMax": 0.7,
             "nickLightnessDark": 0.62,
             "nickLightnessLight": 0.35,
             "linkify": true,
@@ -405,9 +456,522 @@ var builtins = {
             "fgWarn": "",
             "bgPanel": "",
             "bgLog": "",
-            "bgInput": ""
+            "bgInput": "",
+            "fgEvent": "",
+            "fgMessage": "",
+            "fgPrivate": "",
+            "fgNotice": "",
+            "fgAction": "",
+            "fgHighlight": "",
+            "fgSelf": ""
+        }
+    },
+    // ANSI/BBS door colours on black — dial-up era cyan and yellow.
+    "bbs": {
+        "id": "bbs",
+        "name": "BBS",
+        "schema": 4,
+        "mode": "dense",
+        "bubble": {
+            "radius": 0,
+            "spacing": 0,
+            "groupSpacing": 0,
+            "tailRadius": 0,
+            "maxWidthFraction": 1.0,
+            "selfColor": "",
+            "otherColor": ""
+        },
+        "dense": { "lineSpacing": 2 },
+        "avatar": { "enabled": false, "size": 0 },
+        "grouping": { "enabled": true, "windowMinutes": 5 },
+        "motion": { "enabled": true, "duration": 90 },
+        "sidebar": { "width": 0 },
+        "fonts": { "messageSize": 0, "timestampSize": 0, "nickSize": 0 },
+        "colors": {
+            "nickSatMin": 0.55,
+            "nickSatMax": 0.85,
+            "nickLightnessDark": 0.68,
+            "nickLightnessLight": 0.34,
+            "linkify": true,
+            "highlightIsBold": true,
+            "linkColor": ""
+        },
+        "surfaces": {
+            "surface": "#000000",
+            "surfaceAlt": "#0a0a0a",
+            "sidebarSurface": "#050505",
+            "cardBackground": "#0a0a0a",
+            "cardBorder": "#2a2a2a",
+            "cardRadius": 0,
+            "cardPadding": 8,
+            "rowRadius": 0,
+            "rowHover": "#141414",
+            "rowSelected": "#1e1e1e",
+            "rowHeight": 24,
+            "accent": "#00e0e0",
+            "accentText": "#000000",
+            "mutedText": "#8a8a8a",
+            "sectionHeader": "#4fd06a",
+            "sectionHeaderSize": 0,
+            "eventText": "#4fd06a",
+            "eventSize": 0,
+            "statusOnline": "#55ff55",
+            "statusAway": "#ffff55",
+            "statusOffline": "#5c5c5c",
+            "unreadBadge": "#00e0e0",
+            "unreadBadgeText": "#000000",
+            "inputRadius": 0,
+            "shadowOpacity": 0,
+            "headerHeight": 40
+        },
+        "terminal": {
+            "fontFamily": "monospace",
+            "gutterWidth": 64,
+            "nickColumn": 9,
+            "ruleColor": "#303030",
+            "fgPrimary": "#c8c8c8",
+            "fgDim": "#8a8a8a",
+            "fgAccent": "#00e0e0",
+            "fgWarn": "#ff5555",
+            "bgPanel": "#101010",
+            "bgLog": "#000000",
+            "bgInput": "#000000",
+            "fgEvent": "#4fd06a",
+            "fgMessage": "#c8c8c8",
+            "fgPrivate": "#ffe066",
+            "fgNotice": "#66ffff",
+            "fgAction": "#ff8ae8",
+            "fgHighlight": "#ffffff",
+            "fgSelf": "#e0e0e0"
+        }
+    },
+    // Commodore 64: light blue on dark blue — the breadbin screen.
+    "c64": {
+        "id": "c64",
+        "name": "Commodore 64",
+        "schema": 4,
+        "mode": "dense",
+        "bubble": {
+            "radius": 0,
+            "spacing": 0,
+            "groupSpacing": 0,
+            "tailRadius": 0,
+            "maxWidthFraction": 1.0,
+            "selfColor": "",
+            "otherColor": ""
+        },
+        "dense": { "lineSpacing": 2 },
+        "avatar": { "enabled": false, "size": 0 },
+        "grouping": { "enabled": true, "windowMinutes": 5 },
+        "motion": { "enabled": true, "duration": 90 },
+        "sidebar": { "width": 0 },
+        "fonts": { "messageSize": 0, "timestampSize": 0, "nickSize": 0 },
+        "colors": {
+            "nickSatMin": 0.35,
+            "nickSatMax": 0.6,
+            "nickLightnessDark": 0.78,
+            "nickLightnessLight": 0.34,
+            "linkify": true,
+            "highlightIsBold": true,
+            "linkColor": ""
+        },
+        "surfaces": {
+            "surface": "#2c2c9e",
+            "surfaceAlt": "#26268c",
+            "sidebarSurface": "#26268c",
+            "cardBackground": "#26268c",
+            "cardBorder": "#5f5fc8",
+            "cardRadius": 0,
+            "cardPadding": 8,
+            "rowRadius": 0,
+            "rowHover": "#3535ac",
+            "rowSelected": "#4040c4",
+            "rowHeight": 24,
+            "accent": "#8ce89a",
+            "accentText": "#2c2c9e",
+            "mutedText": "#a8a8ff",
+            "sectionHeader": "#8ce89a",
+            "sectionHeaderSize": 0,
+            "eventText": "#a8a8ff",
+            "eventSize": 0,
+            "statusOnline": "#8ce89a",
+            "statusAway": "#ffe97a",
+            "statusOffline": "#7a7ad0",
+            "unreadBadge": "#ffe97a",
+            "unreadBadgeText": "#2c2c9e",
+            "inputRadius": 0,
+            "shadowOpacity": 0,
+            "headerHeight": 40
+        },
+        "terminal": {
+            "fontFamily": "monospace",
+            "gutterWidth": 64,
+            "nickColumn": 9,
+            "ruleColor": "#5f5fc8",
+            "fgPrimary": "#d0d0ff",
+            "fgDim": "#a8a8ff",
+            "fgAccent": "#8ce89a",
+            "fgWarn": "#ff8a8a",
+            "bgPanel": "#26268c",
+            "bgLog": "#2c2c9e",
+            "bgInput": "#2c2c9e",
+            "fgEvent": "#a8a8ff",
+            "fgMessage": "#d0d0ff",
+            "fgPrivate": "#ffe97a",
+            "fgNotice": "#7ae8dc",
+            "fgAction": "#ff9c5c",
+            "fgHighlight": "#ffffff",
+            "fgSelf": "#b8e8ff"
+        }
+    },
+    // DEC VT-style phosphor: yellow-green P3 tube, bright core.
+    "vt": {
+        "id": "vt",
+        "name": "VT Phosphor",
+        "schema": 4,
+        "mode": "dense",
+        "bubble": {
+            "radius": 0,
+            "spacing": 0,
+            "groupSpacing": 0,
+            "tailRadius": 0,
+            "maxWidthFraction": 1.0,
+            "selfColor": "",
+            "otherColor": ""
+        },
+        "dense": { "lineSpacing": 2 },
+        "avatar": { "enabled": false, "size": 0 },
+        "grouping": { "enabled": true, "windowMinutes": 5 },
+        "motion": { "enabled": true, "duration": 90 },
+        "sidebar": { "width": 0 },
+        "fonts": { "messageSize": 0, "timestampSize": 0, "nickSize": 0 },
+        "colors": {
+            "nickSatMin": 0.45,
+            "nickSatMax": 0.75,
+            "nickLightnessDark": 0.72,
+            "nickLightnessLight": 0.3,
+            "linkify": true,
+            "highlightIsBold": true,
+            "linkColor": ""
+        },
+        "surfaces": {
+            "surface": "#050700",
+            "surfaceAlt": "#0a0d02",
+            "sidebarSurface": "#080b02",
+            "cardBackground": "#0a0d02",
+            "cardBorder": "#2f3f14",
+            "cardRadius": 0,
+            "cardPadding": 8,
+            "rowRadius": 0,
+            "rowHover": "#121a05",
+            "rowSelected": "#1c2608",
+            "rowHeight": 24,
+            "accent": "#eaffb0",
+            "accentText": "#050700",
+            "mutedText": "#7fae2f",
+            "sectionHeader": "#7fae2f",
+            "sectionHeaderSize": 0,
+            "eventText": "#7fae2f",
+            "eventSize": 0,
+            "statusOnline": "#b6ff3e",
+            "statusAway": "#ffef9a",
+            "statusOffline": "#3f5a18",
+            "unreadBadge": "#b6ff3e",
+            "unreadBadgeText": "#050700",
+            "inputRadius": 0,
+            "shadowOpacity": 0,
+            "headerHeight": 40
+        },
+        "terminal": {
+            "fontFamily": "monospace",
+            "gutterWidth": 64,
+            "nickColumn": 9,
+            "ruleColor": "#2f3f14",
+            "fgPrimary": "#b6ff3e",
+            "fgDim": "#7fae2f",
+            "fgAccent": "#eaffb0",
+            "fgWarn": "#ff6b52",
+            "bgPanel": "#0a0d02",
+            "bgLog": "#050700",
+            "bgInput": "#080b02",
+            "fgEvent": "#7fae2f",
+            "fgMessage": "#b6ff3e",
+            "fgPrivate": "#ffef9a",
+            "fgNotice": "#6cf0d0",
+            "fgAction": "#b49cff",
+            "fgHighlight": "#f2ffe0",
+            "fgSelf": "#d6ff9a"
+        }
+    },
+    // EGA/DOS 16-colour: grey text, bright ANSI 8 on black.
+    "ega": {
+        "id": "ega",
+        "name": "EGA",
+        "schema": 4,
+        "mode": "dense",
+        "bubble": {
+            "radius": 0,
+            "spacing": 0,
+            "groupSpacing": 0,
+            "tailRadius": 0,
+            "maxWidthFraction": 1.0,
+            "selfColor": "",
+            "otherColor": ""
+        },
+        "dense": { "lineSpacing": 2 },
+        "avatar": { "enabled": false, "size": 0 },
+        "grouping": { "enabled": true, "windowMinutes": 5 },
+        "motion": { "enabled": true, "duration": 90 },
+        "sidebar": { "width": 0 },
+        "fonts": { "messageSize": 0, "timestampSize": 0, "nickSize": 0 },
+        "colors": {
+            "nickSatMin": 0.55,
+            "nickSatMax": 0.85,
+            "nickLightnessDark": 0.7,
+            "nickLightnessLight": 0.34,
+            "linkify": true,
+            "highlightIsBold": true,
+            "linkColor": ""
+        },
+        "surfaces": {
+            "surface": "#000000",
+            "surfaceAlt": "#0000a8",
+            "sidebarSurface": "#0000a8",
+            "cardBackground": "#000000",
+            "cardBorder": "#5555ff",
+            "cardRadius": 0,
+            "cardPadding": 8,
+            "rowRadius": 0,
+            "rowHover": "#0a0a4a",
+            "rowSelected": "#0000c8",
+            "rowHeight": 24,
+            "accent": "#7a7aff",
+            "accentText": "#000000",
+            "mutedText": "#9a9a9a",
+            "sectionHeader": "#00a8a8",
+            "sectionHeaderSize": 0,
+            "eventText": "#00a8a8",
+            "eventSize": 0,
+            "statusOnline": "#55ff55",
+            "statusAway": "#ffff55",
+            "statusOffline": "#555555",
+            "unreadBadge": "#ffff55",
+            "unreadBadgeText": "#000000",
+            "inputRadius": 0,
+            "shadowOpacity": 0,
+            "headerHeight": 40
+        },
+        "terminal": {
+            "fontFamily": "monospace",
+            "gutterWidth": 64,
+            "nickColumn": 9,
+            "ruleColor": "#303030",
+            "fgPrimary": "#b0b0b0",
+            "fgDim": "#9a9a9a",
+            "fgAccent": "#7a7aff",
+            "fgWarn": "#ff5555",
+            "bgPanel": "#0000a8",
+            "bgLog": "#000000",
+            "bgInput": "#000000",
+            "fgEvent": "#00a8a8",
+            "fgMessage": "#b0b0b0",
+            "fgPrivate": "#ffff55",
+            "fgNotice": "#55ffff",
+            "fgAction": "#ff55ff",
+            "fgHighlight": "#ffffff",
+            "fgSelf": "#e8e8e8"
+        }
+    },
+    // Synthwave/neon: hot pink and electric cyan on deep purple.
+    "synthwave": {
+        "id": "synthwave",
+        "name": "Synthwave",
+        "schema": 4,
+        "mode": "dense",
+        "bubble": {
+            "radius": 0,
+            "spacing": 0,
+            "groupSpacing": 0,
+            "tailRadius": 0,
+            "maxWidthFraction": 1.0,
+            "selfColor": "",
+            "otherColor": ""
+        },
+        "dense": { "lineSpacing": 2 },
+        "avatar": { "enabled": false, "size": 0 },
+        "grouping": { "enabled": true, "windowMinutes": 5 },
+        "motion": { "enabled": true, "duration": 90 },
+        "sidebar": { "width": 0 },
+        "fonts": { "messageSize": 0, "timestampSize": 0, "nickSize": 0 },
+        "colors": {
+            "nickSatMin": 0.55,
+            "nickSatMax": 0.8,
+            "nickLightnessDark": 0.74,
+            "nickLightnessLight": 0.34,
+            "linkify": true,
+            "highlightIsBold": true,
+            "linkColor": ""
+        },
+        "surfaces": {
+            "surface": "#170b2f",
+            "surfaceAlt": "#220f3f",
+            "sidebarSurface": "#1c0d38",
+            "cardBackground": "#220f3f",
+            "cardBorder": "#4a2a7a",
+            "cardRadius": 0,
+            "cardPadding": 8,
+            "rowRadius": 0,
+            "rowHover": "#2a1450",
+            "rowSelected": "#351a63",
+            "rowHeight": 24,
+            "accent": "#ff4fd8",
+            "accentText": "#170b2f",
+            "mutedText": "#9d8bd0",
+            "sectionHeader": "#7df9ff",
+            "sectionHeaderSize": 0,
+            "eventText": "#9d8bd0",
+            "eventSize": 0,
+            "statusOnline": "#7bffb2",
+            "statusAway": "#ffd166",
+            "statusOffline": "#6a4fa8",
+            "unreadBadge": "#ff4fd8",
+            "unreadBadgeText": "#170b2f",
+            "inputRadius": 0,
+            "shadowOpacity": 0,
+            "headerHeight": 40
+        },
+        "terminal": {
+            "fontFamily": "monospace",
+            "gutterWidth": 64,
+            "nickColumn": 9,
+            "ruleColor": "#4a2a7a",
+            "fgPrimary": "#ece5ff",
+            "fgDim": "#9d8bd0",
+            "fgAccent": "#ff4fd8",
+            "fgWarn": "#ff5f7a",
+            "bgPanel": "#220f3f",
+            "bgLog": "#170b2f",
+            "bgInput": "#1c0d38",
+            "fgEvent": "#9d8bd0",
+            "fgMessage": "#ded1ff",
+            "fgPrivate": "#ffb86c",
+            "fgNotice": "#7df9ff",
+            "fgAction": "#ff6ec7",
+            "fgHighlight": "#ffe9fb",
+            "fgSelf": "#d8ccff"
         }
     }
+}
+
+// --- theme token schema -----------------------------------------------------
+// Version of the token set. Bump this whenever a token is added or removed —
+// and mirror the bump in [UI] ThemeSchemaVersion (cpp/kircconfig.cpp) so a
+// config that already names a theme is re-examined instead of silently
+// keeping an older set (the v2->v3 precedent: a user sat on Oxygen for weeks
+// because the migration gate never re-examined the stored id).
+var THEME_SCHEMA_VERSION = 4
+
+// Every token the engine can read, section by section. A built-in theme must
+// define EXACTLY this set: a missing token silently renders the fallback, and
+// an extra token is a typo that never applies. qml-tests/check-theme-tokens.py
+// enumerates this table against every themes/*.json and every builtin below
+// and fails on either.
+var THEME_TOKENS = {
+    "root": [
+        "id",
+        "name",
+        "schema",
+        "mode"
+    ],
+    "bubble": [
+        "radius",
+        "spacing",
+        "groupSpacing",
+        "tailRadius",
+        "maxWidthFraction",
+        "selfColor",
+        "otherColor"
+    ],
+    "dense": [
+        "lineSpacing"
+    ],
+    "avatar": [
+        "enabled",
+        "size"
+    ],
+    "grouping": [
+        "enabled",
+        "windowMinutes"
+    ],
+    "motion": [
+        "enabled",
+        "duration"
+    ],
+    "sidebar": [
+        "width"
+    ],
+    "fonts": [
+        "messageSize",
+        "timestampSize",
+        "nickSize"
+    ],
+    "colors": [
+        "nickSatMin",
+        "nickSatMax",
+        "nickLightnessDark",
+        "nickLightnessLight",
+        "linkify",
+        "highlightIsBold",
+        "linkColor"
+    ],
+    "surfaces": [
+        "surface",
+        "surfaceAlt",
+        "sidebarSurface",
+        "cardBackground",
+        "cardBorder",
+        "cardRadius",
+        "cardPadding",
+        "rowRadius",
+        "rowHover",
+        "rowSelected",
+        "rowHeight",
+        "accent",
+        "accentText",
+        "mutedText",
+        "sectionHeader",
+        "sectionHeaderSize",
+        "eventText",
+        "eventSize",
+        "statusOnline",
+        "statusAway",
+        "statusOffline",
+        "unreadBadge",
+        "unreadBadgeText",
+        "inputRadius",
+        "shadowOpacity",
+        "headerHeight"
+    ],
+    "terminal": [
+        "fontFamily",
+        "gutterWidth",
+        "nickColumn",
+        "ruleColor",
+        "fgPrimary",
+        "fgDim",
+        "fgAccent",
+        "fgWarn",
+        "bgPanel",
+        "bgLog",
+        "bgInput",
+        "fgEvent",
+        "fgMessage",
+        "fgPrivate",
+        "fgNotice",
+        "fgAction",
+        "fgHighlight",
+        "fgSelf"
+    ]
 }
 
 // --- defaults for anything the JSON does not (or wrongly) specify ----------

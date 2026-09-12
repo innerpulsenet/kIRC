@@ -178,6 +178,87 @@ Item {
             out = ThemeEngine.applyBuiltinTheme("nope")
             harness.ok("applyBuiltinTheme(unknown) reports error", out !== "" && ThemeEngine.configError !== "")
 
+            // ---- schema 4: per-kind message tokens -------------------------
+            // The engine exposes the token-set schema; every theme declares
+            // it; a stored config naming any built-in (or retired) id must
+            // resolve to a theme that carries the whole set.
+            out = ThemeEngine.applyBuiltinTheme("tui")
+            harness.ok("theme token schema is version 4",
+                       out === "" && ThemeEngine.themeSchemaVersion === 4
+                       && ThemeEngine.themeSchema === 4,
+                       "schema=" + ThemeEngine.themeSchema + " version=" + ThemeEngine.themeSchemaVersion)
+            var pk = [ThemeEngine.fgEvent, ThemeEngine.fgMessage, ThemeEngine.fgPrivate,
+                      ThemeEngine.fgNotice, ThemeEngine.fgAction, ThemeEngine.fgHighlight,
+                      ThemeEngine.fgWarn]
+            var pkSeen = {}, pkOk = true
+            for (var pi = 0; pi < pk.length; ++pi) {
+                if (String(pk[pi]).length === 0 || pkSeen[pk[pi]] === true) { pkOk = false }
+                pkSeen[pk[pi]] = true
+            }
+            harness.ok("tui per-kind tokens are all set and pairwise distinct", pkOk, pk.join(","))
+            harness.ok("per-kind resolvers honour the theme token",
+                       ThemeEngine.fgNoticeColor("#fb") === ThemeEngine.fgNotice
+                       && ThemeEngine.fgActionColor("#fb") === ThemeEngine.fgAction
+                       && ThemeEngine.fgEventColor("#fb") === ThemeEngine.fgEvent
+                       && ThemeEngine.fgHighlightColor("#fb") === ThemeEngine.fgHighlight)
+
+            // the retro/BBS set (schema 4 additions): every one must load and
+            // must define every per-kind token (fixed palettes)
+            var retro = ["bbs", "c64", "vt", "ega", "synthwave"]
+            var retroNames = [], retroOk = true
+            for (var ri = 0; ri < retro.length; ++ri) {
+                out = ThemeEngine.applyBuiltinTheme(retro[ri])
+                if (out !== "" || ThemeEngine.themeSchema !== 4) { retroOk = false }
+                var rk = [ThemeEngine.fgEvent, ThemeEngine.fgMessage, ThemeEngine.fgPrivate,
+                          ThemeEngine.fgNotice, ThemeEngine.fgAction, ThemeEngine.fgHighlight,
+                          ThemeEngine.fgWarn]
+                for (var rj = 0; rj < rk.length; ++rj) {
+                    if (String(rk[rj]).length === 0) { retroOk = false }
+                }
+                retroNames.push(ThemeEngine.themeId + "=" + ThemeEngine.themeName)
+            }
+            harness.ok("the retro/BBS themes load with every per-kind token set", retroOk,
+                       retroNames.join(", "))
+
+            // breeze is palette-driven: the per-kind tokens are DEFINED but
+            // empty, and the resolver must fall back to the caller's colour.
+            out = ThemeEngine.applyBuiltinTheme("breeze")
+            harness.ok("breeze defines the per-kind tokens as empty (desktop palette)",
+                       out === "" && ThemeEngine.fgEvent === "" && ThemeEngine.fgMessage === ""
+                       && ThemeEngine.fgPrivate === "" && ThemeEngine.fgNotice === ""
+                       && ThemeEngine.fgAction === "" && ThemeEngine.fgHighlight === ""
+                       && ThemeEngine.fgSelf === "")
+            harness.ok("an empty per-kind token falls back to the caller's colour",
+                       ThemeEngine.fgNoticeColor("#fallback") === "#fallback"
+                       && ThemeEngine.fgEventColor("#fallback") === "#fallback")
+
+            // every id a stored kirc.conf can name — built-ins, the legacy
+            // alias and the retired bubble/glass ids — must resolve to a
+            // schema-4 theme (the v2->v3 strand, where a user sat on Oxygen,
+            // must not be reachable again).
+            var storedIds = ["tui", "phosphor", "amber", "ice", "breeze",
+                             "bbs", "c64", "vt", "ega", "synthwave",
+                             "breeze-dark-default", "oxygen", "neon", "fluent",
+                             "fluent-light", "breeze-classic"]
+            var reachOk = true, reachBad = []
+            for (var si = 0; si < storedIds.length; ++si) {
+                out = ThemeEngine.applyBuiltinTheme(storedIds[si])
+                if (out !== "" || ThemeEngine.themeSchema !== 4
+                        || ThemeEngine.fgNotice === undefined) {
+                    reachOk = false
+                    reachBad.push(storedIds[si])
+                }
+            }
+            harness.ok("every stored/retired theme id resolves to a schema-4 theme",
+                       reachOk, reachBad.join(","))
+            harness.ok("the theme list offers all ten built-ins",
+                       ThemeEngine.availableThemeIds.length === 10
+                       && ["tui", "phosphor", "amber", "ice", "breeze", "bbs", "c64", "vt",
+                           "ega", "synthwave"].every(function (id) {
+                               return ThemeEngine.availableThemeIds.indexOf(id) >= 0
+                           }),
+                       "ids=" + ThemeEngine.availableThemeIds.join(","))
+
             // back to the default for the UI part of the test
             ThemeEngine.applyBuiltinTheme("tui")
 
@@ -388,6 +469,49 @@ Item {
                                item !== null && second !== null && item.avatarVisible !== true
                                && second.avatarVisible !== true,
                                "avatars are gone with the bubbles")
+
+                    // ---- per-kind rows (theme schema 4) ---------------------
+                    // The canned snapshot carries a NOTICE, a /me and a query
+                    // row; each must render with its own marker and take its
+                    // own theme colour.  Assert under a fixed palette (tui) so
+                    // the expected colours are deterministic.
+                    var kindTheme = ThemeEngine.applyBuiltinTheme("tui")
+                    var nRow = null, aRow = null, qRow = null
+                    for (var ki = 0; ki < view.count; ++ki) {
+                        var kt = view.itemAtIndex(ki)
+                        if (kt === null) { continue }
+                        if (String(kt.text).indexOf("psst") === 0) { nRow = kt }
+                        if (String(kt.text).indexOf("does a little dance") >= 0) { aRow = kt }
+                        if (String(kt.text).indexOf("query buffer") >= 0) { qRow = kt }
+                    }
+                    harness.ok("NOTICE row carries the notice role and marker",
+                               kindTheme === "" && nRow !== null && nRow.isNotice === true
+                               && nRow.isEvent === false
+                               && String(nRow.bodyText).indexOf("- ") === 0,
+                               nRow === null ? "null" : ("body=[" + nRow.bodyText + "]"))
+                    harness.ok("NOTICE row takes the notice colour (body and nick)",
+                               nRow !== null && nRow.bodyColor === nRow.fgNoticeColor
+                               && nRow.bodyColor !== nRow.fgMessageColor
+                               && nRow.nickColor === nRow.fgNoticeColor,
+                               nRow === null ? "null" : ("body=" + nRow.bodyColor
+                                                         + " msg=" + nRow.fgMessageColor))
+                    harness.ok("/me action row takes the action colour",
+                               aRow !== null && aRow.isAction === true
+                               && aRow.bodyColor === aRow.fgActionColor
+                               && aRow.bodyColor !== aRow.fgMessageColor,
+                               aRow === null ? "null" : ("body=" + aRow.bodyColor
+                                                         + " act=" + aRow.fgActionColor))
+                    harness.ok("query row takes the private colour",
+                               qRow !== null && qRow.isPrivate === true
+                               && qRow.bodyColor === qRow.fgPrivateColor
+                               && qRow.bodyColor !== qRow.fgMessageColor,
+                               qRow === null ? "null" : ("body=" + qRow.bodyColor
+                                                         + " priv=" + qRow.fgPrivateColor))
+                    harness.ok("the per-kind rows render distinct colours",
+                               nRow !== null && aRow !== null && qRow !== null
+                               && nRow.bodyColor !== aRow.bodyColor
+                               && aRow.bodyColor !== qRow.bodyColor
+                               && nRow.bodyColor !== qRow.bodyColor)
                 }
                 break
             case 5: {
@@ -503,6 +627,38 @@ Item {
                                settingsCfg.respondToCtcpVersion === true && settingsCfg.saved === true,
                                "value=" + settingsCfg.respondToCtcpVersion + " saved=" + settingsCfg.saved)
                 }
+
+                // ---- the theme list + its search keywords (schema 4) -----
+                var themeIds = ThemeEngine.availableThemeIds
+                sp.setFilter("c64")
+                harness.ok("settings search 'c64' finds the theme list",
+                           sp.filter === "c64" && sp.themeListVisible() === true
+                           && sp.sectionMatches(2) === true,
+                           "visible=" + sp.themeListVisible())
+                harness.ok("settings search keeps only the matching theme row",
+                           sp.themeRowVisible("c64") === true
+                           && sp.themeRowVisible("tui") === false,
+                           "c64=" + sp.themeRowVisible("c64") + " tui=" + sp.themeRowVisible("tui"))
+                sp.setFilter("commodore")
+                harness.ok("settings search 'commodore' (keyword)", sp.themeListVisible() === true)
+                sp.setFilter("bbs")
+                harness.ok("settings search 'bbs' (keyword)", sp.themeListVisible() === true)
+                sp.setFilter("dial-up")
+                harness.ok("settings search 'dial-up' (keyword)", sp.themeListVisible() === true)
+                sp.setFilter("dos")
+                harness.ok("settings search 'dos' (keyword)", sp.themeListVisible() === true)
+                sp.setFilter("outrun")
+                harness.ok("settings search 'outrun' (keyword)", sp.themeListVisible() === true)
+                var keywordsOk = true
+                for (var ti = 0; ti < themeIds.length; ++ti) {
+                    var kw = sp.themeSearchKeywords[themeIds[ti]]
+                    if (kw === undefined || String(kw).length === 0) { keywordsOk = false }
+                }
+                harness.ok("every built-in theme carries search keywords", keywordsOk)
+                sp.setFilter("")
+                harness.ok("clearing the search shows the whole theme list again",
+                           sp.themeListVisible() === true && sp.themeRowVisible("bbs") === true
+                           && sp.themeRowVisible("tui") === true)
                 break
             }
             case 11: {
