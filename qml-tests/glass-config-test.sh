@@ -26,11 +26,15 @@ trap 'rm -rf "$tmp"' EXIT
 "$moc" "$root/cpp/kircconfig.h" -o "$tmp/moc_kircconfig.cpp"
 
 # Qt6Gui comes in through KWallet's header (qwindowdefs.h).
+# secretstore_kwallet.cpp supplies kirc::makeSecretStore(), which
+# kircconfig.cpp has called since the platform-backend split; the null D-Bus
+# address below keeps the wallet unavailable so the test exercises the
+# memory-only path.
 g++ -std=c++17 -fPIC \
     $(pkg-config --cflags Qt6Core Qt6Gui) \
     -I/usr/include/KF6/KConfigCore -I/usr/include/KF6/KConfig -I/usr/include/KF6/KWallet \
     -I"$root/cpp" \
-    "$here/tst_config_glass.cpp" "$root/cpp/kircconfig.cpp" "$tmp/moc_kircconfig.cpp" \
+    "$here/tst_config_glass.cpp" "$root/cpp/kircconfig.cpp" "$root/cpp/secretstore_kwallet.cpp" "$tmp/moc_kircconfig.cpp" \
     $(pkg-config --libs Qt6Core Qt6Gui) -lKF6ConfigCore -lKF6Wallet \
     -o "$tmp/tst_config_glass"
 
