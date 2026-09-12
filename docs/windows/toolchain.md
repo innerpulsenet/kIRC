@@ -115,6 +115,19 @@ there are Qt5-era `libs/qt/*` blueprints with clashing short names.
     `_qt_internal_process_resource` return without error) and produces no
     resources. The embedded Windows icons therefore use target-local
     `AUTORCC` with `cpp/kirc-windows.qrc` in `target_sources()`.
+  - **Craft bootstraps as an Android host on GitHub's Windows runners.**
+    `CraftBootstrap.isAndroid()` is `"ANDROID_SDK_ROOT" in os.environ and
+    "ANDROID_NDK" in os.environ`, and the GitHub Windows images export both;
+    the ABI still resolves to `windows-cl-msvc2022-x86_64`, but the bootstrap
+    pins `BuildType = MinSizeRel`. KDE publishes no Windows cache for that
+    build type — `.../msvc2022/x86_64/MinSizeRel/manifest.json` is a 404 while
+    `RelWithDebInfo` and `Release` are live — so every cache lookup misses and
+    Craft compiles the whole stack, Qt included, from source: runs 34719938918
+    and 34720226717 died that way, one on the runner's MinGW `make`, one on a
+    dead upstream source download. The workflow therefore clears `ANDROID_*`
+    before bootstrapping and then asserts `BuildType = RelWithDebInfo` before
+    installing packages, because a silent cache miss otherwise looks like an
+    unrelated build error half an hour later.
 - Linux build of the refactored tree: **verified green in CI** —
   `.github/workflows/linux-ci.yml` (fedora:latest) runs the engine suite,
   the full application build, `tst_config_secrets`, and all six QML harness
@@ -197,7 +210,13 @@ CTest config/secret tests, all portable QML contract stages, clean staged launch
 silent install/launch/uninstall, and an installed WinRT toast dispatch self-test.
 
 Release artifacts are emitted under `stage/` with adjacent SHA-256 files. They
-are unsigned local artifacts. Windows 10 22H2 and the full two-OS manual DPI,
+are unsigned local artifacts. Pushing a `v*` tag runs the same packaging path in
+CI: the Release workflow (`.github/workflows/rpm-release.yml`) resolves the
+version once, calls `windows-ci.yml` with it, and a single publish job attaches
+`kIRC-<version>-windows-x64.zip`, `kIRC-<version>-setup-x64.exe`, their
+checksums and the RPMs to one GitHub Release. A `workflow_dispatch` run of the
+same workflow builds and verifies everything without publishing. Windows 10
+22H2 and the full two-OS manual DPI,
 mixed-monitor, sleep/wake, Focus Assist, Explorer-restart, IME, controlled TLS,
 upgrade, and interactive toast-click matrix still require the corresponding
 physical/VM environments; do not represent those external qualification rows as
