@@ -38,12 +38,14 @@ What the job does, in order:
    the release.
 2. Installs the spec's `BuildRequires` in a `fedora:latest` container.
 3. `packaging/set-version.sh <tag>` — stamps the version into the tree.
-4. Regenerates the three archives the spec consumes:
+4. Regenerates the four archives the spec consumes:
    * `kirc-<version>.tar.gz` (Source0) — the tree under one `kirc-<version>/`
      directory, built from the *stamped* working tree rather than `git archive`,
    * `kirc-vendor-<version>.tar.gz` (Source2) — `cargo vendor`, top-level `vendor/`,
    * `cxx-qt-cmake-<version>.tar.gz` (Source1) — downloaded, matching
-     `CMakeLists.txt`'s `FetchContent` tag.
+     `CMakeLists.txt`'s `FetchContent` tag,
+   * `corrosion-<version>.tar.gz` (Source3) — downloaded, matching the tag
+     cxx-qt-cmake's own `FetchContent` asks for.
 5. `rpmbuild -ba` — produces the binary RPM **and** the SRPM.
 6. Copies the packages into the mounted workspace (rpmbuild writes to `$HOME`, which
    lives inside the container and is not visible to the host-side actions), verifies
@@ -57,7 +59,7 @@ existing release without pushing a new tag.
 The spec carries no patches: the application's own `CMakeLists.txt` already has
 `install(TARGETS kIRC ...)`, so a plain `%cmake`/`%cmake_install` is enough.
 
-## Why two vendored sources?
+## Why three vendored sources?
 
 kIRC is a CXX-Qt hybrid, and both halves of the build normally reach the
 network:
@@ -67,13 +69,23 @@ network:
    *configure* time. The spec ships it as `Source1` and passes
    `-DFETCHCONTENT_SOURCE_DIR_CXXQT=...`, which makes CMake use the unpacked
    copy and skip the download entirely.
-2. **Cargo / crates.io.** The Rust workspace (`rust/Cargo.toml`) pulls
+2. **CMake / corrosion.** cxx-qt-cmake's own `CxxQt.cmake` `FetchContent`s
+   [corrosion](https://github.com/corrosion-rs/corrosion) v0.5.2 at configure
+   time. Overriding only the cxx-qt-cmake fetch is not enough: corrosion is
+   then left to `git clone`, so the build needs git and the network inside the
+   build root (in CI that failed with `could not find git for clone of
+   corrosion-populate`). The spec ships it as `Source3` and passes
+   `-DFETCHCONTENT_SOURCE_DIR_CORROSION=...` for the same reason as Source1.
+   The version must track the `GIT_TAG` in `CxxQt.cmake` — bump both together.
+3. **Cargo / crates.io.** The Rust workspace (`rust/Cargo.toml`) pulls
    tokio, rustls, cxx-qt and friends. The spec ships a `cargo vendor` tree as
    `Source2` and points `CARGO_HOME` at a generated config that replaces
    `crates-io` with the local directory and sets `[net] offline = true`.
 
-With `Source1` and `Source2` in `SOURCES/`, `rpmbuild -ba` succeeds with the
-network unplugged (verified locally). This is the Koji/COPR-friendly path.
+With `Source1`, `Source2` and `Source3` in `SOURCES/`, `rpmbuild -ba` succeeds
+with the network unplugged (verified locally by configuring inside a network
+namespace with no connectivity: zero clone attempts). This is the
+Koji/COPR-friendly path.
 
 ## Regenerating the source tarball (Source0)
 
