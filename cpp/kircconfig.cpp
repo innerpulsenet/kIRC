@@ -74,6 +74,10 @@ KircConfig::KircConfig(QObject *parent)
 {
 }
 
+// Defined here (not implicitly in the header) so the unique_ptr<kirc::SecretStore>
+// deleter is instantiated with the complete type from secretstore.h.
+KircConfig::~KircConfig() = default;
+
 QString KircConfig::configFilePath()
 {
     // Built explicitly instead of leaning on QStandardPaths::AppConfigLocation:

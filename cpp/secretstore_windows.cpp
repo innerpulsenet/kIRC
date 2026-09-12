@@ -71,7 +71,7 @@ public:
         cred.Type = CRED_TYPE_GENERIC;
         cred.TargetName = targetForSecret(secret);
         cred.UserName = const_cast<wchar_t *>(L"kIRC");
-        cred.CredentialBlob = const_cast<LPBYTE>(reinterpret_cast<const LPCBYTE>(value.utf16()));
+        cred.CredentialBlob = const_cast<BYTE *>(reinterpret_cast<const BYTE *>(value.utf16()));
         cred.CredentialBlobSize = blobBytes;
         cred.Persist = CRED_PERSIST_LOCAL_MACHINE;
         if (!CredWriteW(&cred, 0)) {
