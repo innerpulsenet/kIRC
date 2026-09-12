@@ -118,3 +118,21 @@ there are Qt5-era `libs/qt/*` blueprints with clashing short names.
 - Linux build of the refactored tree: not yet re-verified on this Windows-only
   machine; covered by the RPM CI workflow when the port branch merges, and on
   this branch itself by the Linux CI workflow (`.github/workflows/linux-ci.yml`).
+- Staged relocatable package (Phase 8): `stage/windows-release` (142 MB,
+  ~1600 files) built by `E:\Tools\stage-kirc.cmd`; exe at the root with Qt's
+  default layout, no qt.conf. Passes the clean-environment gate twice (PATH =
+  System32 only, no Craft/Qt/QML variables; once from a different working
+  directory) with zero stderr. Dependency closure verified by recursive
+  dumpbin plus live-module mapping; notable manual additions beyond
+  windeployqt: 15 Kirigami runtime DLLs, KF6ConfigCore/Gui, `vcomp140.dll`
+  (Kirigami.dll is built with OpenMP), the MSVC CRT from the redist dir, and
+  the third-party set (libcrypto/libssl, brotli, freetype, harfbuzz, png,
+  zlib, bzip2 x2, zstd, pcre2, jpeg). windeployqt deployed the Kirigami QML
+  tree itself (this Craft Qt ships module metadata for it).
+- Graphics spot check (Phase 6 preliminary): the staged app renders with
+  D3D11 on the discrete GPU (RTX 5070 Ti), threaded render loop; a 30-pass
+  automated cursor sweep across the window produced only 4 frames, all
+  <= 16 ms — no hover-driven repaint storm. A user-reported "slightly
+  stuttery mouse when crossing the GUI" therefore tracks with cursor-shape
+  switching across regions (IBeam/hand/arrow) or refresh-rate perception,
+  not with rendering cost; re-examine during the DPI/graphics pass.

@@ -1,4 +1,5 @@
 build/
+stage/
 target/
 .hermes/
 **/target/
