@@ -29,6 +29,19 @@
 #include <QUrl>
 
 #ifdef Q_OS_WIN
+// Toast identity: SetCurrentProcessExplicitAppUserModelID lives here.  Same
+// Windows-header discipline as the other Windows-only sources
+// (cpp/secretstore_windows.cpp): keep windows.h lean and free of min/max.
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <shobjidl.h>
+#endif
+
+#ifdef Q_OS_WIN
 namespace {
 // Every size the embedded artwork provides (kirc-windows.qrc); Explorer and
 // the taskbar pick their own, so register them all.
@@ -51,6 +64,18 @@ int main(int argc, char *argv[])
     QCoreApplication::setOrganizationDomain(QStringLiteral("kde.org"));
     QCoreApplication::setApplicationName(QStringLiteral("kIRC"));
     QCoreApplication::setApplicationVersion(QStringLiteral(KIRC_VERSION));
+
+#ifdef Q_OS_WIN
+    // Toast identity (Phase 5): Windows delivers classic desktop toasts to
+    // the AppUserModelID the process registered, so set ours before
+    // QApplication exists.  The id must match the one
+    // kircPlatformNotify() fires under (cpp/kircnotify_windows.cpp) and the
+    // Start-menu shortcut the installer phase creates; running without that
+    // shortcut (development/portable runs) means toast creation fails at
+    // runtime and the notification backend degrades to its logged fallback.
+    // Only fails on a malformed id, so the HRESULT can be ignored.
+    SetCurrentProcessExplicitAppUserModelID(L"org.kde.kirc");
+#endif
 
     QApplication app(argc, argv);
 
