@@ -58,6 +58,11 @@ find_package(Qt6 6.6 REQUIRED COMPONENTS
     QuickControls2
     QmlImportScanner
 )
+if(UNIX AND NOT APPLE)
+    find_package(Qt6 6.6 REQUIRED COMPONENTS DBus)
+elseif(NOT WIN32)
+    message(FATAL_ERROR "kIRC: desktop backend is implemented only for Windows and Linux")
+endif()
 
 # ---------------------------------------------------------------------------
 # KDE Frameworks 6
@@ -177,6 +182,7 @@ qt_add_executable(kIRC WIN32
 )
 
 if(WIN32)
+    configure_file(cpp/kirc.rc.in "${CMAKE_CURRENT_BINARY_DIR}/kirc.rc" @ONLY)
     # AUTORCC on this target only, so the .qrc below is actually compiled in.
     # qt_add_resources() is NOT an alternative here: its Qt 6 target form has
     # no QRC keyword — a "QRC <file>" call leaves FILES empty and
@@ -186,7 +192,7 @@ if(WIN32)
         cpp/secretstore_windows.cpp
         cpp/kirctray_windows.cpp
         cpp/kircnotify_windows.cpp
-        cpp/kirc.rc
+        "${CMAKE_CURRENT_BINARY_DIR}/kirc.rc"
         cpp/kirc-windows.qrc
     )
     # cpp/kirc-windows.qrc embeds packaging/icons/hicolor/<size>x<size>/apps/
@@ -208,6 +214,12 @@ if(WIN32)
     # subdirectory so the two can never collide.
     set_target_properties(kIRC PROPERTIES
         ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/kIRC-implib")
+
+    # Installer-only helper: creates the Start-menu shortcut and stamps its
+    # AppUserModelID, which classic desktop WinRT toasts require.
+    add_executable(kirc-shortcut WIN32 cpp/kircshortcut.cpp)
+    target_compile_options(kirc-shortcut PRIVATE /utf-8)
+    target_link_libraries(kirc-shortcut PRIVATE Ole32 Propsys Shell32)
 else()
     target_sources(kIRC PRIVATE
         cpp/secretstore_kwallet.cpp
@@ -247,6 +259,10 @@ if(NOT WIN32)
 endif()
 
 install(TARGETS kIRC RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+if(WIN32)
+    install(TARGETS kirc-shortcut RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+    install(FILES LICENSES.md DESTINATION .)
+endif()
 
 # ---------------------------------------------------------------------------
 # Tests (opt-in).  tst_config_secrets links kircconfig.cpp against a scripted
@@ -256,6 +272,7 @@ install(TARGETS kIRC RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 option(KIRC_BUILD_TESTS "Build kIRC test executables" OFF)
 
 if(KIRC_BUILD_TESTS)
+    enable_testing()
     find_package(Qt6 REQUIRED COMPONENTS Test)
 
     add_executable(tst_config_secrets
@@ -272,6 +289,7 @@ if(KIRC_BUILD_TESTS)
     if(MSVC)
         target_compile_options(tst_config_secrets PRIVATE /utf-8)
     endif()
+    add_test(NAME config-secrets COMMAND tst_config_secrets)
 endif()
 
 if(NOT WIN32)

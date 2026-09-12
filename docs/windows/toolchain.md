@@ -186,3 +186,19 @@ The probe is overridable for the QML harnesses
 render on the software renderer too, and `tst_smoke.qml` pins the capability
 ON for the supported-UI assertions, then releases it in a dedicated block
 that asserts the degraded state.
+
+## Local release-candidate completion (2026-09-12)
+
+The tracked Windows workflow now includes `packaging/windows/build.ps1`,
+`stage.ps1`, `make-installer.ps1`, an NSIS per-user installer, portable QML
+runner, Windows CI, executable VERSIONINFO, and an AppUserModelID-aware
+Start-menu shortcut helper. The local candidate passed the Rust 94-test suite,
+CTest config/secret tests, all portable QML contract stages, clean staged launch,
+silent install/launch/uninstall, and an installed WinRT toast dispatch self-test.
+
+Release artifacts are emitted under `stage/` with adjacent SHA-256 files. They
+are unsigned local artifacts. Windows 10 22H2 and the full two-OS manual DPI,
+mixed-monitor, sleep/wake, Focus Assist, Explorer-restart, IME, controlled TLS,
+upgrade, and interactive toast-click matrix still require the corresponding
+physical/VM environments; do not represent those external qualification rows as
+completed by the Windows 11 development-machine smoke tests.

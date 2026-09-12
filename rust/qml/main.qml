@@ -1381,10 +1381,10 @@ Kirigami.ApplicationWindow {
             }
         }
 
-        function onNotification_fired(title, body) {
+        function onNotification_fired_classified(title, body, isDirect) {
             // Native KNotification is the C++ side's job (cpp/kircnotify.cpp);
             // the in-app notice is gated here on the notification prefs.
-            if (!root.notificationsAllowed(title)) {
+            if (!root.notificationsAllowed(isDirect)) {
                 return
             }
             root.showPassiveNotification(title.length > 0 ? (title + " — " + body) : body)
@@ -1487,10 +1487,10 @@ Kirigami.ApplicationWindow {
             || m.indexOf("not registered") >= 0
     }
 
-    /// Gate for notification_fired: highlights need notifyHighlights, a
-    /// private-message title (a nick, not a #channel) needs
-    /// notifyDirectMessages.  Harnesses without prefs allow everything.
-    function notificationsAllowed(title)
+    /// Gate for notification_fired_classified. The bridge supplies the IRC
+    /// target kind because the title is the sender nick for both channel
+    /// highlights and direct messages. Harnesses without prefs allow all.
+    function notificationsAllowed(isDirect)
     {
         if (root.appConfig === null) {
             return true
@@ -1500,17 +1500,8 @@ Kirigami.ApplicationWindow {
         if (highlights === undefined && directs === undefined) {
             return true
         }
-        var t = String(title === undefined || title === null ? "" : title)
-        var isChannel = t.length > 0 && (t.charAt(0) === "#" || t.charAt(0) === "&"
-                      || t.charAt(0) === "+" || t.charAt(0) === "!")
-        if (isChannel) {
-            return highlights === undefined ? true : highlights
-        }
-        // Private message (or untitled notice): both prefs apply.
-        if (highlights !== undefined && !highlights) {
-            return false
-        }
-        return directs === undefined ? true : directs
+        return isDirect ? (directs === undefined ? true : directs)
+                        : (highlights === undefined ? true : highlights)
     }
 
     /// Push the persisted SASL mechanism into the bridge.  Must run BEFORE
@@ -1527,7 +1518,7 @@ Kirigami.ApplicationWindow {
     /// Hand the IRC PASS password to the bridge.  Must run BEFORE
     /// connect_server (same contract as set_sasl_mechanism).  Guarded with
     /// typeof so a harness/double that predates the invokable keeps working;
-    /// an empty password is skipped entirely.  When the connect form left the
+    /// an empty password explicitly clears stale bridge state. When the connect form left the
     /// field empty, fall back to the KWallet-backed value from the settings
     /// pane (that is how a password stored in Settings reaches the connect).
     function applyServerPassword()
@@ -1539,9 +1530,6 @@ Kirigami.ApplicationWindow {
         if ((password === undefined || password === null || password.length === 0)
                 && root.appConfig !== null && root.appConfig.serverPassword !== undefined) {
             password = String(root.appConfig.serverPassword)
-        }
-        if (password.length === 0) {
-            return
         }
         root.bridge.set_server_password(password)
     }

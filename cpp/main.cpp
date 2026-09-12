@@ -219,15 +219,15 @@ int main(int argc, char *argv[])
     QObject *bridge =
         rootObject ? rootObject->findChild<QObject *>(QStringLiteral("ircBridge")) : nullptr;
 
-    KircNotifier notifier;
+    KircNotifier notifier(&config);
     if (bridge) {
         // String-based connect on purpose: IrcBridge is a cxx-qt generated
         // type and its signals are only reachable through the meta-object
         // (see cpp/kircnotify.h for why there is no lambda overload here).
         const bool connected = QObject::connect(bridge,
-                                                SIGNAL(notification_fired(QString, QString)),
+                                                SIGNAL(notification_fired_classified(QString, QString, bool)),
                                                 &notifier,
-                                                SLOT(notify(QString, QString)));
+                                                SLOT(notifyClassified(QString, QString, bool)));
         if (!connected) {
             qWarning("kIRC: could not route notification_fired to KNotification");
         }

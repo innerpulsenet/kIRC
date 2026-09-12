@@ -613,8 +613,16 @@ Item {
                 harness.ok("CTCP reply is dim, not chat-coloured",
                            rep !== null && rep.bodyColor === rep.fgDimColor && rep.bodyColor !== rep.fgPrimaryColor,
                            rep === null ? "null" : ("body=" + rep.bodyColor + " dim=" + rep.fgDimColor))
-                harness.ok("both CTCP rows keep the same row height",
-                           req !== null && rep !== null && req.implicitHeight === rep.implicitHeight,
+                // Font metrics differ across platforms.  In particular,
+                // Windows' generic `monospace` fallback can wrap the longer
+                // reply while the Linux CI font keeps both fixtures on one
+                // line.  That is valid content-driven layout; the invariant
+                // here is that both rows are sized and the longer one never
+                // clips below the shorter one.  The no-hover assertion above
+                // is what guards interaction-driven reflow.
+                harness.ok("both CTCP rows keep content-driven row heights",
+                           req !== null && rep !== null && req.implicitHeight > 0
+                           && rep.implicitHeight >= req.implicitHeight,
                            (req !== null && rep !== null)
                                ? (req.implicitHeight + " vs " + rep.implicitHeight) : "null")
                 var ordinary = v.itemAtIndex(0)

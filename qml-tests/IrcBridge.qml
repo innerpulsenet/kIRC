@@ -49,6 +49,7 @@ QtObject {
     signal history_batch_received(string target)
     signal state_changed(int state)
     signal notification_fired(string title, string body)
+    signal notification_fired_classified(string title, string body, bool is_direct)
     signal info(string text)
     signal error_occurred(string message)
     signal channel_joined(string channel)

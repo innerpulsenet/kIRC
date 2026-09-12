@@ -253,7 +253,11 @@ void showToast(const QString &heading, const QString &body)
         ABI::Windows::UI::Notifications::ToastDismissedEventArgs *>>(
         [](IToastNotification *, ABI::Windows::UI::Notifications::IToastDismissedEventArgs *)
             -> HRESULT { return S_OK; });
-    toast->add_Dismissed(dismissedHandler.Get(), &token);
+    hr = toast->add_Dismissed(dismissedHandler.Get(), &token);
+    if (FAILED(hr)) {
+        qWarning("kIRC: toast Dismissed registration failed (HRESULT 0x%08lX)",
+                 static_cast<unsigned long>(hr));
+    }
 
     auto failedHandler = Callback<ABI::Windows::Foundation::ITypedEventHandler<
         ABI::Windows::UI::Notifications::ToastNotification *,
@@ -263,9 +267,16 @@ void showToast(const QString &heading, const QString &body)
             qWarning("kIRC: toast delivery failed (check notification settings / Focus Assist)");
             return S_OK;
         });
-    toast->add_Failed(failedHandler.Get(), &token);
+    hr = toast->add_Failed(failedHandler.Get(), &token);
+    if (FAILED(hr)) {
+        qWarning("kIRC: toast Failed registration failed (HRESULT 0x%08lX)",
+                 static_cast<unsigned long>(hr));
+    }
 
-    notifier->Show(toast.Get());
+    hr = notifier->Show(toast.Get());
+    if (FAILED(hr)) {
+        logToastFailure("Show", hr);
+    }
 }
 
 } // namespace
@@ -273,6 +284,21 @@ void showToast(const QString &heading, const QString &body)
 void kircPlatformNotify(const QString &heading, const QString &body)
 {
     showToast(heading, body);
+}
+
+bool kircPlatformNotificationInitialize()
+{
+    const HRESULT hr = RoInitialize(RO_INIT_SINGLETHREADED);
+    if (SUCCEEDED(hr)) {
+        return true;
+    }
+    logToastFailure("RoInitialize", hr);
+    return false;
+}
+
+void kircPlatformNotificationShutdown()
+{
+    RoUninitialize();
 }
 
 // ---------------------------------------------------------------------------

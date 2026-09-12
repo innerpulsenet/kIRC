@@ -504,6 +504,17 @@ pub mod qobject {
         #[qsignal]
         fn notification_fired(self: Pin<&mut Self>, title: QString, body: QString);
 
+        /// Notification plus its IRC target kind. Additive to the original
+        /// signal so preference-aware consumers never have to infer a direct
+        /// message from the display title (which is always the sender nick).
+        #[qsignal]
+        fn notification_fired_classified(
+            self: Pin<&mut Self>,
+            title: QString,
+            body: QString,
+            is_direct: bool,
+        );
+
         /// Informational status line.
         #[qsignal]
         fn info(self: Pin<&mut Self>, text: QString);
@@ -1084,6 +1095,11 @@ fn handle_event(mut obj: Pin<&mut qobject::IrcBridge>, event: IrcEvent) {
             if is_highlight && !is_self {
                 obj.as_mut()
                     .notification_fired(qs(&nick), qs(&text));
+                obj.as_mut().notification_fired_classified(
+                    qs(&nick),
+                    qs(&text),
+                    !is_channel(&target),
+                );
             }
             if !is_channel(&target) && target != SERVER_BUFFER {
                 obj.as_mut().query_opened(qs(&target));

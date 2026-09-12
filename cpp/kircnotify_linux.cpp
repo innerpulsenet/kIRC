@@ -82,3 +82,12 @@ void kircPlatformNotify(const QString &heading, const QString &body)
         }
     }
 }
+
+bool kircPlatformNotificationInitialize()
+{
+    return true;
+}
+
+void kircPlatformNotificationShutdown()
+{
+}

@@ -18,20 +18,30 @@
 #include <QObject>
 #include <QString>
 
+class KircConfig;
+
 class KircNotifier : public QObject
 {
     Q_OBJECT
 
 public:
-    explicit KircNotifier(QObject *parent = nullptr);
+    explicit KircNotifier(KircConfig *config, QObject *parent = nullptr);
+    ~KircNotifier() override;
 
 public Q_SLOTS:
     /// Connected to IrcBridge::notification_fired(title, body).  The bridge
     /// already decides what deserves a notification (highlights and private
     /// messages); this only renders it.
     void notify(const QString &title, const QString &body);
+    void notifyClassified(const QString &title, const QString &body, bool isDirect);
+
+private:
+    KircConfig *m_config = nullptr;
+    bool m_platformReady = false;
 };
 
 /// Platform delivery for a resolved (heading, body) pair.  Implemented once
 /// per platform; no KDE types cross this boundary.
 void kircPlatformNotify(const QString &heading, const QString &body);
+bool kircPlatformNotificationInitialize();
+void kircPlatformNotificationShutdown();
