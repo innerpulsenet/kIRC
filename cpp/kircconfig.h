@@ -44,12 +44,13 @@
 //   the SASL password nor the NickServ password nor the IRC server (PASS)
 //   password may be written there.
 //   The SASL password lives only in memory (sessionSaslPassword, never
-//   saved).  The NickServ password lives in KWallet (folder "kIRC", key
-//   "nickserv-password"); when the wallet is locked or unavailable the value
-//   is kept in memory for this process only and still never hits the disk.
-//   The server password follows the same rule with its own KWallet key
-//   ("server-password") and a memory-only fallback (sessionServerPassword,
-//   used by the tray to reconnect without losing the PASS line).
+//   saved).  The NickServ password lives in the platform secret store
+//   (see secretstore.h: KWallet on Linux, Windows Credential Manager on
+//   Windows); when the store is locked or unavailable the value is kept in
+//   memory for this process only and still never hits the disk.
+//   The server password follows the same rule with its own secret-store
+//   entry and a memory-only fallback (sessionServerPassword, used by the
+//   tray to reconnect without losing the PASS line).
 //
 // Implemented with the plain KConfig API rather than a KConfigXT .kcfg +
 // generated header: nothing here needs a settings dialog, and plain KConfig
@@ -60,6 +61,12 @@
 
 #include <QObject>
 #include <QString>
+
+#include <memory>
+
+namespace kirc {
+class SecretStore;
+}
 
 class KircConfig : public QObject
 {
@@ -436,4 +443,8 @@ private:
     // with the same opt-in rule as the CRT set.
     bool m_reflection = false;
     int m_reflectionAmount = 25;
+
+    // Platform secret store (secretstore.h). Created once; load()/save()
+    // go through it instead of touching KWallet directly.
+    std::unique_ptr<kirc::SecretStore> m_secrets;
 };

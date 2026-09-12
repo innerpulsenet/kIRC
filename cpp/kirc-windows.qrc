@@ -1,0 +1,16 @@
+<RCC>
+    <!-- Embedded kIRC artwork for Windows: the app icon (window/taskbar/tray
+         fallback), the tray base icon and the notification placeholder all
+         resolve from here — there is no freedesktop icon theme to look in.
+         Sources are the same PNGs the Linux install rules ship to hicolor. -->
+    <qresource prefix="/kirc/icons">
+        <file alias="16x16/kirc.png">../packaging/icons/hicolor/16x16/apps/kirc.png</file>
+        <file alias="22x22/kirc.png">../packaging/icons/hicolor/22x22/apps/kirc.png</file>
+        <file alias="24x24/kirc.png">../packaging/icons/hicolor/24x24/apps/kirc.png</file>
+        <file alias="32x32/kirc.png">../packaging/icons/hicolor/32x32/apps/kirc.png</file>
+        <file alias="48x48/kirc.png">../packaging/icons/hicolor/48x48/apps/kirc.png</file>
+        <file alias="64x64/kirc.png">../packaging/icons/hicolor/64x64/apps/kirc.png</file>
+        <file alias="128x128/kirc.png">../packaging/icons/hicolor/128x128/apps/kirc.png</file>
+        <file alias="256x256/kirc.png">../packaging/icons/hicolor/256x256/apps/kirc.png</file>
+    </qresource>
+</RCC>

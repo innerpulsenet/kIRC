@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 #include "kircconfig.h"
+#include "secretstore.h"
 
 #include <KConfig>
 #include <KConfigGroup>
-#include <KWallet>
 
 #include <QDir>
 #include <QFileInfo>
@@ -16,11 +16,6 @@ namespace {
 constexpr auto kConnectionGroup = "Connection";
 constexpr auto kUiGroup = "UI";
 constexpr auto kServicesGroup = "Services";
-
-// KWallet location of the secrets.  Never written to kirc.conf.
-constexpr auto kWalletFolder = "kIRC";
-constexpr auto kWalletKeyNickserv = "nickserv-password";
-constexpr auto kWalletKeyServer = "server-password";
 
 // Version of the [UI] theme-selection schema (see the header for the policy).
 // Version 1 is what every config written before the Fluent pass implies;
@@ -73,75 +68,9 @@ constexpr auto kRetiredBuiltinThemeIds = {
 
 } // namespace
 
-/// Best-effort KWallet helpers.  A null return means the wallet is locked or
-/// unavailable; the caller then keeps the value in memory only for this
-/// process and must not write it to disk.
-namespace {
-
-KWallet::Wallet *openKircWallet()
-{
-    KWallet::Wallet *wallet =
-        KWallet::Wallet::openWallet(KWallet::Wallet::LocalWallet(), 0, KWallet::Wallet::Synchronous);
-    if (!wallet || !wallet->isOpen()) {
-        delete wallet;
-        return nullptr;
-    }
-    if (!wallet->hasFolder(QString::fromLatin1(kWalletFolder))) {
-        if (!wallet->createFolder(QString::fromLatin1(kWalletFolder))) {
-            delete wallet;
-            return nullptr;
-        }
-    }
-    if (!wallet->setFolder(QString::fromLatin1(kWalletFolder))) {
-        delete wallet;
-        return nullptr;
-    }
-    return wallet;
-}
-
-bool walletReadPassword(const QString &key, QString *out)
-{
-    KWallet::Wallet *wallet = openKircWallet();
-    if (!wallet) {
-        return false;
-    }
-    QString value;
-    const int rc = wallet->readPassword(key, value);
-    delete wallet;
-    if (rc != 0) {
-        return false;
-    }
-    *out = value;
-    return true;
-}
-
-bool walletWritePassword(const QString &key, const QString &value)
-{
-    KWallet::Wallet *wallet = openKircWallet();
-    if (!wallet) {
-        return false;
-    }
-    const int rc = wallet->writePassword(key, value);
-    delete wallet;
-    return rc == 0;
-}
-
-void walletRemovePassword(const QString &key)
-{
-    KWallet::Wallet *wallet = openKircWallet();
-    if (!wallet) {
-        return;
-    }
-    if (wallet->hasEntry(key)) {
-        wallet->removeEntry(key);
-    }
-    delete wallet;
-}
-
-} // namespace
-
 KircConfig::KircConfig(QObject *parent)
     : QObject(parent)
+    , m_secrets(kirc::makeSecretStore())
 {
 }
 
@@ -935,23 +864,25 @@ void KircConfig::load()
             m_nickservNick = legacy;
         }
     }
-    // The password lives in KWallet, never in kirc.conf.  A legacy plaintext
-    // entry is only *read* here for a one-time migration into the wallet;
-    // save() deletes it from disk.
+    // The password lives in the platform secret store, never in kirc.conf.
+    // A legacy plaintext entry is only *read* here for a one-time migration
+    // into the store; save() deletes it from disk.
     const QString legacyPassword = services.readEntry(QStringLiteral("Password"), QString());
     m_nickservPassword.clear();
-    QString walletPassword;
-    if (walletReadPassword(QString::fromLatin1(kWalletKeyNickserv), &walletPassword)) {
-        m_nickservPassword = walletPassword;
+    QString storedPassword;
+    if (m_secrets->read(kirc::Secret::NickServPassword, &storedPassword)
+        == kirc::SecretReadResult::Found) {
+        m_nickservPassword = storedPassword;
     } else if (!legacyPassword.isEmpty()) {
         m_nickservPassword = legacyPassword;
     }
-    // The IRC server password (PASS) is a secret too: KWallet only, no
+    // The IRC server password (PASS) is a secret too: secret store only, no
     // plaintext fallback (there was never a legacy kirc.conf key for it).
     m_serverPassword.clear();
-    QString walletServerPassword;
-    if (walletReadPassword(QString::fromLatin1(kWalletKeyServer), &walletServerPassword)) {
-        m_serverPassword = walletServerPassword;
+    QString storedServerPassword;
+    if (m_secrets->read(kirc::Secret::ServerPassword, &storedServerPassword)
+        == kirc::SecretReadResult::Found) {
+        m_serverPassword = storedServerPassword;
     }
 
     Q_EMIT hostChanged();
@@ -1062,19 +993,21 @@ void KircConfig::save()
     services.writeEntry(QStringLiteral("Account"), m_nickservNick);
     services.deleteEntry(QStringLiteral("NickServ"));
     // Never persist a password to kirc.conf: drop any legacy plaintext entry
-    // and store the value in KWallet instead.  If the wallet is locked or
-    // unavailable the in-memory value is kept for this process only.
+    // and store the value in the platform secret store instead.  If the
+    // store is locked or unavailable the in-memory value is kept for this
+    // process only.
     services.deleteEntry(QStringLiteral("Password"));
     if (m_nickservPassword.isEmpty()) {
-        walletRemovePassword(QString::fromLatin1(kWalletKeyNickserv));
+        m_secrets->remove(kirc::Secret::NickServPassword);
     } else {
-        walletWritePassword(QString::fromLatin1(kWalletKeyNickserv), m_nickservPassword);
+        m_secrets->write(kirc::Secret::NickServPassword, m_nickservPassword);
     }
-    // Same rule for the IRC server password: KWallet only, never kirc.conf.
+    // Same rule for the IRC server password: secret store only, never
+    // kirc.conf.
     if (m_serverPassword.isEmpty()) {
-        walletRemovePassword(QString::fromLatin1(kWalletKeyServer));
+        m_secrets->remove(kirc::Secret::ServerPassword);
     } else {
-        walletWritePassword(QString::fromLatin1(kWalletKeyServer), m_serverPassword);
+        m_secrets->write(kirc::Secret::ServerPassword, m_serverPassword);
     }
 
     config.sync();

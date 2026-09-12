@@ -28,6 +28,21 @@
 #include <QStringLiteral>
 #include <QUrl>
 
+#ifdef Q_OS_WIN
+namespace {
+// Every size the embedded artwork provides (kirc-windows.qrc); Explorer and
+// the taskbar pick their own, so register them all.
+QIcon embeddedAppIcon()
+{
+    QIcon icon;
+    for (int size : {16, 22, 24, 32, 48, 64, 128, 256}) {
+        icon.addFile(QStringLiteral(":/kirc/icons/%1x%1/kirc.png").arg(size));
+    }
+    return icon;
+}
+} // namespace
+#endif
+
 int main(int argc, char *argv[])
 {
     // KConfig/KNotifications use these to name their config/cache files, so set
@@ -39,6 +54,11 @@ int main(int argc, char *argv[])
 
     QApplication app(argc, argv);
 
+#ifdef Q_OS_WIN
+    // Windows has no freedesktop icon theme to resolve "kirc"; the embedded
+    // artwork is the only reliable source for the window/taskbar icon.
+    app.setWindowIcon(embeddedAppIcon());
+#else
     // Window/taskbar/tray icon.  KWin prefers the window's own icon and only
     // falls back to the desktop entry, so without this the title bar shows a
     // generic glyph whenever the launcher/WM can't resolve the app id.
@@ -49,13 +69,31 @@ int main(int argc, char *argv[])
         appIcon = QIcon::fromTheme(QStringLiteral("preferences-system-network"));
     }
     app.setWindowIcon(appIcon);
+#endif
     // Ties the window to kIRC.desktop on Wayland, where the app id (not the
-    // window icon) is what the compositor matches against.
+    // window icon) is what the compositor matches against.  Harmless
+    // elsewhere.
     app.setDesktopFileName(QStringLiteral("kIRC"));
 
-    // Must be set before the QML engine is created so that Kirigami picks up
-    // qqc2-desktop-style.
-    QQuickStyle::setStyle(QStringLiteral("org.kde.desktop"));
+    // Must be set before the QML engine is created so Kirigami picks up the
+    // style.  An explicit override wins (development aid only — not a
+    // supported knob).
+    if (const QByteArray styleOverride = qgetenv("KIRC_QUICKCONTROLS_STYLE");
+        !styleOverride.isEmpty()) {
+        QQuickStyle::setStyle(QString::fromLocal8Bit(styleOverride));
+    } else {
+#ifdef Q_OS_WIN
+        // The Windows port ships the Basic style: kIRC's controls are
+        // extensively customized (backgrounds/content items), so the
+        // uncustomized parts just need a predictable, dependency-free base.
+        // org.kde.desktop (qqc2-desktop-style) is the Linux default and a
+        // possible Windows alternative, but it is not part of the shipped
+        // dependency set.
+        QQuickStyle::setStyle(QStringLiteral("Basic"));
+#else
+        QQuickStyle::setStyle(QStringLiteral("org.kde.desktop"));
+#endif
+    }
 
     // Read the persisted profile before the engine exists, so the connection
     // form is prefilled on its first paint.
