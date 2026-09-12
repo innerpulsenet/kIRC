@@ -38,6 +38,13 @@ jobs:
       - name: Bootstrap KDE Craft and dependencies
         shell: pwsh
         run: |
+          # GitHub's Windows image exposes Git's MSYS tools and a separate MinGW
+          # toolchain globally. Craft must bootstrap against MSVC and its own MSYS.
+          $blockedPaths = @('C:\Program Files\Git\bin', 'C:\mingw64\bin')
+          $env:PATH = (($env:PATH -split ';') | Where-Object {
+            $entry = $_.TrimEnd('\')
+            $entry -notin $blockedPaths
+          }) -join ';'
           if (-not (Test-Path "$env:KIRC_CRAFT_ROOT\craft\bin\craft.py")) {
             Invoke-WebRequest https://raw.githubusercontent.com/KDE/craft/master/setup/CraftBootstrap.py -OutFile "$env:RUNNER_TEMP\CraftBootstrap.py"
             python "$env:RUNNER_TEMP\CraftBootstrap.py" --prefix $env:KIRC_CRAFT_ROOT --branch master --use-defaults
