@@ -24,10 +24,10 @@ constexpr auto kWalletKeyServer = "server-password";
 
 // Version of the [UI] theme-selection schema (see the header for the policy).
 // Version 1 is what every config written before the Fluent pass implies;
-// version 3 is the current schema — dense monospace TUI palettes.  The current
-// version is written back by load()'s one-time migration and by every save(),
-// so a later theme pick always sticks.
-constexpr int kThemeSchemaVersion = 3;
+// version 3 introduced the dense monospace TUI palettes; version 4 adds the
+// per-kind colour tokens.  The current version is written back by load()'s
+// one-time migration and by every save(), so a later theme pick always sticks.
+constexpr int kThemeSchemaVersion = 4;
 constexpr int kThemeSchemaVersionLegacy = 1;
 
 // Built-in theme ids that shipped before the terminal reskin (schema < 3):
@@ -573,7 +573,7 @@ void KircConfig::load()
     m_respondToCtcpVersion =
         ui.readEntry(QStringLiteral("RespondToCtcpVersion"), m_respondToCtcpVersion);
 
-    // ---- one-time theme-schema migration (< 3 -> 3; policy in the header) --
+    // ---- one-time theme-schema migration (< 4 -> 4; policy in the header) --
     // A config file that predates the key is version 1 by definition; a fresh
     // install (no file at all) is born at the current version and has nothing
     // to migrate.  QFileInfo::exists() is checked *before* reading, because

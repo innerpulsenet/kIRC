@@ -16,10 +16,10 @@ the only rendering (`mode` is always `dense`).
 | `main.qml` | `Kirigami.ApplicationWindow`. Owns the single `IrcBridge` instance, the single-column page stack (Connect → Chat), the custom header (context glyph + title, status pill, unread badge, nick chip, flat menu buttons) and app-wide bridge signal handling. |
 | `ConnectPage.qml` | Hero connect card: app glyph, headline, labelled rounded fields with in-field icons, TLS and SASL switches (the SASL block animates open), wide accent Connect button with an in-flight spinner, inline error hint fed by `error_occurred`. Emits `connectRequested(...)`; it never calls the bridge to connect. |
 | `ChatPage.qml` | Rounded sidebar (server entry + channel list with hash tiles, section headers, active pill, fit field), message `ListView` bound to `MessageListModel` with an empty-state placeholder and a slim overlay scrollbar, and the composer with its integrated accent send button. |
-| `MessageDelegate.qml` | One message. Bubble mode (default) with avatar, name, grouped consecutive messages, highlight wash + accent bar, links tinted with the accent; dense mode (classic one-line IRC log) is the secondary style. |
+| `MessageDelegate.qml` | One message as a console line: fixed `[HH:MM]` gutter, nick column, dim `* …` events, day rules, accent highlight bar. Colours by kind via the model roles (`isEvent`/`isError`/`isPrivate`/`isNotice`/`isAction`/`isHighlight`/`isSelf`), never by inspecting the view. No bubbles, no grouping, no hover. |
 | `ThemeEngine.qml` | `pragma Singleton` theme manager: active theme, flat bindable properties, `applyThemeJson()`, `applyBuiltinTheme()`, deterministic nick colours, avatar/link/alpha helpers, text escaping/linkifying, grouping helpers. |
 | `Theme.js` | `.pragma library` — theme data (built-ins + defaults), djb2 hashing, HSL derivation, message grouping maths, HTML escaping/linkifying. No Qt globals available here. |
-| `themes/*.json` | Built-in themes: `tui.json` (the default), `phosphor.json`, `amber.json`, `ice.json`, `breeze.json`. Canonical schema (see below). |
+| `themes/*.json` | Built-in themes: `tui.json` (the default), `bbs.json`, `c64.json`, `vt.json`, `ega.json`, `synthwave.json`, `phosphor.json`, `amber.json`, `ice.json`, `breeze.json`. Canonical schema (see below). |
 | `qmldir` | Module registration for `qmllint`/`qmlls` and for the `ThemeEngine` singleton. |
 
 `Theme.js` is the *only* JS module shipped next to the QML (see
@@ -127,7 +127,9 @@ pushes them into the singleton; QML itself cannot touch the filesystem.
 ```qml
 // load ~/.config/kIRC/themes/mytheme.json (C++), then:
 ThemeEngine.applyThemeJson(rawJsonText)   // or a parsed object
-ThemeEngine.applyBuiltinTheme("tui")      // "tui" | "phosphor" | "amber" | "ice" | "breeze"
+ThemeEngine.applyBuiltinTheme("tui")      // "tui" | "bbs" | "c64" | "vt" | "ega"
+                                          // | "synthwave" | "phosphor" | "amber"
+                                          // | "ice" | "breeze"
 ThemeEngine.reset()
 ```
 
@@ -138,7 +140,7 @@ numeric knobs are clamped to sane ranges so a bad theme file cannot make the
 chat view unreadable — a theme file written against the old bubble schema
 still loads, it just inherits the dense geometry.
 
-### Terminal look (schema 3)
+### Terminal look (schema 4)
 
 Bubbles are cancelled: the output is a console. Every built-in theme is
 `mode: "dense"` — one monospace line per message with a fixed `[HH:MM]` time
@@ -149,19 +151,44 @@ bubble branch.
 | Id | Look |
 | --- | --- |
 | `tui` | **default** — near-black log, grey text, cyan accent |
+| `bbs` | dial-up board: ANSI lime, grey and cyan on black |
+| `c64` | Commodore 64: light blue on the VIC-II blue |
+| `vt` | DEC-style phosphor, yellow-green |
+| `ega` | grey on black with DOS-blue panels |
+| `synthwave` | neon pink and cyan on deep purple |
 | `phosphor` | green on black (P1 tube) |
 | `amber` | amber on black (classic CRT) |
-| `ice` | light text on dark blue (C64-ish) |
+| `ice` | cold light-on-blue |
 | `breeze` | dense geometry with **empty colour tokens**: every colour follows `Kirigami.Theme`, so it matches Breeze Light / Breeze Dark / a custom scheme |
 
-Schema 3 also added `[UI] FontFamily` (a monospace family; empty = the theme's
-own default) and `[UI] ThemeSchemaVersion` is now **3**. `KircConfig::load()`
-migrates a config below version 3 exactly once: ids that used to be built-in
+**Per-kind colour (schema 4).** Seven `terminal.*` tokens — `fgEvent`,
+`fgMessage`, `fgPrivate`, `fgNotice`, `fgAction`, `fgHighlight`, `fgSelf` —
+let a theme colour each kind of line separately, so a notice, a private
+message and a channel line are all distinguishable at a glance. The delegate
+picks one by precedence `error > event > highlight > notice > action >
+private > self > channel`, branching on **model roles only**: it never
+inspects the view, and `qml-tests/perf.sh` asserts it has zero `itemAtIndex`
+call sites, which is what fixed the channel-switch stall. `breeze` leaves all
+seven empty and follows `Kirigami.Theme` per kind instead.
+
+Schema 3 added `[UI] FontFamily` (a monospace family; empty = the theme's
+own default) and `[UI] ThemeSchemaVersion` is now **4**. `KircConfig::load()`
+migrates a config below version 4 exactly once: ids that used to be built-in
 bubble/glass themes (`breeze`, `breeze-classic`, `oxygen`, `neon`, `fluent`,
 `fluent-light`) are rewritten to `tui` — including a config already stamped
-version 2, which is how the phase-2 `oxygen` config finally migrates — while
-any other id (a user's own theme file) is left alone. Retired ids also alias
-to `tui` at runtime, so a stale config can never leave the window unstyled.
+version 2, which is how the phase-2 `oxygen` config finally migrated — while
+any other id, whether a user's own theme file or a current built-in such as
+`bbs`, is left alone with only the version stamped. The bump matters even
+though the migration is a no-op for current ids: without it a config stamped
+at an older version would never re-examine the new token set. Retired ids
+also alias to `tui` at runtime, so a stale config can never leave the window
+unstyled.
+
+`qml-tests/check-theme-tokens.py` (stage 0 of `qml-tests/run.sh`) enumerates
+the token table against every theme file and fails on a missing **or extra**
+token, a JSON-to-`Theme.js` drift, a stale schema stamp, or contrast/ΔE below
+the floors. A theme that ships a token the engine reads but never defines is
+silent and ugly, so the gate exists to make it loud.
 
 Built-in themes are compiled into `Theme.js` (QML cannot read
 `qml/themes/*.json` at runtime), so a change to the JSON must be mirrored

@@ -14,15 +14,22 @@
 //   * version 1 is the implicit value when the key is absent: the config was
 //     written before the Fluent pass and may hold any pre-schema theme id.
 //   * version 2 means the id was chosen (or migrated) under the Fluent pass.
-//   * version 3 is the current schema: dense monospace TUI palettes.  The
-//     bubble/glass themes that shipped under versions 1 and 2 are retired.
-//   load() upgrades an existing file below version 3 exactly once: any
+//   * version 3 is dense monospace TUI palettes: the bubble/glass themes that
+//     shipped under versions 1 and 2 are retired.
+//   * version 4 adds the per-kind colour tokens (fgEvent, fgMessage,
+//     fgPrivate, fgNotice, fgAction, fgHighlight, fgSelf) so a theme can
+//     colour a notice, a private message, an action and a channel line
+//     differently.  Nothing is retired by 4 — the bump exists so a config
+//     stamped at an older version re-examines the new token set instead of
+//     sitting on a palette that predates it.
+//   load() upgrades an existing file below version 4 exactly once: any
 //   *previously shipped built-in* id (`breeze`, `breeze-classic`, `oxygen`,
 //   `neon`, `fluent`, `fluent-light` — everything that used to be a bubble or
 //   glass theme, including a config already stamped version 2 with one of
 //   them) is rewritten to the new default `tui`; a theme id that is not a
-//   known old built-in (a user's own file under ~/.config/kIRC/themes/) is
-//   left alone and only the version is bumped.  The new version is persisted
+//   known old built-in (a user's own file under ~/.config/kIRC/themes/, or
+//   any current built-in such as `bbs`) is left alone and only the version is
+//   bumped.  The new version is persisted
 //   immediately, so the migration cannot run twice; save() writes it too, so a
 //   later pick always sticks.  A fresh install (no kirc.conf at all) starts at
 //   the current version and nothing is written.
