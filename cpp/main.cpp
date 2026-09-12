@@ -77,6 +77,44 @@ int main(int argc, char *argv[])
     SetCurrentProcessExplicitAppUserModelID(L"org.kde.kirc");
 #endif
 
+#ifdef Q_OS_WIN
+    // Qt Quick backend (Windows): software rendering is the DEFAULT.
+    //
+    // Rationale: kIRC's UI is repaint-idle — a terminal pane that redraws on
+    // arrival, not per frame — so the GPU mostly idles behind a D3D11
+    // swapchain that still costs startup time, battery and driver surface.
+    // The raster renderer is also the most predictable path across old
+    // hardware, remote-desktop/RDP sessions and machines with broken or
+    // blocklisted GPU drivers.  The trade is honest: the shader-based glass
+    // frost cannot run on the software scene graph, so the QML side detects
+    // it (ThemeEngine.effectsSupported, fed from the window's GraphicsInfo)
+    // and degrades the effects to plain underlays instead of a broken or
+    // silently missing render.
+    //
+    // KIRC_QUICK_BACKEND is the supported development knob for bringing a
+    // hardware backend back (must be set before QApplication constructs its
+    // platform integration, hence this place):
+    //   software -> Qt Quick software renderer (what the default does anyway)
+    //   d3d11    -> RHI over Direct3D 11
+    //   opengl   -> RHI over OpenGL
+    // Anything else warns once and falls through to Qt's own default.
+    if (qEnvironmentVariableIsSet("KIRC_QUICK_BACKEND")) {
+        const QByteArray quickBackend = qgetenv("KIRC_QUICK_BACKEND");
+        if (quickBackend == "software") {
+            qputenv("QT_QUICK_BACKEND", "software");
+        } else if (quickBackend == "d3d11") {
+            qputenv("QSG_RHI_BACKEND", "d3d11");
+        } else if (quickBackend == "opengl") {
+            qputenv("QSG_RHI_BACKEND", "opengl");
+        } else {
+            qWarning("kIRC: unknown KIRC_QUICK_BACKEND='%s'; using Qt's default backend",
+                     quickBackend.constData());
+        }
+    } else {
+        qputenv("QT_QUICK_BACKEND", "software");
+    }
+#endif
+
     QApplication app(argc, argv);
 
 #ifdef Q_OS_WIN

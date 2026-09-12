@@ -1899,6 +1899,25 @@ Kirigami.Page {
                             wrapMode: Text.WordWrap
                         }
 
+                        // Capability caption (software scene graph only): the
+                        // section stays visible with every value intact, but
+                        // the controls are read-only and say why. The saved
+                        // prefs are not touched by the degradation, so a
+                        // hardware backend (KIRC_QUICK_BACKEND) brings the
+                        // configured effects back unchanged.
+                        Text {
+                            Layout.fillWidth: true
+                            Layout.leftMargin: 10
+                            Layout.rightMargin: 10
+                            Layout.bottomMargin: 4
+                            visible: !ThemeEngine.effectsSupported
+                            text: ThemeEngine.effectsUnsupportedReason
+                            color: page.fgWarn()
+                            font.family: page.mono
+                            font.pointSize: page.ptSmall
+                            wrapMode: Text.WordWrap
+                        }
+
                         TermRule { Layout.topMargin: 6 }
 
                         // ---- glass family ----------------------------------- //
@@ -1924,6 +1943,7 @@ Kirigami.Page {
                                 TermToggle {
                                     id: glassSwitch
                                     text: qsTr("Frosted glass effects")
+                                    enabled: ThemeEngine.effectsSupported
                                     onToggled: {
                                         ThemeEngine.glassEffects = checked
                                         page.persist()
@@ -1962,6 +1982,7 @@ Kirigami.Page {
                                     to: 100
                                     stepSize: 1
                                     enabled: ThemeEngine.glassEffects
+                                             && ThemeEngine.effectsSupported
                                     value: ThemeEngine.glassIntensity
                                     // onValueChanged (not onMoved): covers a
                                     // drag, the wheel, the arrow keys and
@@ -2040,6 +2061,7 @@ Kirigami.Page {
                                     id: glassBlurSwitch
                                     text: qsTr("Frost (blurred underlay)")
                                     enabled: ThemeEngine.glassEffects
+                                             && ThemeEngine.effectsSupported
                                     onToggled: {
                                         ThemeEngine.glassBlur = checked
                                         page.persist()
@@ -2073,6 +2095,7 @@ Kirigami.Page {
                                     id: glassSheenSwitch
                                     text: qsTr("Reflection sheen")
                                     enabled: ThemeEngine.glassEffects
+                                             && ThemeEngine.effectsSupported
                                     onToggled: {
                                         ThemeEngine.glassSheen = checked
                                         page.persist()
@@ -2106,6 +2129,7 @@ Kirigami.Page {
                                     id: glassEdgesSwitch
                                     text: qsTr("Lit edges and depth")
                                     enabled: ThemeEngine.glassEffects
+                                             && ThemeEngine.effectsSupported
                                     onToggled: {
                                         ThemeEngine.glassEdges = checked
                                         page.persist()
@@ -2138,6 +2162,7 @@ Kirigami.Page {
                                 TermToggle {
                                     id: reflectionSwitch
                                     text: qsTr("Specular chrome gloss")
+                                    enabled: ThemeEngine.effectsSupported
                                     checked: page.prefBool("reflection")
                                     onToggled: page.setEffectPref("reflection", checked)
                                 }
@@ -2170,6 +2195,7 @@ Kirigami.Page {
                                     id: reflectionSlider
                                     objectName: "reflectionSlider"
                                     enabled: page.prefBool("reflection")
+                                             && ThemeEngine.effectsSupported
                                     value: page.prefInt("reflectionAmount", 25)
                                     onValueChanged: page.setEffectAmount("reflectionAmount", value)
                                 }
@@ -2222,6 +2248,7 @@ Kirigami.Page {
                                 TermToggle {
                                     id: scanlineSwitch
                                     text: qsTr("Horizontal scanlines")
+                                    enabled: ThemeEngine.effectsSupported
                                     checked: page.prefBool("scanlines")
                                     onToggled: page.setEffectPref("scanlines", checked)
                                 }
@@ -2254,6 +2281,7 @@ Kirigami.Page {
                                     id: scanlineSlider
                                     objectName: "scanlineSlider"
                                     enabled: page.prefBool("scanlines")
+                                             && ThemeEngine.effectsSupported
                                     value: page.prefInt("scanlineAmount", 35)
                                     onValueChanged: page.setEffectAmount("scanlineAmount", value)
                                 }
@@ -2293,6 +2321,7 @@ Kirigami.Page {
                                 TermToggle {
                                     id: vignetteSwitch
                                     text: qsTr("Corner falloff")
+                                    enabled: ThemeEngine.effectsSupported
                                     checked: page.prefBool("vignette")
                                     onToggled: page.setEffectPref("vignette", checked)
                                 }
@@ -2325,6 +2354,7 @@ Kirigami.Page {
                                     id: vignetteSlider
                                     objectName: "vignetteSlider"
                                     enabled: page.prefBool("vignette")
+                                             && ThemeEngine.effectsSupported
                                     value: page.prefInt("vignetteAmount", 30)
                                     onValueChanged: page.setEffectAmount("vignetteAmount", value)
                                 }
@@ -2364,6 +2394,7 @@ Kirigami.Page {
                                 TermToggle {
                                     id: grainSwitch
                                     text: qsTr("Static grain")
+                                    enabled: ThemeEngine.effectsSupported
                                     checked: page.prefBool("grain")
                                     onToggled: page.setEffectPref("grain", checked)
                                 }
@@ -2396,6 +2427,7 @@ Kirigami.Page {
                                     id: grainSlider
                                     objectName: "grainSlider"
                                     enabled: page.prefBool("grain")
+                                             && ThemeEngine.effectsSupported
                                     value: page.prefInt("grainAmount", 10)
                                     onValueChanged: page.setEffectAmount("grainAmount", value)
                                 }
@@ -2435,6 +2467,7 @@ Kirigami.Page {
                                 TermToggle {
                                     id: flickerSwitch
                                     text: qsTr("Slow brightness flicker")
+                                    enabled: ThemeEngine.effectsSupported
                                     checked: page.prefBool("flicker")
                                     onToggled: page.setEffectPref("flicker", checked)
                                 }
@@ -2467,6 +2500,7 @@ Kirigami.Page {
                                     id: flickerSlider
                                     objectName: "flickerSlider"
                                     enabled: page.prefBool("flicker")
+                                             && ThemeEngine.effectsSupported
                                     value: page.prefInt("flickerAmount", 4)
                                     onValueChanged: page.setEffectAmount("flickerAmount", value)
                                 }
@@ -2506,6 +2540,7 @@ Kirigami.Page {
                                 TermToggle {
                                     id: humSwitch
                                     text: qsTr("Rolling hum bar")
+                                    enabled: ThemeEngine.effectsSupported
                                     checked: page.prefBool("humBar")
                                     onToggled: page.setEffectPref("humBar", checked)
                                 }
@@ -2538,6 +2573,7 @@ Kirigami.Page {
                                     id: humSlider
                                     objectName: "humSlider"
                                     enabled: page.prefBool("humBar")
+                                             && ThemeEngine.effectsSupported
                                     value: page.prefInt("humBarAmount", 8)
                                     onValueChanged: page.setEffectAmount("humBarAmount", value)
                                 }

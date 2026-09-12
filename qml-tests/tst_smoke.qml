@@ -53,6 +53,15 @@ Item {
     // change back — the settings half of the CTCP VERSION contract.
     property var settingsPageItem: null
     Component.onCompleted: {
+        // Capability pin (the harness double for ThemeEngine's runtime probe):
+        // the offscreen platform renders Qt Quick with the SOFTWARE renderer,
+        // so main.qml's GraphicsInfo probe would report the effects
+        // unsupported and every assertion below about the effects popup and
+        // the overlay would describe a UI this harness is not testing.  Pin
+        // the capability ON (the Linux/CI semantics this file was written
+        // for); the dedicated degradation block further down releases the pin
+        // to assert the software path, then restores it.
+        ThemeEngine._effectsForceSupported = true
         var comp = Qt.createComponent("org/kde/kirc/SettingsPage.qml")
         if (comp.status === Component.Ready) {
             harness.settingsPageItem = comp.createObject(harness, { "kircConfig": settingsCfg })
@@ -1047,6 +1056,69 @@ Item {
                         // Leave the glass family as it was found: on.
                         ThemeEngine.glassEffects = true
                         ThemeEngine.glassSheen = true
+
+                        // ---- software-scene-graph degradation -----------------
+                        // Windows ships the Qt Quick SOFTWARE renderer as its
+                        // default backend, and this offscreen run renders on
+                        // exactly that renderer — the pin above was what kept
+                        // the capability ON here.  Released, the system must
+                        // degrade honestly: capability reads false with a
+                        // reason, the glass sheet renders nothing (no
+                        // MultiEffect node at all), the overlay does not
+                        // instantiate even with an effect switched on, and
+                        // the popup leads with its caption while the toggles
+                        // are inert and write no preference.  The stored
+                        // prefs themselves are never touched by any of it.
+                        ThemeEngine._effectsForceSupported = false
+                        if (ThemeEngine.effectsSupported === false) {
+                            harness.ok("releasing the pin exposes the unsupported renderer",
+                                       ThemeEngine.effectsUnsupportedReason.length > 0)
+
+                            var dSheet = harness.findByPredicate(harness.win.header, function (o) {
+                                return o.objectName === "glassSurface"
+                            }, 0)
+                            harness.ok("unsupported: the glass sheet renders nothing",
+                                       dSheet !== null && dSheet.visible === false)
+                            harness.ok("unsupported: the sheet holds no MultiEffect node",
+                                       dSheet !== null
+                                       && harness.countNodes(dSheet, function (o) {
+                                              return o.blurEnabled !== undefined
+                                          }, 0) === 0)
+
+                            harness.win.scanlinesOn = true
+                            harness.ok("unsupported: the overlay never instantiates",
+                                       harness.win.effectsActive === true
+                                       && harness.overlayItem() === null,
+                                       "active=" + harness.win.effectsActive
+                                       + " overlay=" + (harness.overlayItem() === null))
+                            harness.win.scanlinesOn = false
+
+                            var dFxRows = harness.menuRowTexts(effectsPopup)
+                            harness.ok("unsupported: the popup leads with the capability caption",
+                                       dFxRows.length === 13
+                                       && dFxRows[0] === ThemeEngine.effectsUnsupportedReason,
+                                       dFxRows.join("|"))
+                            // With the caption at index 0 every row shifts by
+                            // one: Frost is at 1, the separator at 5, the CRT
+                            // toggles from 6 on.
+                            harness.ok("unsupported: the effect toggles are inert",
+                                       effectsPopup.itemAt(1).enabled === false
+                                       && effectsPopup.itemAt(6).enabled === false)
+                            effectsPopup.itemAt(6).triggered()      // direct signal: must be refused
+                            harness.ok("unsupported: triggering a row writes no preference",
+                                       harness.win.scanlinesOn === false)
+                        } else {
+                            // A hardware scene graph (a watched run, QPA=xcb
+                            // with GL): nothing to degrade, and the probe
+                            // following the renderer is the contract.
+                            harness.ok("the capability probe reads a hardware scene graph as supported",
+                                       ThemeEngine.effectsSupported === true)
+                        }
+                        // The pin comes back: everything below this point
+                        // asserts the supported UI again.
+                        ThemeEngine._effectsForceSupported = true
+                        harness.ok("restoring the pin restores the effects",
+                                   ThemeEngine.effectsSupported === true)
                     }
                     // One nick, once: the identity line.  (The old header showed
                     // it in the subtitle AND again after the status tag.)

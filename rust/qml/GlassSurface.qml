@@ -59,8 +59,12 @@ Item {
 
     // --- state -------------------------------------------------------------
     objectName: "glassSurface"
-    // The master switch: off renders nothing at all.
-    visible: ThemeEngine.glassEffects
+    // The master switch: off renders nothing at all.  The same no-paint path
+    // is taken — with the saved preferences untouched — when the scene graph
+    // cannot run the frost's shaders (Qt Quick's software renderer, the
+    // Windows rendering default; see ThemeEngine.effectsSupported): the
+    // effects degrade to plain underlays, never to a broken or missing blur.
+    visible: ThemeEngine.glassEffects && ThemeEngine.effectsSupported
     // Paint-only sheet: never takes input, never takes part in layout.
     enabled: false
     // A sheet is a rectangle: the frost blur can spill a few pixels past its
@@ -72,89 +76,107 @@ Item {
     readonly property bool edgeOn: glass.edges && ThemeEngine.glassEdges
 
     // --- 1. frost ----------------------------------------------------------
-    Item {
+    // The frost is the one shader-based layer here (MultiEffect), so it is a
+    // Loader: on a software scene graph (ThemeEngine.effectsSupported false)
+    // it never instantiates — there is no MultiEffect node at all, not a
+    // silently skipped one.  While supported, `visible` keeps the original
+    // gate (the sub-toggle), matching what the harnesses assert.
+    Loader {
         id: frostLayer
         objectName: "glassFrost"
         anchors.fill: parent
+        active: glass.frostOn && ThemeEngine.effectsSupported
         visible: glass.frostOn
+        sourceComponent: frostComponent
+    }
 
-        // Static underlay — the texture the frost is made of. Hidden: it is
-        // painted only through the blur below, so no crisp copy shows.
-        //
-        // NOTE: this is a Rectangle (a visual item), not a bare Item: a
-        // gradient-bearing CHILD inside a hidden plain Item renders as a
-        // white-blown texture through MultiEffect on this stack (verified
-        // against llvmpipe/Qt 6.11 with pixel probes — see p8-glass.md). A
-        // Rectangle's own `gradient` as the source's root background does not.
-        Rectangle {
-            id: underlay
+    Component {
+        id: frostComponent
+
+        Item {
             anchors.fill: parent
-            visible: false
-            clip: true
-            gradient: Gradient {
-                GradientStop {
-                    position: 0.0
-                    color: ThemeEngine.darkenRgb(ThemeEngine.glassBase, 0.32)
-                }
-                GradientStop {
-                    position: 1.0
-                    color: ThemeEngine.glassBase
-                }
-            }
 
-            // Two soft accent pools + a cool streak: blurred, they read as
-            // frosted light and shape behind the pane instead of flat paint.
-            // Deliberately faint — at higher alphas the pools read as smudges
-            // rather than as light (see p8-glass.md, tuned from screenshots).
+            // Static underlay — the texture the frost is made of. Hidden: it
+            // is painted only through the blur below, so no crisp copy shows.
+            //
+            // NOTE: this is a Rectangle (a visual item), not a bare Item: a
+            // gradient-bearing CHILD inside a hidden plain Item renders as a
+            // white-blown texture through MultiEffect on this stack (verified
+            // against llvmpipe/Qt 6.11 with pixel probes — see p8-glass.md). A
+            // Rectangle's own `gradient` as the source's root background does
+            // not.
             Rectangle {
-                width: Math.max(20, Math.min(underlay.width, underlay.height) * 0.70)
-                height: width
-                radius: width / 2
-                x: underlay.width * 0.16 - width * 0.5
-                y: underlay.height * 0.08 - height * 0.5
-                color: ThemeEngine.withAlpha(ThemeEngine.glassAccent, 0.08)
-            }
-
-            Rectangle {
-                width: Math.max(16, Math.min(underlay.width, underlay.height) * 0.45)
-                height: width
-                radius: width / 2
-                x: underlay.width * 0.84 - width * 0.5
-                y: underlay.height * 0.92 - height * 0.5
-                color: ThemeEngine.withAlpha(
-                    ThemeEngine.lightenRgb(ThemeEngine.glassAccent, 0.35), 0.05)
-            }
-
-            Rectangle {
-                width: Math.max(underlay.width, 40) * 1.6
-                height: Math.max(underlay.height * 0.18, 8)
-                x: -underlay.width * 0.3
-                y: underlay.height * 0.34
-                rotation: -12
+                id: underlay
+                anchors.fill: parent
+                visible: false
+                clip: true
                 gradient: Gradient {
-                    GradientStop { position: 0.0; color: "transparent" }
                     GradientStop {
-                        position: 0.5
-                        color: ThemeEngine.withAlpha(ThemeEngine.glassAccent, 0.06)
+                        position: 0.0
+                        color: ThemeEngine.darkenRgb(ThemeEngine.glassBase, 0.32)
                     }
-                    GradientStop { position: 1.0; color: "transparent" }
+                    GradientStop {
+                        position: 1.0
+                        color: ThemeEngine.glassBase
+                    }
+                }
+
+                // Two soft accent pools + a cool streak: blurred, they read as
+                // frosted light and shape behind the pane instead of flat
+                // paint. Deliberately faint — at higher alphas the pools read
+                // as smudges rather than as light (see p8-glass.md, tuned
+                // from screenshots).
+                Rectangle {
+                    width: Math.max(20, Math.min(underlay.width, underlay.height) * 0.70)
+                    height: width
+                    radius: width / 2
+                    x: underlay.width * 0.16 - width * 0.5
+                    y: underlay.height * 0.08 - height * 0.5
+                    color: ThemeEngine.withAlpha(ThemeEngine.glassAccent, 0.08)
+                }
+
+                Rectangle {
+                    width: Math.max(16, Math.min(underlay.width, underlay.height) * 0.45)
+                    height: width
+                    radius: width / 2
+                    x: underlay.width * 0.84 - width * 0.5
+                    y: underlay.height * 0.92 - height * 0.5
+                    color: ThemeEngine.withAlpha(
+                        ThemeEngine.lightenRgb(ThemeEngine.glassAccent, 0.35), 0.05)
+                }
+
+                Rectangle {
+                    width: Math.max(underlay.width, 40) * 1.6
+                    height: Math.max(underlay.height * 0.18, 8)
+                    x: -underlay.width * 0.3
+                    y: underlay.height * 0.34
+                    rotation: -12
+                    gradient: Gradient {
+                        GradientStop { position: 0.0; color: "transparent" }
+                        GradientStop {
+                            position: 0.5
+                            color: ThemeEngine.withAlpha(ThemeEngine.glassAccent, 0.06)
+                        }
+                        GradientStop { position: 1.0; color: "transparent" }
+                    }
                 }
             }
-        }
 
-        MultiEffect {
-            id: frostEffect
-            source: glass.blurSource !== null ? glass.blurSource : underlay
-            anchors.fill: parent
-            opacity: ThemeEngine.glassFrostOpacity
-            blurEnabled: true
-            blur: ThemeEngine.glassBlurAmount
-            blurMax: ThemeEngine.glassBlurMax
-            // NOTE: do NOT set saturation/brightness/contrast here. The colour
-            // adjust stage blows the transparent parts of the texture out to
-            // opaque white on this stack (Qt 6.11 / llvmpipe): with it the
-            // frost renders as a milky wash over everything. Verified by
-            // pixel probe (see p8-glass.md). The frost stays a plain blur.
+            MultiEffect {
+                id: frostEffect
+                source: glass.blurSource !== null ? glass.blurSource : underlay
+                anchors.fill: parent
+                opacity: ThemeEngine.glassFrostOpacity
+                blurEnabled: true
+                blur: ThemeEngine.glassBlurAmount
+                blurMax: ThemeEngine.glassBlurMax
+                // NOTE: do NOT set saturation/brightness/contrast here. The
+                // colour adjust stage blows the transparent parts of the
+                // texture out to opaque white on this stack (Qt 6.11 /
+                // llvmpipe): with it the frost renders as a milky wash over
+                // everything. Verified by pixel probe (see p8-glass.md). The
+                // frost stays a plain blur.
+            }
         }
     }
 
