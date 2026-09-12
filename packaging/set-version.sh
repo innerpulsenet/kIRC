@@ -14,10 +14,16 @@
 set -euo pipefail
 
 version="${1:-}"
-if [[ ! "$version" =~ ^[0-9]+(\.[0-9]+)*$ ]]; then
-    echo "usage: $0 <version>   (e.g. $0 0.7.0)" >&2
+# Cargo requires exactly three components (major.minor.patch): a manifest
+# carrying `version = "0.8"` fails to parse with "unexpected end of input while
+# parsing minor version number". Normalise here rather than writing a version
+# the crate manifests cannot read, so `set-version.sh 0.8` is equivalent to
+# `set-version.sh 0.8.0`.
+if [[ ! "$version" =~ ^([0-9]+)(\.([0-9]+))?(\.([0-9]+))?$ ]]; then
+    echo "usage: $0 <version>   (e.g. $0 0.8 or $0 0.8.0 — both mean 0.8.0)" >&2
     exit 2
 fi
+version="${BASH_REMATCH[1]}.${BASH_REMATCH[3]:-0}.${BASH_REMATCH[5]:-0}"
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$root"

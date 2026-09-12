@@ -71,9 +71,16 @@ jobs:
             *) echo "::error::expected a v* tag, got '$tag'"; exit 1 ;;
           esac
           version="${tag#v}"
-          if ! [[ "$version" =~ ^[0-9]+(\.[0-9]+)*$ ]]; then
-            echo "::error::tag '$tag' does not yield a numeric version (e.g. v0.7.0)"; exit 1
+          # Cargo requires exactly three components (major.minor.patch), so a
+          # v0.8 tag has to become 0.8.0: stamping `version = "0.8"` into the
+          # crate manifests makes `cargo vendor` fail with "unexpected end of
+          # input while parsing minor version number". Normalise once, here, so
+          # the source tarball name, the spec's Version, the AppStream release
+          # and the manifests cannot disagree about the version.
+          if ! [[ "$version" =~ ^([0-9]+)(\.([0-9]+))?(\.([0-9]+))?$ ]]; then
+            echo "::error::tag '$tag' does not yield a major[.minor[.patch]] version (e.g. v0.8 or v0.8.1)"; exit 1
           fi
+          version="${BASH_REMATCH[1]}.${BASH_REMATCH[3]:-0}.${BASH_REMATCH[5]:-0}"
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "::notice::building kIRC $version from $tag"
