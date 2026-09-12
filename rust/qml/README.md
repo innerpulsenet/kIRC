@@ -19,7 +19,7 @@ the only rendering (`mode` is always `dense`).
 | `MessageDelegate.qml` | One message as a console line: fixed `[HH:MM]` gutter, nick column, dim `* …` events, day rules, accent highlight bar. Colours by kind via the model roles (`isEvent`/`isError`/`isPrivate`/`isNotice`/`isAction`/`isHighlight`/`isSelf`), never by inspecting the view. No bubbles, no grouping, no hover. |
 | `ThemeEngine.qml` | `pragma Singleton` theme manager: active theme, flat bindable properties, `applyThemeJson()`, `applyBuiltinTheme()`, deterministic nick colours, avatar/link/alpha helpers, text escaping/linkifying, grouping helpers. |
 | `Theme.js` | `.pragma library` — theme data (built-ins + defaults), djb2 hashing, HSL derivation, message grouping maths, HTML escaping/linkifying. No Qt globals available here. |
-| `themes/*.json` | Built-in themes: `tui.json` (the default), `bbs.json`, `c64.json`, `vt.json`, `ega.json`, `synthwave.json`, `phosphor.json`, `amber.json`, `ice.json`, `breeze.json`. Canonical schema (see below). |
+| `themes/*.json` | Built-in themes: `tui.json` (the default), `bbs.json`, `c64.json`, `vt.json`, `ega.json`, `synthwave.json`, `ai-slop.json`, `phosphor.json`, `amber.json`, `ice.json`, `breeze.json`. Canonical schema (see below). |
 | `qmldir` | Module registration for `qmllint`/`qmlls` and for the `ThemeEngine` singleton. |
 
 `Theme.js` is the *only* JS module shipped next to the QML (see
@@ -128,8 +128,8 @@ pushes them into the singleton; QML itself cannot touch the filesystem.
 // load ~/.config/kIRC/themes/mytheme.json (C++), then:
 ThemeEngine.applyThemeJson(rawJsonText)   // or a parsed object
 ThemeEngine.applyBuiltinTheme("tui")      // "tui" | "bbs" | "c64" | "vt" | "ega"
-                                          // | "synthwave" | "phosphor" | "amber"
-                                          // | "ice" | "breeze"
+                                          // | "synthwave" | "ai-slop" | "phosphor"
+                                          // | "amber" | "ice" | "breeze"
 ThemeEngine.reset()
 ```
 
@@ -156,6 +156,7 @@ bubble branch.
 | `vt` | DEC-style phosphor, yellow-green |
 | `ega` | grey on black with DOS-blue panels |
 | `synthwave` | neon pink and cyan on deep purple |
+| `ai-slop` | self-aware neon violet — deep indigo field, electric-violet accent, magenta and cyan per-kind accents. The gradient energy comes from the glass sheen, which is tinted from the accent |
 | `phosphor` | green on black (P1 tube) |
 | `amber` | amber on black (classic CRT) |
 | `ice` | cold light-on-blue |

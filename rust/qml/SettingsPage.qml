@@ -195,7 +195,8 @@ Kirigami.Page {
         "c64": "commodore 64 breadbin vic-20 home computer blue",
         "vt": "dec vt100 vt220 terminal phosphor",
         "ega": "ega dos ibm pc bios vga 16-colour 16-color",
-        "synthwave": "neon outrun synth eighties 80s retro"
+        "synthwave": "neon outrun synth eighties 80s retro",
+        "ai-slop": "ai slop vibe purple violet magenta neon gradient omarchy quattro"
     }
 
     /// True when a theme id (or its display name / keywords) matches the

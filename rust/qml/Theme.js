@@ -40,7 +40,7 @@
 // set and exist to be *different rooms of the same museum*, not tints of one
 // another (see the palette notes above each theme).
 var BUILTIN_IDS = ["tui", "phosphor", "amber", "ice", "breeze",
-                   "bbs", "c64", "vt", "ega", "synthwave"]
+                   "bbs", "c64", "vt", "ega", "synthwave", "ai-slop"]
 
 // Older builds shipped other default ids; keep them working. The retired
 // bubble/glass ids resolve to the TUI default so applying one can never leave
@@ -55,7 +55,7 @@ var ALIASES = {
 }
 
 // --- built-in themes (mirror of qml/themes/*.json) --------------------------
-// All ten are dense terminal palettes: monospace, flat, one line per message.
+// All eleven are dense terminal palettes: monospace, flat, one line per message.
 //  * tui        neutral terminal — near-black log, grey text, cyan accent
 //  * phosphor   green on black (P1 tube)
 //  * amber      amber on black (classic CRT)
@@ -66,6 +66,8 @@ var ALIASES = {
 //  * vt         DEC VT-style yellow-green phosphor
 //  * ega        EGA/DOS 16-colour on black
 //  * synthwave  neon pink/cyan on deep purple
+//  * ai-slop    self-aware neon violet — the palette an LLM ships when asked
+//               to "make it pop", executed well enough to actually use
 // Colour tokens that are "" mean "fall back to the Kirigami palette at the
 // call site"; the geometry tokens carry the (flat) character.
 var builtins = {
@@ -859,6 +861,89 @@ var builtins = {
             "fgAction": "#ff6ec7",
             "fgHighlight": "#ffe9fb",
             "fgSelf": "#d8ccff"
+        }
+    },
+    // AI Slop: self-aware neon violet — the palette an LLM ships when asked to
+    // "make it pop". Deep indigo field, lavender-white text, electric-violet
+    // accent, neon magenta for actions and the unread badge, neon cyan / mint
+    // for private and notice kinds, hot pink-red for warnings. Geometry is the
+    // TUI console's (bubble zeros, no avatars) — this one is palette-led.
+    "ai-slop": {
+        "id": "ai-slop",
+        "name": "AI Slop",
+        "schema": 4,
+        "mode": "dense",
+        "bubble": {
+            "radius": 0,
+            "spacing": 0,
+            "groupSpacing": 0,
+            "tailRadius": 0,
+            "maxWidthFraction": 1.0,
+            "selfColor": "",
+            "otherColor": ""
+        },
+        "dense": { "lineSpacing": 2 },
+        "avatar": { "enabled": false, "size": 0 },
+        "grouping": { "enabled": true, "windowMinutes": 5 },
+        "motion": { "enabled": true, "duration": 90 },
+        "sidebar": { "width": 0 },
+        "fonts": { "messageSize": 0, "timestampSize": 0, "nickSize": 0 },
+        "colors": {
+            "nickSatMin": 0.55,
+            "nickSatMax": 0.95,
+            "nickLightnessDark": 0.78,
+            "nickLightnessLight": 0.42,
+            "linkify": true,
+            "highlightIsBold": true,
+            "linkColor": "#8ff4ff"
+        },
+        "surfaces": {
+            "surface": "#140e26",
+            "surfaceAlt": "#1b1338",
+            "sidebarSurface": "#1b1338",
+            "cardBackground": "#221847",
+            "cardBorder": "#3b2a6b",
+            "cardRadius": 0,
+            "cardPadding": 8,
+            "rowRadius": 0,
+            "rowHover": "#241a4d",
+            "rowSelected": "#2f2263",
+            "rowHeight": 24,
+            "accent": "#a86cff",
+            "accentText": "#140e26",
+            "mutedText": "#9d8ad0",
+            "sectionHeader": "#c9b6ff",
+            "sectionHeaderSize": 0,
+            "eventText": "#9d8ad0",
+            "eventSize": 0,
+            "statusOnline": "#7dffc4",
+            "statusAway": "#ffd166",
+            "statusOffline": "#6d55a8",
+            "unreadBadge": "#ff5cf0",
+            "unreadBadgeText": "#140e26",
+            "inputRadius": 0,
+            "shadowOpacity": 0,
+            "headerHeight": 40
+        },
+        "terminal": {
+            "fontFamily": "monospace",
+            "gutterWidth": 64,
+            "nickColumn": 9,
+            "ruleColor": "#3b2a6b",
+            "fgPrimary": "#e9e2ff",
+            "fgDim": "#9d8ad0",
+            "fgAccent": "#a86cff",
+            "fgWarn": "#ff4d6d",
+            "bgPanel": "#1b1338",
+            "bgLog": "#140e26",
+            "bgInput": "#241a4d",
+            "fgEvent": "#9d8ad0",
+            "fgMessage": "#e9e2ff",
+            "fgPrivate": "#5cf6ff",
+            "fgNotice": "#7dffc4",
+            "fgAction": "#ff6ee7",
+            "fgHighlight": "#ffffff",
+            "fgSelf": "#b8f0ff"
         }
     }
 }
