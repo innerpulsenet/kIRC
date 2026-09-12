@@ -17,9 +17,11 @@ the only rendering (`mode` is always `dense`).
 | `ConnectPage.qml` | Hero connect card: app glyph, headline, labelled rounded fields with in-field icons, TLS and SASL switches (the SASL block animates open), wide accent Connect button with an in-flight spinner, inline error hint fed by `error_occurred`. Emits `connectRequested(...)`; it never calls the bridge to connect. |
 | `ChatPage.qml` | Rounded sidebar (server entry + channel list with hash tiles, section headers, active pill, fit field), message `ListView` bound to `MessageListModel` with an empty-state placeholder and a slim overlay scrollbar, and the composer with its integrated accent send button. |
 | `MessageDelegate.qml` | One message as a console line: fixed `[HH:MM]` gutter, nick column, dim `* …` events, day rules, accent highlight bar. Colours by kind via the model roles (`isEvent`/`isError`/`isPrivate`/`isNotice`/`isAction`/`isHighlight`/`isSelf`), never by inspecting the view. No bubbles, no grouping, no hover. |
+| `GlassSurface.qml` | One reusable frosted-glass surface: translucency, a reflection sheen, a lit edge, grain and depth. Used by every chrome area (header, sidebar, log container, composer, people panel, pill, dialogs). Never blurs a scrolling view. |
+| `ScanlineOverlay.qml` | The CRT effect layers above the whole window: scanlines, vignette, grain, flicker, hum bar and reflection, each behind its own `Loader` so an off effect costs no nodes. Parented to the window root (a page's `contentItem` cannot paint over the header). No shaders and never a `ShaderEffectSource` over the log. |
 | `ThemeEngine.qml` | `pragma Singleton` theme manager: active theme, flat bindable properties, `applyThemeJson()`, `applyBuiltinTheme()`, deterministic nick colours, avatar/link/alpha helpers, text escaping/linkifying, grouping helpers. |
 | `Theme.js` | `.pragma library` — theme data (built-ins + defaults), djb2 hashing, HSL derivation, message grouping maths, HTML escaping/linkifying. No Qt globals available here. |
-| `themes/*.json` | Built-in themes: `tui.json` (the default), `bbs.json`, `c64.json`, `vt.json`, `ega.json`, `synthwave.json`, `ai-slop.json`, `phosphor.json`, `amber.json`, `ice.json`, `breeze.json`. Canonical schema (see below). |
+| `themes/*.json` | Built-in themes: `tui.json` (the default), `bbs.json`, `c64.json`, `vt.json`, `ega.json`, `synthwave.json`, `ai-slop.json`, `crt.json`, `paper.json`, `gruvbox.json`, `phosphor.json`, `amber.json`, `ice.json`, `breeze.json`. Canonical schema (see below). |
 | `qmldir` | Module registration for `qmllint`/`qmlls` and for the `ThemeEngine` singleton. |
 
 `Theme.js` is the *only* JS module shipped next to the QML (see
@@ -119,6 +121,29 @@ content up to `5` lines (`FontMetrics.lineSpacing`) and then scrolls. It is
 disabled, with a "connect first" placeholder, while the bridge is not in state
 2. Sending is not echoed locally (see contract note 3).
 
+## Effects (global, not themed)
+
+Display effects are a property of the **window**, not of a palette, so they live in KConfig
+`[UI]` rather than in `themes/*.json` — which is why adding them needed no theme-schema bump.
+They come in two families and are controlled from the `[effects]` toolbar popup (one
+`[*]`/`[ ]` toggle each) with the per-effect amounts in the Settings Effects section:
+
+| Family | Effects | Keys |
+| --- | --- | --- |
+| Glass | frost/blur, sheen, edges, reflection | `GlassEffects`, `GlassIntensity`, `GlassBlur`, `GlassSheen`, `GlassEdges`, `Reflection`, `ReflectionAmount` |
+| CRT | scanlines, vignette, grain, flicker, hum bar | `Scanlines`, `Vignette`, `Grain`, `Flicker`, `HumBar` (+ `*Amount` 1..100 each) |
+
+Glass is on by default; every other effect defaults off, since an effect that sits over text
+should be opt-in. Toggling a glass row while the master is off turns the master on, so no row
+in the popup is ever a dead toggle. The `crt` theme is the palette *designed to pair with* the
+scanline effect rather than one that switches it on.
+
+Two rules decide whether an effect ships at all. It must need **no shader and no capture of the
+content** — a static tile, one animated rectangle, or an opacity animation; a
+`ShaderEffectSource` over the scrolling log is the performance trap this codebase has paid for
+twice, and `qml-tests/perf.sh` is what keeps it out. And with every effect off the window must
+be pixel-identical to a build without them.
+
 ## Theme engine
 
 `themes/*.json` is the user-facing schema. The C++ side reads theme files and
@@ -128,7 +153,8 @@ pushes them into the singleton; QML itself cannot touch the filesystem.
 // load ~/.config/kIRC/themes/mytheme.json (C++), then:
 ThemeEngine.applyThemeJson(rawJsonText)   // or a parsed object
 ThemeEngine.applyBuiltinTheme("tui")      // "tui" | "bbs" | "c64" | "vt" | "ega"
-                                          // | "synthwave" | "ai-slop" | "phosphor"
+                                          // | "synthwave" | "ai-slop" | "crt"
+                                          // | "paper" | "gruvbox" | "phosphor"
                                           // | "amber" | "ice" | "breeze"
 ThemeEngine.reset()
 ```
@@ -156,11 +182,21 @@ bubble branch.
 | `vt` | DEC-style phosphor, yellow-green |
 | `ega` | grey on black with DOS-blue panels |
 | `synthwave` | neon pink and cyan on deep purple |
-| `ai-slop` | self-aware neon violet — deep indigo field, electric-violet accent, magenta and cyan per-kind accents. The gradient energy comes from the glass sheen, which is tinted from the accent |
+| `ai-slop` | self-aware neon indigo — indigo field (cooled away from `synthwave`'s purple), lavender-white text, electric blue-violet accent. Neon magenta is reserved for actions, highlights and the unread badge, so it accents the window instead of tinting the field |
+| `crt` | colour CRT: near-black tube, warm off-white text, worn NTSC colour-bar accents (yellow, cyan, green, magenta, red, blue pulled slightly toward each other). The theme the scanline filter was asked for — it *pairs* with that effect, it does not carry it (see below) |
+| `paper` | **the only light theme** — teletype paper and two-colour ribbon ink: warm off-white field, near-black text, ribbon red for failures, ribbon blue for NOTICEs |
+| `gruvbox` | warm dark brown and cream with the palette's signature orange, red, yellow and aqua |
 | `phosphor` | green on black (P1 tube) |
 | `amber` | amber on black (classic CRT) |
 | `ice` | cold light-on-blue |
 | `breeze` | dense geometry with **empty colour tokens**: every colour follows `Kirigami.Theme`, so it matches Breeze Light / Breeze Dark / a custom scheme |
+
+**CRT scanlines are not a theme token.** The scanline / vignette amount is a
+global `[UI]` setting (read from KConfig and drawn by the window-wide scanline
+overlay), not part of this schema — a theme no longer describes it. `crt` is
+the palette built to *pair* with that effect rather than a theme that switches
+it on, and it is the only theme tuned with the overlay in mind (its off-white
+text and worn colour bars are what survive a scanline pass).
 
 **Per-kind colour (schema 4).** Seven `terminal.*` tokens — `fgEvent`,
 `fgMessage`, `fgPrivate`, `fgNotice`, `fgAction`, `fgHighlight`, `fgSelf` —

@@ -31,7 +31,10 @@ THEMES_DIR = os.path.join(ROOT, "rust/qml/themes")
 
 # Palette thresholds. "Contrast is the constraint, not the vibe."
 CONTRAST_MIN = 4.5   # every kind's text on the log surface
-DELTAE_MIN = 12.0    # pairwise separation of the kinds within a theme
+DELTAE_MIN = 14.0    # pairwise separation of the kinds within a theme.
+# The tightest shipped palette is `tui` at 14.05 (fgMessage/fgHighlight), so
+# 14.0 is the floor every theme actually clears; it was left at 12.0 once and
+# drifted.
 # ruleColor is 1px box-drawing furniture, not text: all palettes keep it
 # deliberately subtle (the neutral tui theme has sat at 1.50 since schema 3).
 RULE_CONTRAST_MIN = 1.2

@@ -40,7 +40,8 @@
 // set and exist to be *different rooms of the same museum*, not tints of one
 // another (see the palette notes above each theme).
 var BUILTIN_IDS = ["tui", "phosphor", "amber", "ice", "breeze",
-                   "bbs", "c64", "vt", "ega", "synthwave", "ai-slop"]
+                   "bbs", "c64", "vt", "ega", "synthwave", "ai-slop",
+                   "crt", "paper", "gruvbox"]
 
 // Older builds shipped other default ids; keep them working. The retired
 // bubble/glass ids resolve to the TUI default so applying one can never leave
@@ -55,7 +56,7 @@ var ALIASES = {
 }
 
 // --- built-in themes (mirror of qml/themes/*.json) --------------------------
-// All eleven are dense terminal palettes: monospace, flat, one line per message.
+// All fourteen are dense terminal palettes: monospace, flat, one line per message.
 //  * tui        neutral terminal — near-black log, grey text, cyan accent
 //  * phosphor   green on black (P1 tube)
 //  * amber      amber on black (classic CRT)
@@ -66,8 +67,13 @@ var ALIASES = {
 //  * vt         DEC VT-style yellow-green phosphor
 //  * ega        EGA/DOS 16-colour on black
 //  * synthwave  neon pink/cyan on deep purple
-//  * ai-slop    self-aware neon violet — the palette an LLM ships when asked
+//  * ai-slop    self-aware neon indigo — the palette an LLM ships when asked
 //               to "make it pop", executed well enough to actually use
+//  * crt        colour CRT: near-black tube, warm off-white text, worn NTSC
+//               colour-bar accents (pairs with the global scanline/vignette
+//               [UI] setting — the effect is not a theme token)
+//  * paper      the only light theme — teletype paper and two-colour ribbon ink
+//  * gruvbox    warm dark brown and cream, with the palette's orange and aqua
 // Colour tokens that are "" mean "fall back to the Kirigami palette at the
 // call site"; the geometry tokens carry the (flat) character.
 var builtins = {
@@ -864,10 +870,11 @@ var builtins = {
         }
     },
     // AI Slop: self-aware neon violet — the palette an LLM ships when asked to
-    // "make it pop". Deep indigo field, lavender-white text, electric-violet
-    // accent, neon magenta for actions and the unread badge, neon cyan / mint
-    // for private and notice kinds, hot pink-red for warnings. Geometry is the
-    // TUI console's (bubble zeros, no avatars) — this one is palette-led.
+    // "make it pop". Deep indigo field (cooled away from synthwave's purple),
+    // lavender-white text, electric blue-violet accent; neon magenta is reserved for
+    // actions, highlights and the unread badge, so it highlights instead of tinting the
+    // field. Neon cyan / mint carry private and notice kinds, hot pink-red warns.
+    // Geometry is the TUI console's (bubble zeros, no avatars).
     "ai-slop": {
         "id": "ai-slop",
         "name": "AI Slop",
@@ -898,29 +905,29 @@ var builtins = {
             "linkColor": "#8ff4ff"
         },
         "surfaces": {
-            "surface": "#140e26",
-            "surfaceAlt": "#1b1338",
-            "sidebarSurface": "#1b1338",
-            "cardBackground": "#221847",
-            "cardBorder": "#3b2a6b",
+            "surface": "#141046",
+            "surfaceAlt": "#1b1757",
+            "sidebarSurface": "#191552",
+            "cardBackground": "#1f1a5f",
+            "cardBorder": "#37327e",
             "cardRadius": 0,
             "cardPadding": 8,
             "rowRadius": 0,
-            "rowHover": "#241a4d",
-            "rowSelected": "#2f2263",
+            "rowHover": "#211c63",
+            "rowSelected": "#2a2474",
             "rowHeight": 24,
-            "accent": "#a86cff",
-            "accentText": "#140e26",
-            "mutedText": "#9d8ad0",
-            "sectionHeader": "#c9b6ff",
+            "accent": "#8b96ff",
+            "accentText": "#141046",
+            "mutedText": "#8a8ad8",
+            "sectionHeader": "#b9b6ff",
             "sectionHeaderSize": 0,
-            "eventText": "#9d8ad0",
+            "eventText": "#8a8ad8",
             "eventSize": 0,
             "statusOnline": "#7dffc4",
             "statusAway": "#ffd166",
             "statusOffline": "#6d55a8",
             "unreadBadge": "#ff5cf0",
-            "unreadBadgeText": "#140e26",
+            "unreadBadgeText": "#141046",
             "inputRadius": 0,
             "shadowOpacity": 0,
             "headerHeight": 40
@@ -929,21 +936,264 @@ var builtins = {
             "fontFamily": "monospace",
             "gutterWidth": 64,
             "nickColumn": 9,
-            "ruleColor": "#3b2a6b",
-            "fgPrimary": "#e9e2ff",
-            "fgDim": "#9d8ad0",
-            "fgAccent": "#a86cff",
+            "ruleColor": "#2f2a70",
+            "fgPrimary": "#e6e4ff",
+            "fgDim": "#8a8ad8",
+            "fgAccent": "#8b96ff",
             "fgWarn": "#ff4d6d",
-            "bgPanel": "#1b1338",
-            "bgLog": "#140e26",
-            "bgInput": "#241a4d",
-            "fgEvent": "#9d8ad0",
-            "fgMessage": "#e9e2ff",
+            "bgPanel": "#1b1757",
+            "bgLog": "#141046",
+            "bgInput": "#211c63",
+            "fgEvent": "#8a8ad8",
+            "fgMessage": "#d6d6ff",
             "fgPrivate": "#5cf6ff",
             "fgNotice": "#7dffc4",
             "fgAction": "#ff6ee7",
-            "fgHighlight": "#ffffff",
+            "fgHighlight": "#ffc9f0",
             "fgSelf": "#b8f0ff"
+        }
+    },
+    // Colour CRT: near-black tube, warm off-white text, worn NTSC
+    // colour-bar accents. Paired, not wired: the scanline/vignette
+    // amount is a global KConfig [UI] setting, so this theme carries
+    // only the tube's palette.
+    "crt": {
+        "id": "crt",
+        "name": "CRT",
+        "schema": 4,
+        "mode": "dense",
+        "bubble": {
+            "radius": 0,
+            "spacing": 0,
+            "groupSpacing": 0,
+            "tailRadius": 0,
+            "maxWidthFraction": 1.0,
+            "selfColor": "",
+            "otherColor": ""
+        },
+        "dense": { "lineSpacing": 2 },
+        "avatar": { "enabled": false, "size": 0 },
+        "grouping": { "enabled": true, "windowMinutes": 5 },
+        "motion": { "enabled": true, "duration": 90 },
+        "sidebar": { "width": 0 },
+        "fonts": { "messageSize": 0, "timestampSize": 0, "nickSize": 0 },
+        "colors": {
+            "nickSatMin": 0.5,
+            "nickSatMax": 0.8,
+            "nickLightnessDark": 0.72,
+            "nickLightnessLight": 0.34,
+            "linkify": true,
+            "highlightIsBold": true,
+            "linkColor": ""
+        },
+        "surfaces": {
+            "surface": "#0a0908",
+            "surfaceAlt": "#131110",
+            "sidebarSurface": "#100e0c",
+            "cardBackground": "#131110",
+            "cardBorder": "#3a342a",
+            "cardRadius": 0,
+            "cardPadding": 8,
+            "rowRadius": 0,
+            "rowHover": "#1a1713",
+            "rowSelected": "#24201a",
+            "rowHeight": 24,
+            "accent": "#ffc94a",
+            "accentText": "#0a0908",
+            "mutedText": "#8a8069",
+            "sectionHeader": "#6fd08c",
+            "sectionHeaderSize": 0,
+            "eventText": "#8a8069",
+            "eventSize": 0,
+            "statusOnline": "#6fd08c",
+            "statusAway": "#e0c23c",
+            "statusOffline": "#5c5445",
+            "unreadBadge": "#ffc94a",
+            "unreadBadgeText": "#0a0908",
+            "inputRadius": 0,
+            "shadowOpacity": 0,
+            "headerHeight": 40
+        },
+        "terminal": {
+            "fontFamily": "monospace",
+            "gutterWidth": 64,
+            "nickColumn": 9,
+            "ruleColor": "#2e2a24",
+            "fgPrimary": "#e8ddc8",
+            "fgDim": "#8a8069",
+            "fgAccent": "#6fd08c",
+            "fgWarn": "#e0604f",
+            "bgPanel": "#131110",
+            "bgLog": "#0a0908",
+            "bgInput": "#100e0c",
+            "fgEvent": "#8a8069",
+            "fgMessage": "#d8cdb4",
+            "fgPrivate": "#e0c23c",
+            "fgNotice": "#5fd0c8",
+            "fgAction": "#cf6cb4",
+            "fgHighlight": "#fdf6e6",
+            "fgSelf": "#9cc0e8"
+        }
+    },
+    // Paper: the only light theme — teletype paper and two-colour
+    // ribbon ink. Warm off-white field, near-black text, ribbon red for
+    // warnings and failures, ribbon blue for NOTICEs.
+    "paper": {
+        "id": "paper",
+        "name": "Paper",
+        "schema": 4,
+        "mode": "dense",
+        "bubble": {
+            "radius": 0,
+            "spacing": 0,
+            "groupSpacing": 0,
+            "tailRadius": 0,
+            "maxWidthFraction": 1.0,
+            "selfColor": "",
+            "otherColor": ""
+        },
+        "dense": { "lineSpacing": 2 },
+        "avatar": { "enabled": false, "size": 0 },
+        "grouping": { "enabled": true, "windowMinutes": 5 },
+        "motion": { "enabled": true, "duration": 90 },
+        "sidebar": { "width": 0 },
+        "fonts": { "messageSize": 0, "timestampSize": 0, "nickSize": 0 },
+        "colors": {
+            "nickSatMin": 0.45,
+            "nickSatMax": 0.7,
+            "nickLightnessDark": 0.55,
+            "nickLightnessLight": 0.3,
+            "linkify": true,
+            "highlightIsBold": true,
+            "linkColor": ""
+        },
+        "surfaces": {
+            "surface": "#f4efe2",
+            "surfaceAlt": "#eae3d2",
+            "sidebarSurface": "#efe9da",
+            "cardBackground": "#eae3d2",
+            "cardBorder": "#c9c0ab",
+            "cardRadius": 0,
+            "cardPadding": 8,
+            "rowRadius": 0,
+            "rowHover": "#e6dfcd",
+            "rowSelected": "#dcd4c0",
+            "rowHeight": 24,
+            "accent": "#a83226",
+            "accentText": "#f8f4e9",
+            "mutedText": "#6b6151",
+            "sectionHeader": "#1f4fa8",
+            "sectionHeaderSize": 0,
+            "eventText": "#6b6151",
+            "eventSize": 0,
+            "statusOnline": "#2f6b3a",
+            "statusAway": "#8a5a2b",
+            "statusOffline": "#9a9080",
+            "unreadBadge": "#a83226",
+            "unreadBadgeText": "#f8f4e9",
+            "inputRadius": 0,
+            "shadowOpacity": 0,
+            "headerHeight": 40
+        },
+        "terminal": {
+            "fontFamily": "monospace",
+            "gutterWidth": 64,
+            "nickColumn": 9,
+            "ruleColor": "#c9c0ab",
+            "fgPrimary": "#2e2a22",
+            "fgDim": "#6b6151",
+            "fgAccent": "#c0392b",
+            "fgWarn": "#9e1f14",
+            "bgPanel": "#eae3d2",
+            "bgLog": "#f4efe2",
+            "bgInput": "#efe9da",
+            "fgEvent": "#6b6151",
+            "fgMessage": "#2e2a22",
+            "fgPrivate": "#8a5a2b",
+            "fgNotice": "#1f4fa8",
+            "fgAction": "#8e2f7a",
+            "fgHighlight": "#000000",
+            "fgSelf": "#1e3a2e"
+        }
+    },
+    // Gruvbox: warm dark brown and cream with the palette's orange,
+    // red, yellow and aqua. Nothing else in the set is warm-dark.
+    "gruvbox": {
+        "id": "gruvbox",
+        "name": "Gruvbox",
+        "schema": 4,
+        "mode": "dense",
+        "bubble": {
+            "radius": 0,
+            "spacing": 0,
+            "groupSpacing": 0,
+            "tailRadius": 0,
+            "maxWidthFraction": 1.0,
+            "selfColor": "",
+            "otherColor": ""
+        },
+        "dense": { "lineSpacing": 2 },
+        "avatar": { "enabled": false, "size": 0 },
+        "grouping": { "enabled": true, "windowMinutes": 5 },
+        "motion": { "enabled": true, "duration": 90 },
+        "sidebar": { "width": 0 },
+        "fonts": { "messageSize": 0, "timestampSize": 0, "nickSize": 0 },
+        "colors": {
+            "nickSatMin": 0.5,
+            "nickSatMax": 0.8,
+            "nickLightnessDark": 0.72,
+            "nickLightnessLight": 0.3,
+            "linkify": true,
+            "highlightIsBold": true,
+            "linkColor": ""
+        },
+        "surfaces": {
+            "surface": "#1d2021",
+            "surfaceAlt": "#282828",
+            "sidebarSurface": "#252322",
+            "cardBackground": "#282828",
+            "cardBorder": "#504945",
+            "cardRadius": 0,
+            "cardPadding": 8,
+            "rowRadius": 0,
+            "rowHover": "#32302f",
+            "rowSelected": "#3c3836",
+            "rowHeight": 24,
+            "accent": "#fe8019",
+            "accentText": "#1d2021",
+            "mutedText": "#a89984",
+            "sectionHeader": "#fabd2f",
+            "sectionHeaderSize": 0,
+            "eventText": "#a89984",
+            "eventSize": 0,
+            "statusOnline": "#b8bb26",
+            "statusAway": "#fabd2f",
+            "statusOffline": "#7c6f64",
+            "unreadBadge": "#fb4934",
+            "unreadBadgeText": "#1d2021",
+            "inputRadius": 0,
+            "shadowOpacity": 0,
+            "headerHeight": 40
+        },
+        "terminal": {
+            "fontFamily": "monospace",
+            "gutterWidth": 64,
+            "nickColumn": 9,
+            "ruleColor": "#3c3836",
+            "fgPrimary": "#ebdbb2",
+            "fgDim": "#a89984",
+            "fgAccent": "#fe8019",
+            "fgWarn": "#fb4934",
+            "bgPanel": "#282828",
+            "bgLog": "#1d2021",
+            "bgInput": "#32302f",
+            "fgEvent": "#a89984",
+            "fgMessage": "#d5c4a1",
+            "fgPrivate": "#fabd2f",
+            "fgNotice": "#83a598",
+            "fgAction": "#d3869b",
+            "fgHighlight": "#fbf1c7",
+            "fgSelf": "#8ec07c"
         }
     }
 }

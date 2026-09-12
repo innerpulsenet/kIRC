@@ -1,0 +1,95 @@
+{
+    "id": "gruvbox",
+    "name": "Gruvbox",
+    "schema": 4,
+    "mode": "dense",
+    "bubble": {
+        "radius": 0,
+        "spacing": 0,
+        "groupSpacing": 0,
+        "tailRadius": 0,
+        "maxWidthFraction": 1.0,
+        "selfColor": "",
+        "otherColor": ""
+    },
+    "dense": {
+        "lineSpacing": 2
+    },
+    "avatar": {
+        "enabled": false,
+        "size": 0
+    },
+    "grouping": {
+        "enabled": true,
+        "windowMinutes": 5
+    },
+    "motion": {
+        "enabled": true,
+        "duration": 90
+    },
+    "sidebar": {
+        "width": 0
+    },
+    "fonts": {
+        "messageSize": 0,
+        "timestampSize": 0,
+        "nickSize": 0
+    },
+    "colors": {
+        "nickSatMin": 0.5,
+        "nickSatMax": 0.8,
+        "nickLightnessDark": 0.72,
+        "nickLightnessLight": 0.3,
+        "linkify": true,
+        "highlightIsBold": true,
+        "linkColor": ""
+    },
+    "surfaces": {
+        "surface": "#1d2021",
+        "surfaceAlt": "#282828",
+        "sidebarSurface": "#252322",
+        "cardBackground": "#282828",
+        "cardBorder": "#504945",
+        "cardRadius": 0,
+        "cardPadding": 8,
+        "rowRadius": 0,
+        "rowHover": "#32302f",
+        "rowSelected": "#3c3836",
+        "rowHeight": 24,
+        "accent": "#fe8019",
+        "accentText": "#1d2021",
+        "mutedText": "#a89984",
+        "sectionHeader": "#fabd2f",
+        "sectionHeaderSize": 0,
+        "eventText": "#a89984",
+        "eventSize": 0,
+        "statusOnline": "#b8bb26",
+        "statusAway": "#fabd2f",
+        "statusOffline": "#7c6f64",
+        "unreadBadge": "#fb4934",
+        "unreadBadgeText": "#1d2021",
+        "inputRadius": 0,
+        "shadowOpacity": 0,
+        "headerHeight": 40
+    },
+    "terminal": {
+        "fontFamily": "monospace",
+        "gutterWidth": 64,
+        "nickColumn": 9,
+        "ruleColor": "#3c3836",
+        "fgPrimary": "#ebdbb2",
+        "fgDim": "#a89984",
+        "fgAccent": "#fe8019",
+        "fgWarn": "#fb4934",
+        "bgPanel": "#282828",
+        "bgLog": "#1d2021",
+        "bgInput": "#32302f",
+        "fgEvent": "#a89984",
+        "fgMessage": "#d5c4a1",
+        "fgPrivate": "#fabd2f",
+        "fgNotice": "#83a598",
+        "fgAction": "#d3869b",
+        "fgHighlight": "#fbf1c7",
+        "fgSelf": "#8ec07c"
+    }
+}
