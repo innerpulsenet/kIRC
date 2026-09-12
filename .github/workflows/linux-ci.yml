@@ -116,14 +116,40 @@ jobs:
           test -d /usr/lib64/qt6/qml/org/kde/kirigami/layouts \
             || { echo 'MISSING: .../kirigami/layouts'; exit 1; }
       - name: Harness stage tokens (theme table)
+        id: tokens
+        continue-on-error: true
         run: KIRC_QML_TEST_STAGE=tokens ./qml-tests/run.sh
       - name: Harness stage smoke (UI flow)
+        id: smoke
+        continue-on-error: true
         run: KIRC_QML_TEST_STAGE=smoke ./qml-tests/run.sh
       - name: Harness stage cmds (slash commands)
+        id: cmds
+        continue-on-error: true
         run: KIRC_QML_TEST_STAGE=cmds ./qml-tests/run.sh
       - name: Harness stage scroll (autoscroll)
+        id: scroll
+        continue-on-error: true
         run: KIRC_QML_TEST_STAGE=scroll ./qml-tests/run.sh
       - name: Harness stage glass (QML effects)
+        id: glass
+        continue-on-error: true
         run: KIRC_QML_TEST_STAGE=glass ./qml-tests/run.sh
       - name: Harness stage config (C++ glass/CRT)
+        id: config
+        continue-on-error: true
         run: KIRC_QML_TEST_STAGE=config ./qml-tests/run.sh
+      # A harness stage failing must still fail the job once all stages have
+      # reported (continue-on-error above only lets the later stages run so
+      # one push shows the complete pass/fail pattern).
+      - name: Gate on harness results
+        if: >-
+          steps.tokens.outcome == 'failure' ||
+          steps.smoke.outcome == 'failure' ||
+          steps.cmds.outcome == 'failure' ||
+          steps.scroll.outcome == 'failure' ||
+          steps.glass.outcome == 'failure' ||
+          steps.config.outcome == 'failure'
+        run: |
+          echo "One or more QML harness stages failed (see the step outcomes above)."
+          exit 1
