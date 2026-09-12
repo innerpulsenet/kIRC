@@ -33,7 +33,7 @@ cp "$here"/IrcBridge.qml "$here"/MessageListModel.qml "$tmp/org/kde/kirc/"
 printf 'module org.kde.kirc\nsingleton ThemeEngine 1.0 ThemeEngine.qml\nIrcBridge 1.0 IrcBridge.qml\nMessageListModel 1.0 MessageListModel.qml\nChatPage 1.0 ChatPage.qml\nConnectPage 1.0 ConnectPage.qml\nMessageDelegate 1.0 MessageDelegate.qml\n' \
     > "$tmp/org/kde/kirc/qmldir"
 
-cp "$here"/tst_smoke.qml "$here"/tst_cmds.qml "$tmp/"
+cp "$here"/tst_smoke.qml "$here"/tst_cmds.qml "$here"/tst_scroll.qml "$tmp/"
 
 # QT_FORCE_STDERR_LOGGING: without it Qt logs to the journal, not the terminal.
 run_qml() {
@@ -47,7 +47,12 @@ run_qml() {
 # Stage 2: the slash-command contract — each command's wire line, /help
 # output, malformed-argument rejection and command tab-completion, asserted
 # on the recording bridge double.
+# Stage 3: follow-the-tail autoscroll — position-based assertions that the
+# log stays pinned while following (including a row whose delegate height
+# resolves after insertion), that appends never yank a scrolled-up user,
+# and that the pill / a manual return / a buffer switch recover following.
 status=0
 run_qml "$tmp/tst_smoke.qml" || status=1
 run_qml "$tmp/tst_cmds.qml" || status=1
+run_qml "$tmp/tst_scroll.qml" || status=1
 exit "$status"

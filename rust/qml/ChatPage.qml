@@ -160,6 +160,26 @@ Kirigami.Page {
     property bool topicExpanded: false
     // The user scrolled up and traffic arrived below: offer a way back down.
     property bool hasUnseenBelow: false
+    // Follow-the-tail state: true while the log is following live traffic.
+    // While set, the view is re-pinned whenever the content changes; it is
+    // cleared only by real user movement away from the tail (drag / flick /
+    // wheel) and re-armed by returning to the end, by the
+    // "[ new messages ]" pill, and by opening or switching a buffer.
+    property bool followTail: true
+    // Pixels of slop for "at the end": a fractional offset — or a pin that
+    // lands mid-frame — must never read as "the user scrolled up".
+    readonly property real tailTolerance: Math.max(2, Math.round(page.rowHt / 4))
+    // Guards this page's own positionViewAtEnd() runs: contentY changes
+    // under the guard are ours, not user movement, so they are never
+    // classified (and never clear following).
+    property bool pinGuard: false
+    // One coalesced follow-up pin: a delegate's real height can resolve
+    // *during* the pin itself, leaving the view short with no further
+    // signal queued to repair it.
+    property bool repinScheduled: false
+    // Bounded retries for that follow-up, so a pathological layout cannot
+    // spin.  Reset whenever a pin lands flush with the tail.
+    property int repinMisses: 0
 
     title: page.channelLabel(page.currentChannel)
     padding: 0
@@ -212,13 +232,16 @@ Kirigami.Page {
                 // this is one begin/endInsertRows instead of a whole-buffer
                 // model reset per line.  A line for any other buffer is a
                 // no-op inside the model and shows up when it is opened.
-                // Autoscroll stays conditional: pin to the bottom only when
-                // the view is already there or the line is our own echo —
-                // never yank a user who scrolled up to read.
-                var stick = is_self || messageView.atYEnd
+                // Autoscroll follows the explicit `followTail` state instead
+                // of a fresh atYEnd sample: our own echo always sticks, a
+                // user who scrolled up is never yanked.  While following, the
+                // pin is re-run on every content-height change (see the
+                // ListView handlers) — a row whose height resolves after
+                // insertion must not leave the view a few pixels short and
+                // latch following off.
+                var stick = page.followTail || is_self
                 msgModel.append_message(target, nick, text, timestamp, is_self, is_highlight)
                 if (stick) {
-                    page.hasUnseenBelow = false
                     page.scrollToEnd()
                 } else {
                     page.hasUnseenBelow = true
@@ -940,9 +963,60 @@ Kirigami.Page {
                     // Keep self-message rows out of the overlay scrollbar gutter.
                     rightMargin: Kirigami.Units.smallSpacing * 2
 
+                    // ---- follow-the-tail ---------------------------------- //
+                    // While `page.followTail` is set, re-pin on every
+                    // content-height change — not only at append time.  A
+                    // wrapping row's real height resolves a frame AFTER its
+                    // insertion, so a single pin at append time can settle a
+                    // few pixels short of the end; this is what repairs it.
+                    onContentHeightChanged: {
+                        if (page.followTail && !moving) {
+                            page.repinToTail()
+                        }
+                    }
+
+                    // The viewport itself can change height a frame after a
+                    // buffer opens (the page chrome settles).  The pin is a
+                    // viewport-height correction too: without this, a shrink
+                    // pushes the tail below the fold with no content signal
+                    // to repair it.
+                    onHeightChanged: {
+                        if (page.followTail && !moving) {
+                            page.repinToTail()
+                        }
+                    }
+
+                    // A contentY change this page did not make is real user
+                    // movement (drag, flick, wheel, scrollbar).  Classify the
+                    // resulting position: leaving the tail stops following,
+                    // coming back resumes it.  Our own pins run under
+                    // `pinGuard`, so they never land here.
+                    onContentYChanged: {
+                        if (!page.pinGuard) {
+                            page.classifyFollowPosition()
+                        }
+                    }
+
+                    // A drag/flick has stopped: classify where it ended (a
+                    // gesture that ends at the tail keeps following) and, if
+                    // still following, pick up anything that grew while the
+                    // gesture was in progress.
+                    onMovementEnded: {
+                        if (page.pinGuard) {
+                            return
+                        }
+                        page.classifyFollowPosition()
+                        if (page.followTail) {
+                            page.repinToTail()
+                        }
+                    }
+
                     onAtYEndChanged: {
                         if (atYEnd) {
                             page.hasUnseenBelow = false
+                            if (!page.pinGuard && !page.followTail) {
+                                page.followTail = true
+                            }
                         }
                     }
 
@@ -1504,6 +1578,10 @@ Kirigami.Page {
         }
         page.joinError = ""
         page.hasUnseenBelow = false
+        // Opening/switching a buffer lands at the bottom and resumes
+        // following (the disconnect path resets here too: state 0 opens the
+        // server console).
+        page.followTail = true
         page.topicExpanded = false
         page.refreshHistory()
         if (page.bridge !== null) {
@@ -1611,18 +1689,118 @@ Kirigami.Page {
         page.scrollToEnd()
     }
 
+    // ---------------------------------------------------------------------- //
+    // Follow-the-tail state
+    //
+    // `page.followTail` is the single source of truth for autoscroll — no
+    // handler samples `atYEnd` on its own.  The pin runs here (guarded), is
+    // re-run whenever the content changes (see the ListView handlers), and
+    // is only turned off by real user movement that ends away from the tail.
+    // ---------------------------------------------------------------------- //
+
+    /// True when the log is showing the tail: the last row's delegate sits
+    /// flush with the bottom edge of the viewport.  Position-based, because
+    /// the view's own layout estimate can disagree with the real delegate
+    /// positions for a frame or two; when the tail delegate is not
+    /// instantiated, the flickable geometry decides.
+    function atTail()
+    {
+        if (messageView.count === 0) {
+            return true
+        }
+        var tol = page.tailTolerance
+        var maxY = Math.max(0, messageView.contentHeight - messageView.height)
+        if (maxY <= 0) {
+            return true
+        }
+        var last = messageView.itemAtIndex(messageView.count - 1)
+        if (last !== null) {
+            var gap = (last.y + last.height) - (messageView.contentY + messageView.height)
+            if (gap <= tol && gap >= -(messageView.bottomMargin + tol)) {
+                return true
+            }
+        }
+        // No tail delegate to measure (the view is far from the end): the
+        // flickable geometry decides — and only both-sided, because while
+        // rows are still unmeasured `contentHeight` can under-estimate the
+        // real end, and "past the estimated maxY" must not read as "at the
+        // tail" for a user who is visibly far above it.
+        return Math.abs(maxY - messageView.contentY) <= tol
+    }
+
+    /// Re-sample "is the user following" after movement this page did not
+    /// make: returning to the tail resumes following, moving away stops it.
+    function classifyFollowPosition()
+    {
+        var tail = page.atTail()
+        if (tail === page.followTail) {
+            return
+        }
+        page.followTail = tail
+        if (tail) {
+            page.hasUnseenBelow = false
+        }
+    }
+
+    /// Pin the log to the tail and re-arm following — the deliberate
+    /// "go to the tail" intent (open a buffer, click the pill, send a line).
+    function scrollToEnd()
+    {
+        page.followTail = true
+        page.hasUnseenBelow = false
+        page.repinMisses = 0
+        page.repinToTail()
+    }
+
+    /// Conditional autoscroll for reloaded content: re-pin when the user is
+    /// following the tail, but never yank a user who scrolled up to read back.
     function scrollIfAtBottom()
     {
-        // Conditional autoscroll for live traffic: stay pinned when already at
-        // the bottom, but never yank a user who scrolled up to read back.
-        if (messageView.atYEnd) {
+        if (page.followTail) {
             page.scrollToEnd()
         }
     }
 
-    function scrollToEnd()
+    /// The guarded positionViewAtEnd() run plus a follow-up check: a
+    /// delegate's real height can resolve while the pin is already running,
+    /// leaving the view a few pixels short with no further signal to repair
+    /// it — queue one more pin (bounded) so the view always ends flush with
+    /// the tail.
+    function repinToTail()
     {
+        if (page.pinGuard) {
+            return
+        }
+        page.pinGuard = true
         messageView.positionViewAtEnd()
+        page.pinGuard = false
+        if (!page.followTail) {
+            return
+        }
+        if (page.atTail()) {
+            page.repinMisses = 0
+            return
+        }
+        if (page.repinMisses >= 8) {
+            return
+        }
+        page.repinMisses += 1
+        page.queueRepin()
+    }
+
+    /// One coalesced follow-up pin on the next event-loop turn.
+    function queueRepin()
+    {
+        if (page.repinScheduled) {
+            return
+        }
+        page.repinScheduled = true
+        Qt.callLater(function() {
+            page.repinScheduled = false
+            if (page.followTail) {
+                page.repinToTail()
+            }
+        })
     }
 
     function sendCurrent()

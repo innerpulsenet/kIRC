@@ -50,6 +50,13 @@ What it covers:
 * Switching to `amber` and back to `tui` repaints the log in the terminal
   palettes (every built-in theme is a dense monospace palette).
 * `disconnect_server()` / `state_changed(0)` falls back to the connection form.
+* Follow-the-tail autoscroll (`tst_scroll.qml`): position-based assertions
+  that the log stays pinned at the end while following — no cumulative
+  drift across K live appends, including a tall wrapped row whose delegate
+  height resolves after insertion — that an append never moves a
+  scrolled-up view (and raises the "[ new messages ]" pill), that clicking
+  the pill / a manual return / a buffer switch / a disconnect reset recover
+  following, and that a real kinetic `flick()` away stops it.
 * Theme engine units: built-in loading (the `tui` default and the rest of the
   terminal palettes), retired-id aliases (`oxygen`/`neon`/… resolve to `tui`),
   unknown-id errors, malformed JSON does not clobber the active theme, partial
@@ -72,8 +79,9 @@ Caveats:
 
 ## Command harness
 
-`qml-tests/run.sh` runs two stages: the UI smoke flow (`tst_smoke.qml`) and the
-slash-command contract (`tst_cmds.qml`). The command stage loads the real
+`qml-tests/run.sh` runs three stages: the UI smoke flow (`tst_smoke.qml`),
+the slash-command contract (`tst_cmds.qml`) and the follow-the-tail
+autoscroll contract (`tst_scroll.qml`). The command stage loads the real
 `ChatPage.qml` against the recording `IrcBridge` double (`calls` / `callTrace()`,
 cleared per case) and drives `runSlash()` with the lines a user types, asserting
 the exact call sequence each one produces: the wire line for hand-built
@@ -83,6 +91,36 @@ commands, the bridge invokable (`send_message`, `join_channel`, `part_channel`,
 rejection, `/raw` newline rejection), and command tab-completion through both
 `nextCompletion()` and the real composer (`tabComplete()`). Exit code 0 = every
 stage passed.
+
+## Scroll harness
+
+`tst_scroll.qml` (third stage of `run.sh`) loads the real `ChatPage.qml` into a
+sized item and drives live traffic through the real `message_received` signal,
+then asserts on POSITIONS, never on appearances. The metric is the *tail gap* —
+`(lastDelegate.y + lastDelegate.height) - (contentY + view.height)` — i.e. how
+far the last row's bottom edge sits below the viewport bottom (0 = flush with
+the end; the bug's signature is a gap that grows by a row height per message).
+
+It proves:
+
+1. **Following** — after opening a long buffer, eight appends each leave the
+   view flush (gap ~0, never accumulating); a tall wrapped row, whose real
+   height resolves a frame after insertion, also lands flush and is followed.
+2. **Scrolled up** — moving the view up stops following; an append leaves
+   `contentY` byte-identical and shows the `[ new messages ]` pill. A real
+   kinetic `flick()` gesture away gets the same assertions.
+3. **Recovery** — clicking the pill, and scrolling back to the end manually,
+   both re-arm following; the next append moves the view and lands flush.
+4. **Buffer switch + reset** — opening another buffer lands at the bottom with
+   following re-armed (its appends follow); a disconnect resets to the server
+   console and follows again; our own echo still pins and resumes following.
+
+Settling: every assertion runs after a poll that requires `contentY`,
+`contentHeight`, the view height, the row count *and* the flickable's
+`moving`/`flicking` flags to be unchanged for four consecutive frames, so
+deferred delegate-height resolution is included rather than raced. A watchdog
+fails the run loudly instead of hanging, and a settle that never comes to rest
+is itself reported as a failure.
 
 ## Perf harness
 
