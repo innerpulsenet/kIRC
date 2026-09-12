@@ -10,15 +10,35 @@
 
 cmake_minimum_required(VERSION 3.24)
 
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_AUTOMOC ON)
+
+# ---------------------------------------------------------------------------
+# Toolchain pinning (Windows + Ninja).
+#
+# With the Ninja generator CMake's compiler probe takes the first usable
+# clang++ on PATH; a Craft/LLVM clang++ that happens to be there is picked
+# ahead of MSVC's cl.exe.  That breaks the Rust side: Corrosion exports
+# CMAKE_CXX_COMPILER to cargo as CXX, and cc-rs then builds the `cxx` runtime
+# with -std=c++11, which the MSVC STL refuses to parse under clang (deduced
+# return types, constexpr void, ...).  The supported toolchain for this port
+# is MSVC cl.exe from a vcvarsall environment, so pin it before project()
+# unless the caller chose a compiler explicitly
+# (-DCMAKE_CXX_COMPILER=... or $CXX).
+# ---------------------------------------------------------------------------
+if(WIN32 AND NOT CMAKE_CXX_COMPILER AND NOT DEFINED ENV{CXX})
+    find_program(KIRC_MSVC_CXX NAMES cl)
+    if(KIRC_MSVC_CXX)
+        set(CMAKE_CXX_COMPILER "${KIRC_MSVC_CXX}")
+    endif()
+endif()
+
 project(kIRC
     VERSION 1.0.0
     DESCRIPTION "KDE Kirigami IRCv3 client"
     LANGUAGES CXX
 )
-
-set(CMAKE_CXX_STANDARD 17)
-set(CMAKE_CXX_STANDARD_REQUIRED ON)
-set(CMAKE_AUTOMOC ON)
 
 include(GNUInstallDirs)
 
@@ -154,15 +174,32 @@ qt_add_executable(kIRC
 )
 
 if(WIN32)
+    # AUTORCC on this target only, so the .qrc below is actually compiled in.
+    # qt_add_resources() is NOT an alternative here: its Qt 6 target form has
+    # no QRC keyword — a "QRC <file>" call leaves FILES empty and
+    # _qt_internal_process_resource() returns silently, generating nothing.
+    set_target_properties(kIRC PROPERTIES AUTORCC ON)
     target_sources(kIRC PRIVATE
         cpp/secretstore_windows.cpp
         cpp/kirctray_windows.cpp
         cpp/kircnotify_windows.cpp
-        cpp/kirc-windows.qrc
         cpp/kirc.rc
+        cpp/kirc-windows.qrc
     )
+    # cpp/kirc-windows.qrc embeds packaging/icons/hicolor/<size>x<size>/apps/
+    # kirc.png under the aliases :/kirc/icons/<size>x<size>/kirc.png, which is
+    # what the tray fallback (cpp/kirctray_windows.cpp) and the app icon
+    # (cpp/main.cpp embeddedAppIcon) look up at runtime.
     # Credential Manager APIs (CredReadW/CredWriteW/CredDeleteW).
     target_link_libraries(kIRC PRIVATE Advapi32)
+    # The executable's MSVC import library is written as kIRC.lib next to
+    # kIRC.exe, and the Rust staticlib arrives in the same directory as
+    # kirc.lib (see cxx_qt_import_crate above).  NTFS names are
+    # case-insensitive, so link.exe aborts with LNK1149 ("output filename
+    # matches input filename 'kIRC.lib'").  Keep the import library in its own
+    # subdirectory so the two can never collide.
+    set_target_properties(kIRC PROPERTIES
+        ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/kIRC-implib")
 else()
     target_sources(kIRC PRIVATE
         cpp/secretstore_kwallet.cpp

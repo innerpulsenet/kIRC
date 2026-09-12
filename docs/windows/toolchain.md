@@ -90,6 +90,30 @@ there are Qt5-era `libs/qt/*` blueprints with clashing short names.
 - Rust engine suite (`cargo test --locked --manifest-path rust/core/Cargo.toml`):
   94/94 passed on this machine (2026-09-12), identical to the Linux baseline
   recorded in the port plan (50 unit + 8 API + 11 parser + 24 loopback + 1 doc).
-- CXX-Qt 0.10 + Kirigami minimal application (MSVC + Rust staticlib + Qt
-  6.11.1 from Craft): see the Phase 1 spike summary in the port branch
-  history.
+- CXX-Qt 0.10 + Kirigami spike (MSVC + Rust staticlib + Qt 6.11.1 from Craft,
+  `org.kde.kirigami` + `org.kde.kirigami.layouts` + Basic style):
+  **PASS** — clean build and 6-second offscreen run verified 2026-09-12.
+  One spike-only pitfall recorded: a bridge that passes only plain integers
+  across the CXX boundary lets rustc dead-strip `cxx-qt-lib` from the
+  staticlib while the generated initializer still calls into it
+  (`LNK2019: cxx_qt_init_crate_cxx_qt_lib`); the real kIRC bridge uses
+  cxx-qt-lib types (QString/QHash/QModelIndex) everywhere and is immune.
+- Full kIRC application on Windows (Phase 2 platform split): builds with
+  Ninja Release (MSVC 14.44, Rust 1.98.1, Qt 6.11.1/KF6 6.30.0 from Craft)
+  and survives an offscreen 8-second smoke run with the real QML UI loaded
+  (2026-09-12). Known environment noise in offscreen runs: Craft's Qt has no
+  `lib/fonts` directory (deployment bundles fonts later).
+- Windows-specific build findings recorded for future reference:
+  - Craft's `clang++.exe` on PATH can hijack CMake's compiler probe under
+    Ninja; the project pins `CMAKE_CXX_COMPILER` to `cl.exe` on WIN32 before
+    `project()`.
+  - The exe's MSVC import library (`kIRC.lib`) collides case-insensitively
+    with corrosion's copied Rust staticlib (`kirc.lib`); the import library
+    is redirected to a `kIRC-implib/` subdirectory.
+  - Qt 6's `qt_add_resources(<target> ...)` target form has no `QRC`
+    keyword: a `QRC <file>` call is silently dropped (empty `FILES` makes
+    `_qt_internal_process_resource` return without error) and produces no
+    resources. The embedded Windows icons therefore use target-local
+    `AUTORCC` with `cpp/kirc-windows.qrc` in `target_sources()`.
+- Linux build of the refactored tree: not yet re-verified on this Windows-only
+  machine; covered by the RPM CI workflow when the port branch merges.

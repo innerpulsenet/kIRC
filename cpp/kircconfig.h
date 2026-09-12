@@ -120,6 +120,12 @@ class KircConfig : public QObject
 public:
     explicit KircConfig(QObject *parent = nullptr);
 
+    /// Out of line (defined in kircconfig.cpp where secretstore.h is
+    /// complete): the member std::unique_ptr<kirc::SecretStore> must not be
+    /// destroyed with an incomplete type (MSVC instantiates the deleter in
+    /// every TU that defines the implicit destructor).
+    ~KircConfig() override;
+
     /// Absolute path of the config file (~/.config/kIRC/kirc.conf by
     /// convention).  Kept public so callers/logs can name the file without
     /// duplicating the layout rules.
