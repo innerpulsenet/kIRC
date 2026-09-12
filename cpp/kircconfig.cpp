@@ -66,11 +66,44 @@ constexpr auto kRetiredBuiltinThemeIds = {
     "fluent-light",
 };
 
+/// One plain-text sentence for a secret-store operation that did not reach
+/// Ok, surfaced through the secretsStatus property instead of a popup.  It
+/// names the linked backend (whatever backendName() reports) and never the
+/// secret value itself, and works for both a failed write and a failed
+/// remove.
+QString secretStatusText(const QString &label, bool removing,
+                         kirc::SecretWriteResult result, const QString &backend)
+{
+    switch (result) {
+    case kirc::SecretWriteResult::Ok:
+        return QString();
+    case kirc::SecretWriteResult::Unavailable:
+        return removing
+            ? KircConfig::tr("%1 could not be removed: %2 is unavailable.").arg(label, backend)
+            : KircConfig::tr("%1 was not saved: %2 is unavailable.").arg(label, backend);
+    case kirc::SecretWriteResult::Error:
+        return removing
+            ? KircConfig::tr("%1 could not be removed: %2 reported an error.").arg(label, backend)
+            : KircConfig::tr("%1 was not saved: %2 reported an error.").arg(label, backend);
+    }
+    return QString();
+}
+
 } // namespace
 
 KircConfig::KircConfig(QObject *parent)
+    : KircConfig(configFilePath(), kirc::makeSecretStore(), parent)
+{
+}
+
+// Testability injection: an explicit config path and secret store, so a test
+// owns both the file and the store (a scripted fake, never a platform
+// backend).  Not used by main.cpp.
+KircConfig::KircConfig(QString configPath, std::unique_ptr<kirc::SecretStore> secrets,
+                       QObject *parent)
     : QObject(parent)
-    , m_secrets(kirc::makeSecretStore())
+    , m_configPath(std::move(configPath))
+    , m_secrets(std::move(secrets))
 {
 }
 
@@ -399,6 +432,9 @@ void KircConfig::setNickservPassword(const QString &nickservPassword)
         return;
     }
     m_nickservPassword = nickservPassword;
+    // Only a real change is pending a store write; save() clears the flag
+    // once the write (or remove) succeeds.
+    m_nickservPasswordDirty = true;
     Q_EMIT nickservPasswordChanged();
 }
 
@@ -452,12 +488,23 @@ QString KircConfig::serverPassword() const
     return m_serverPassword;
 }
 
+QString KircConfig::secretBackendName() const
+{
+    return m_secrets->backendName();
+}
+
+QString KircConfig::secretsStatus() const
+{
+    return m_secretsStatus;
+}
+
 void KircConfig::setServerPassword(const QString &serverPassword)
 {
     if (m_serverPassword == serverPassword) {
         return;
     }
     m_serverPassword = serverPassword;
+    m_serverPasswordDirty = true;
     Q_EMIT serverPasswordChanged();
 }
 
@@ -748,7 +795,7 @@ void KircConfig::setReflectionAmount(int reflectionAmount)
 
 void KircConfig::load()
 {
-    KConfig config(configFilePath(), KConfig::SimpleConfig);
+    KConfig config(m_configPath, KConfig::SimpleConfig);
 
     const KConfigGroup connection = config.group(QString::fromLatin1(kConnectionGroup));
     m_host = connection.readEntry(QStringLiteral("Host"), m_host);
@@ -829,7 +876,7 @@ void KircConfig::load()
     // install (no file at all) is born at the current version and has nothing
     // to migrate.  QFileInfo::exists() is checked *before* reading, because
     // KConfig would happily report the default for a file that is not there.
-    const int storedThemeSchema = QFileInfo::exists(configFilePath())
+    const int storedThemeSchema = QFileInfo::exists(m_configPath)
         ? ui.readEntry(QStringLiteral("ThemeSchemaVersion"), kThemeSchemaVersionLegacy)
         : kThemeSchemaVersion;
     if (storedThemeSchema < kThemeSchemaVersion) {
@@ -873,12 +920,14 @@ void KircConfig::load()
     // into the store; save() deletes it from disk.
     const QString legacyPassword = services.readEntry(QStringLiteral("Password"), QString());
     m_nickservPassword.clear();
+    bool nickservFromLegacyPlaintext = false;
     QString storedPassword;
     if (m_secrets->read(kirc::Secret::NickServPassword, &storedPassword)
         == kirc::SecretReadResult::Found) {
         m_nickservPassword = storedPassword;
     } else if (!legacyPassword.isEmpty()) {
         m_nickservPassword = legacyPassword;
+        nickservFromLegacyPlaintext = true;
     }
     // The IRC server password (PASS) is a secret too: secret store only, no
     // plaintext fallback (there was never a legacy kirc.conf key for it).
@@ -888,6 +937,13 @@ void KircConfig::load()
         == kirc::SecretReadResult::Found) {
         m_serverPassword = storedServerPassword;
     }
+    // The load just produced these values, so nothing is pending a write —
+    // except a NickServ password that came from the legacy plaintext
+    // fallback: it is not in the store yet, so it stays dirty and the next
+    // save() completes the migration (write to the store + deleteEntry of
+    // the plaintext key).
+    m_nickservPasswordDirty = nickservFromLegacyPlaintext;
+    m_serverPasswordDirty = false;
 
     Q_EMIT hostChanged();
     Q_EMIT portChanged();
@@ -936,7 +992,7 @@ void KircConfig::load()
 
 void KircConfig::save()
 {
-    const QString path = configFilePath();
+    const QString path = m_configPath;
 
     // KConfig writes the file but does not create the directory tree.
     QDir().mkpath(QFileInfo(path).absolutePath());
@@ -1001,17 +1057,54 @@ void KircConfig::save()
     // store is locked or unavailable the in-memory value is kept for this
     // process only.
     services.deleteEntry(QStringLiteral("Password"));
-    if (m_nickservPassword.isEmpty()) {
-        m_secrets->remove(kirc::Secret::NickServPassword);
-    } else {
-        m_secrets->write(kirc::Secret::NickServPassword, m_nickservPassword);
+
+    // ---- secrets: only a *changed* value touches the store -----------------
+    // The dirty guards are the point: a save triggered by an unrelated pref
+    // (window geometry, a glass toggle) must not rewrite credentials, so a
+    // clean secret means no store call at all.  A failed operation keeps the
+    // value dirty in memory — the next save() retries — and is reported
+    // through the secretsStatus property (no popups, no plaintext fallback,
+    // no secret value in the text).
+    QString status;
+    const auto reportFailure = [&status](const QString &problem) {
+        if (problem.isEmpty()) {
+            return;
+        }
+        if (!status.isEmpty()) {
+            status += QLatin1Char(' ');
+        }
+        status += problem;
+    };
+
+    if (m_nickservPasswordDirty) {
+        const bool removing = m_nickservPassword.isEmpty();
+        const kirc::SecretWriteResult result = removing
+            ? m_secrets->remove(kirc::Secret::NickServPassword)
+            : m_secrets->write(kirc::Secret::NickServPassword, m_nickservPassword);
+        if (result == kirc::SecretWriteResult::Ok) {
+            m_nickservPasswordDirty = false;
+        } else {
+            reportFailure(secretStatusText(tr("NickServ password"), removing, result,
+                                           m_secrets->backendName()));
+        }
     }
-    // Same rule for the IRC server password: secret store only, never
-    // kirc.conf.
-    if (m_serverPassword.isEmpty()) {
-        m_secrets->remove(kirc::Secret::ServerPassword);
-    } else {
-        m_secrets->write(kirc::Secret::ServerPassword, m_serverPassword);
+
+    if (m_serverPasswordDirty) {
+        const bool removing = m_serverPassword.isEmpty();
+        const kirc::SecretWriteResult result = removing
+            ? m_secrets->remove(kirc::Secret::ServerPassword)
+            : m_secrets->write(kirc::Secret::ServerPassword, m_serverPassword);
+        if (result == kirc::SecretWriteResult::Ok) {
+            m_serverPasswordDirty = false;
+        } else {
+            reportFailure(secretStatusText(tr("Server password"), removing, result,
+                                           m_secrets->backendName()));
+        }
+    }
+
+    if (status != m_secretsStatus) {
+        m_secretsStatus = status;
+        Q_EMIT secretsStatusChanged();
     }
 
     config.sync();

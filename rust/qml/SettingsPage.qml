@@ -21,7 +21,8 @@
 //     follows the first section that matches),
 //   * every control persists through KircConfig (cpp/kircconfig.h),
 //   * a password is never written to kirc.conf: the NickServ *and* server
-//     (PASS) passwords go to KWallet via KircConfig, the SASL password is
+//     (PASS) passwords go to the platform secret store (kircConfig
+//     .secretBackendName names it) via KircConfig, the SASL password is
 //     session only and is not editable here.
 //
 // Rows beyond the original rebuild: server password (Connection), on-join
@@ -45,6 +46,15 @@ Kirigami.Page {
     id: page
 
     property var kircConfig: null
+    // Backend name for secret-store wording, taken from KircConfig so no text
+    // here claims a platform it is not running on ("KWallet" on Linux,
+    // "Windows Credential Manager" on Windows).  The fallback is only for
+    // standalone harnesses without a config object.
+    readonly property string secretBackendName:
+        page.kircConfig !== null && page.kircConfig !== undefined
+                && page.kircConfig.secretBackendName !== undefined
+            ? String(page.kircConfig.secretBackendName)
+            : qsTr("the system secret store")
     // The application window (set by main.qml).  Replaces the deprecated
     // `applicationWindow()` global: it keeps qmllint clean and, more
     // importantly, keeps the SASL-user save working if the global is removed
@@ -660,7 +670,7 @@ Kirigami.Page {
         c.minimizeToTray = traySwitch.checked
         c.identifyOnConnect = identifySwitch.checked
         c.nickservNick = nickservNickField.text
-        // Password first: KWallet write, never kirc.conf (see KircConfig).
+        // Password first: secret-store write, never kirc.conf (see KircConfig).
         c.nickservPassword = nickservPassField.text
         if (page.hasPref("saslMechanism")) {
             c.saslMechanism = page.saslMechanismId(saslMechBox.currentIndex)
@@ -682,8 +692,9 @@ Kirigami.Page {
         if (page.hasPref("respondToCtcpVersion")) {
             c.respondToCtcpVersion = ctcpVersionSwitch.checked
         }
-        // The server password is a secret like the others: it goes to KWallet
-        // through KircConfig.save(), never into kirc.conf.
+        // The server password is a secret like the others: it goes to the
+        // platform secret store through KircConfig.save(), never into
+        // kirc.conf.
         c.serverPassword = serverPassField.text
         if (page.hasPref("showTimestamps")) {
             c.showTimestamps = timestampsSwitch.checked
@@ -1137,7 +1148,7 @@ Kirigami.Page {
                                 TermField {
                                     id: nickservPassField
                                     echoMode: showNickservPass.checked ? TextInput.Normal : TextInput.Password
-                                    placeholderText: qsTr("stored in kwallet")
+                                    placeholderText: qsTr("stored in %1").arg(page.secretBackendName)
                                     onEditingFinished: page.persist()
                                 }
                                 TermButton {
@@ -1152,11 +1163,29 @@ Kirigami.Page {
                                 Layout.leftMargin: 10
                                 Layout.rightMargin: 10
                                 Layout.bottomMargin: 5
-                                text: qsTr("stored in KWallet — never written to kirc.conf")
+                                text: qsTr("stored in %1 — never written to kirc.conf").arg(page.secretBackendName)
                                 color: page.fgDim()
                                 font.family: page.mono
                                 font.pointSize: page.ptSmall
                                 elide: Text.ElideRight
+                            }
+
+                            // Save-failure status from KircConfig.save() (e.g.
+                            // the secret store was unavailable).  Passive:
+                            // a small line, no dialogs; empty = nothing to say.
+                            Text {
+                                Layout.fillWidth: true
+                                Layout.leftMargin: 10
+                                Layout.rightMargin: 10
+                                Layout.bottomMargin: 5
+                                visible: page.kircConfig !== null && page.kircConfig !== undefined
+                                         && page.kircConfig.secretsStatus !== undefined
+                                         && String(page.kircConfig.secretsStatus).length > 0
+                                text: visible ? String(page.kircConfig.secretsStatus) : ""
+                                color: page.fgWarn()
+                                font.family: page.mono
+                                font.pointSize: page.ptSmall
+                                wrapMode: Text.WordWrap
                             }
 
                             TermRule {}
@@ -1256,11 +1285,28 @@ Kirigami.Page {
                                 Layout.leftMargin: 10
                                 Layout.rightMargin: 10
                                 Layout.bottomMargin: 5
-                                text: qsTr("sent as PASS before connect — stored in KWallet, never written to kirc.conf")
+                                text: qsTr("sent as PASS before connect — stored in %1, never written to kirc.conf").arg(page.secretBackendName)
                                 color: page.fgDim()
                                 font.family: page.mono
                                 font.pointSize: page.ptSmall
                                 elide: Text.ElideRight
+                            }
+
+                            // Same passive save-failure status as under the
+                            // NickServ password above.
+                            Text {
+                                Layout.fillWidth: true
+                                Layout.leftMargin: 10
+                                Layout.rightMargin: 10
+                                Layout.bottomMargin: 5
+                                visible: page.kircConfig !== null && page.kircConfig !== undefined
+                                         && page.kircConfig.secretsStatus !== undefined
+                                         && String(page.kircConfig.secretsStatus).length > 0
+                                text: visible ? String(page.kircConfig.secretsStatus) : ""
+                                color: page.fgWarn()
+                                font.family: page.mono
+                                font.pointSize: page.ptSmall
+                                wrapMode: Text.WordWrap
                             }
 
                             TermRule {}
@@ -2613,7 +2659,7 @@ Kirigami.Page {
                             Layout.leftMargin: 10
                             Layout.rightMargin: 10
                             Layout.topMargin: 6
-                            text: qsTr("Passwords are never written to kirc.conf: the NickServ password lives in KWallet, the SASL password lives only in memory for this session.")
+                            text: qsTr("Passwords are never written to kirc.conf: the NickServ password lives in %1, the SASL password lives only in memory for this session.").arg(page.secretBackendName)
                             color: page.fgDim()
                             font.family: page.mono
                             font.pointSize: page.ptSmall

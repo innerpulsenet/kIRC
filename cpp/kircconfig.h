@@ -116,9 +116,23 @@ class KircConfig : public QObject
     Q_PROPERTY(int humBarAmount READ humBarAmount WRITE setHumBarAmount NOTIFY humBarAmountChanged)
     Q_PROPERTY(bool reflection READ reflection WRITE setReflection NOTIFY reflectionChanged)
     Q_PROPERTY(int reflectionAmount READ reflectionAmount WRITE setReflectionAmount NOTIFY reflectionAmountChanged)
+    // User-visible name of the linked secret-store backend, so QML copy can
+    // name it truthfully on every platform ("KWallet" on Linux, "Windows
+    // Credential Manager" on Windows) instead of hard-coding one.
+    Q_PROPERTY(QString secretBackendName READ secretBackendName CONSTANT)
+    // Outcome of the last save()'s secret operations: empty on success (or
+    // when nothing needed doing), otherwise plain-text failure sentences.
+    // Passive status for the settings page — no popups, never the value.
+    Q_PROPERTY(QString secretsStatus READ secretsStatus NOTIFY secretsStatusChanged)
 
 public:
     explicit KircConfig(QObject *parent = nullptr);
+
+    /// Injection point for tests: an explicit config file path and secret
+    /// store.  The default constructor delegates with configFilePath() and
+    /// the platform makeSecretStore(), so main.cpp is unaffected.
+    KircConfig(QString configPath, std::unique_ptr<kirc::SecretStore> secrets,
+               QObject *parent = nullptr);
 
     /// Out of line (defined in kircconfig.cpp where secretstore.h is
     /// complete): the member std::unique_ptr<kirc::SecretStore> must not be
@@ -221,10 +235,18 @@ public:
     QString defaultPartReason() const;
     void setDefaultPartReason(const QString &defaultPartReason);
 
+    /// Name of the linked secret-store backend for UI wording; see the
+    /// secretBackendName property above.
+    QString secretBackendName() const;
+
+    /// Status of the last save()'s secret operations; see the secretsStatus
+    /// property above.
+    QString secretsStatus() const;
+
     /// IRC server password (PASS).  Like the NickServ password this is a
-    /// secret and lives in KWallet (folder "kIRC", key "server-password");
-    /// when the wallet is unavailable it is kept in memory only.  Never
-    /// written to kirc.conf.
+    /// secret and lives in the platform secret store (secretstore.h); when
+    /// the store is unavailable it is kept in memory only.  Never written to
+    /// kirc.conf.
     QString serverPassword() const;
     void setServerPassword(const QString &serverPassword);
 
@@ -343,7 +365,9 @@ public:
     void load();
 
 public Q_SLOTS:
-    /// Write the current values back to disk.  Never writes a password.
+    /// Write the current values back to disk.  No password is ever written
+    /// to the file; the secrets go to the platform store, and only when they
+    /// changed.  A store failure is reported through secretsStatus().
     void save();
 
 Q_SIGNALS:
@@ -392,6 +416,7 @@ Q_SIGNALS:
     void humBarAmountChanged();
     void reflectionChanged();
     void reflectionAmountChanged();
+    void secretsStatusChanged();
 
 private:
     // Defaults mirror the initial values in ConnectPage.qml so a first run
@@ -449,6 +474,25 @@ private:
     // with the same opt-in rule as the CRT set.
     bool m_reflection = false;
     int m_reflectionAmount = 25;
+
+    // Absolute path of kirc.conf, fixed at construction (configFilePath() for
+    // the default constructor).  load()/save() use it instead of recomputing,
+    // so a test can point the object at its own file.
+    QString m_configPath;
+
+    // Set by the password setters when the value actually changed; save()
+    // touches the store only for a dirty secret, so a save triggered by an
+    // unrelated pref (window geometry, a glass toggle) never rewrites
+    // credentials.  load() clears both flags — the values just came from the
+    // store — except a NickServ password picked up from the legacy plaintext
+    // fallback, which stays dirty until the migration write lands (see
+    // load()).
+    bool m_nickservPasswordDirty = false;
+    bool m_serverPasswordDirty = false;
+
+    // Plain-text outcome of the last save()'s secret operations (see
+    // secretsStatus()).
+    QString m_secretsStatus;
 
     // Platform secret store (secretstore.h). Created once; load()/save()
     // go through it instead of touching KWallet directly.
