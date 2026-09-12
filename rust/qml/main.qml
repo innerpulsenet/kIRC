@@ -250,6 +250,35 @@ Kirigami.ApplicationWindow {
                                           || root.grainOn || root.flickerOn
                                           || root.humBarOn || root.reflectionOn
 
+    // ---------------------------------------------------------------------- //
+    // Effects capability probe.
+    //
+    // The effects system assumes a scene graph that can run shader nodes
+    // (GlassSurface's frost is a MultiEffect).  Qt Quick's software renderer
+    // cannot run shader nodes — and Windows ships it as the default backend
+    // (see cpp/main.cpp) — so the window reports what its renderer is and
+    // the whole effects system degrades to plain underlays while it is
+    // software: the overlays do not instantiate, the saved preferences stay
+    // untouched, and the effects UI disables its toggles with the one-line
+    // ThemeEngine.effectsUnsupportedReason.
+    //
+    // GraphicsInfo is an attached property, readable only on an Item inside
+    // the rendered window; the ThemeEngine singleton is a QtObject without a
+    // window, which is why the probe lives here and only its result is
+    // forwarded.  GraphicsInfo.api is Unknown until the scene graph
+    // initializes and then updates reactively (verified against Qt 6.11), so
+    // the degradation lands the moment software rendering is confirmed, and
+    // a hardware backend (KIRC_QUICK_BACKEND=d3d11/opengl) keeps everything
+    // exactly as it has always been.
+    // ---------------------------------------------------------------------- //
+    readonly property bool softwareSceneGraph: GraphicsInfo.api === GraphicsInfo.Software
+
+    Binding {
+        target: ThemeEngine
+        property: "_backendSoftware"
+        value: root.softwareSceneGraph
+    }
+
     // qmllint disable unqualified
     /// Pull every effect pref out of the config object.  A config that predates
     /// the keys leaves the all-off defaults untouched.
@@ -308,9 +337,14 @@ Kirigami.ApplicationWindow {
     }
 
     /// One CRT row's behaviour: flip the switch, keep the window and kirc.conf
-    /// in step.
+    /// in step.  A software scene graph refuses the write: the overlay cannot
+    /// come back, so the persisted prefs must not change either (the popup
+    /// rows are disabled; this guard is the belt under them).
     function toggleEffect(name)
     {
+        if (!ThemeEngine.effectsSupported) {
+            return
+        }
         switch (name) {
         case "scanlines": root.scanlinesOn = !root.scanlinesOn; break
         case "vignette": root.vignetteOn = !root.vignetteOn; break
@@ -324,9 +358,13 @@ Kirigami.ApplicationWindow {
     /// One GLASS row's behaviour.  Frost/Sheen/Edges are the existing
     /// ThemeEngine keys (no parallel KConfig keys), Reflection is the p10
     /// chrome gloss.  Turning a layer ON while the master is off turns the
-    /// master on too, so no row is ever a dead switch.
+    /// master on too, so no row is ever a dead switch.  The same capability
+    /// guard as toggleEffect: no writes on a software scene graph.
     function toggleGlassEffect(name)
     {
+        if (!ThemeEngine.effectsSupported) {
+            return
+        }
         var on = false
         switch (name) {
         case "blur":
@@ -985,23 +1023,47 @@ Kirigami.ApplicationWindow {
                         border.color: ThemeEngine.ruleColorValue(Kirigami.Theme.textColor)
                     }
 
+                    // Capability caption (software scene graph only).  The
+                    // Instantiator exists so the row is absent — not merely
+                    // hidden — while the effects are supported: the popup's
+                    // row list, and the harness assertions on it, stay
+                    // byte-identical there.  When unsupported, the caption is
+                    // inserted as the first row and every effect toggle below
+                    // goes inert with the labels unchanged; the saved prefs
+                    // are not touched.
+                    Instantiator {
+                        model: ThemeEngine.effectsSupported ? 0 : 1
+
+                        delegate: TermMenuItem {
+                            enabled: false
+                            text: ThemeEngine.effectsUnsupportedReason
+                        }
+
+                        onObjectAdded: (index, object) => effectsMenu.insertItem(0, object)
+                        onObjectRemoved: (index, object) => effectsMenu.removeItem(object)
+                    }
+
                     // ---- glass family ------------------------------------
                     TermMenuItem {
+                        enabled: ThemeEngine.effectsSupported
                         text: (ThemeEngine.glassBlur ? "[*] " : "[ ] ") + qsTr("Frost")
                         onTriggered: root.toggleGlassEffect("blur")
                     }
 
                     TermMenuItem {
+                        enabled: ThemeEngine.effectsSupported
                         text: (ThemeEngine.glassSheen ? "[*] " : "[ ] ") + qsTr("Sheen")
                         onTriggered: root.toggleGlassEffect("sheen")
                     }
 
                     TermMenuItem {
+                        enabled: ThemeEngine.effectsSupported
                         text: (ThemeEngine.glassEdges ? "[*] " : "[ ] ") + qsTr("Edges")
                         onTriggered: root.toggleGlassEffect("edges")
                     }
 
                     TermMenuItem {
+                        enabled: ThemeEngine.effectsSupported
                         text: (root.reflectionOn ? "[*] " : "[ ] ") + qsTr("Reflection")
                         onTriggered: root.toggleGlassEffect("reflection")
                     }
@@ -1010,26 +1072,31 @@ Kirigami.ApplicationWindow {
 
                     // ---- CRT family --------------------------------------
                     TermMenuItem {
+                        enabled: ThemeEngine.effectsSupported
                         text: (root.scanlinesOn ? "[*] " : "[ ] ") + qsTr("Scanlines")
                         onTriggered: root.toggleEffect("scanlines")
                     }
 
                     TermMenuItem {
+                        enabled: ThemeEngine.effectsSupported
                         text: (root.vignetteOn ? "[*] " : "[ ] ") + qsTr("Vignette")
                         onTriggered: root.toggleEffect("vignette")
                     }
 
                     TermMenuItem {
+                        enabled: ThemeEngine.effectsSupported
                         text: (root.grainOn ? "[*] " : "[ ] ") + qsTr("Grain")
                         onTriggered: root.toggleEffect("grain")
                     }
 
                     TermMenuItem {
+                        enabled: ThemeEngine.effectsSupported
                         text: (root.flickerOn ? "[*] " : "[ ] ") + qsTr("Flicker")
                         onTriggered: root.toggleEffect("flicker")
                     }
 
                     TermMenuItem {
+                        enabled: ThemeEngine.effectsSupported
                         text: (root.humBarOn ? "[*] " : "[ ] ") + qsTr("Hum bar")
                         onTriggered: root.toggleEffect("humBar")
                     }
@@ -1192,7 +1259,12 @@ Kirigami.ApplicationWindow {
         width: root.width
         height: root.height
         z: 1000
-        active: root.effectsActive
+        // Capability gate: on a software scene graph the overlay is not
+        // merely invisible — it never instantiates (the same no-node path as
+        // all-off), however many effect prefs are set.  The saved prefs are
+        // left untouched, so a hardware backend restores the tube exactly as
+        // it was configured.
+        active: root.effectsActive && ThemeEngine.effectsSupported
         sourceComponent: effectsOverlayComponent
     }
 

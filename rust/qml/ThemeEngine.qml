@@ -327,6 +327,38 @@ QtObject {
     readonly property int glassBlurMax: Math.round(8 + 40 * engine.glassAmount)
     readonly property real glassSheenOpacity: 0.35 + 0.65 * engine.glassAmount
 
+    // --- effects capability (software scene graph) --------------------------
+    // GlassSurface's frost is a MultiEffect — a shader node.  Qt Quick's
+    // software renderer cannot run shader nodes, so on a software scene graph
+    // (the Windows rendering default, see cpp/main.cpp) the effects system
+    // degrades to plain underlays: the overlays do not instantiate, the saved
+    // preferences stay untouched and the effects UI disables its toggles with
+    // effectsUnsupportedReason instead of rendering a broken blur or silently
+    // rewriting the user's choices.
+    //
+    // The probe itself is QtQuick's GraphicsInfo attached type.  It can only
+    // be read on an Item inside the rendered window — a QtObject singleton
+    // has no window — so the host window (main.qml) reports what its scene
+    // graph is into `_backendSoftware` and this engine derives the state the
+    // rest of the UI reads.  GraphicsInfo.api is Unknown until the scene
+    // graph initializes and then updates reactively (verified against
+    // Qt 6.11), so the degradation lands the moment software rendering is
+    // confirmed, and a hardware backend keeps everything as it has always
+    // been.
+    //
+    // `_effectsForceSupported` is a harness-only override: the offscreen CI
+    // runs (QT_QPA_PLATFORM=offscreen) render with the software backend, and
+    // qml-tests/tst_smoke.qml pins the capability ON to keep asserting the
+    // effects UI it was written for (it releases the pin in a dedicated
+    // block that asserts the degraded state).  Nothing else may write it.
+    property bool _backendSoftware: false
+    property bool _effectsForceSupported: false
+    readonly property bool effectsSupported:
+        !engine._backendSoftware || engine._effectsForceSupported
+    readonly property string effectsUnsupportedReason: engine.effectsSupported
+        ? ""
+        : qsTr("Software rendering: the shader-based effects cannot run here")
+
     // Ids the app can offer in a theme picker (built-ins + anything C++ adds).
     property var availableThemeIds: ThemeLib.BUILTIN_IDS.slice()
     property string configError: ""

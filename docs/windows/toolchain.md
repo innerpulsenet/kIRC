@@ -115,9 +115,17 @@ there are Qt5-era `libs/qt/*` blueprints with clashing short names.
     `_qt_internal_process_resource` return without error) and produces no
     resources. The embedded Windows icons therefore use target-local
     `AUTORCC` with `cpp/kirc-windows.qrc` in `target_sources()`.
-- Linux build of the refactored tree: not yet re-verified on this Windows-only
-  machine; covered by the RPM CI workflow when the port branch merges, and on
-  this branch itself by the Linux CI workflow (`.github/workflows/linux-ci.yml`).
+- Linux build of the refactored tree: **verified green in CI** —
+  `.github/workflows/linux-ci.yml` (fedora:latest) runs the engine suite,
+  the full application build, `tst_config_secrets`, and all six QML harness
+  stages (tokens/smoke/cmds/scroll/glass/config) on every push to
+  codex/windows-port and every PR; first fully-green run 34716642449
+  (2026-09-12). Two environment notes for the record: the smoke stage
+  asserts the font picker offers >= 5 monospace families, so the container
+  installs a realistic mono font set (Liberation/Noto x2/JetBrains Mono,
+  Cascadia when available); the config stage compiles the real
+  cpp/kircconfig.cpp and links cpp/secretstore_kwallet.cpp for
+  kirc::makeSecretStore() with a null D-Bus address (memory-only path).
 - Staged relocatable package (Phase 8): `stage/windows-release` (142 MB,
   ~1600 files) built by `E:\Tools\stage-kirc.cmd`; exe at the root with Qt's
   default layout, no qt.conf. Passes the clean-environment gate twice (PATH =
@@ -136,3 +144,45 @@ there are Qt5-era `libs/qt/*` blueprints with clashing short names.
   stuttery mouse when crossing the GUI" therefore tracks with cursor-shape
   switching across regions (IBeam/hand/arrow) or refresh-rate perception,
   not with rendering cost; re-examine during the DPI/graphics pass.
+
+### Rendering default: software first, with capability-aware effects
+
+The UI is repaint-idle (the cursor sweep above moved 4 frames), so the GPU
+buys nothing behind a D3D11 swapchain — while a hardware backend costs
+startup time and battery and misbehaves in remote-desktop sessions and on
+old or blocklisted drivers. kIRC on Windows therefore defaults to the
+Qt Quick **software renderer**: `cpp/main.cpp` sets `QT_QUICK_BACKEND=software`
+before `QApplication` is constructed (Linux is untouched).
+
+The knob is the `KIRC_QUICK_BACKEND` environment variable:
+
+| Value | Effect |
+|---|---|
+| *(unset)* | software renderer (the default) |
+| `software` | software renderer, explicitly |
+| `d3d11` | RHI over Direct3D 11 |
+| `opengl` | RHI over OpenGL |
+| *anything else* | one warning, then Qt's own default |
+
+**Effects degradation contract.** The shader-based glass layers
+(`GlassSurface.qml`'s frost is a `MultiEffect`) cannot run on the software
+scene graph. Rather than render a broken blur or silently rewrite the user's
+saved preferences, the effects degrade honestly: the window's
+`GraphicsInfo` probe reports the renderer into `ThemeEngine.effectsSupported`
+(with `effectsUnsupportedReason` as the one-line why). When unsupported:
+
+- `GlassSurface` sheets and the global CRT overlay do not instantiate —
+  the same no-node code path as the master-off state; the console shows its
+  plain theme surfaces.
+- The saved `[UI] Glass*/Scanlines/...` preferences are **not** modified, so
+  a run with `KIRC_QUICK_BACKEND=d3d11` restores the configured effects
+  unchanged.
+- The `[effects]` popup leads with a caption row and its toggles are inert;
+  the settings pane's Effects section shows the same caption with the
+  toggles and intensity sliders read-only.
+
+The probe is overridable for the QML harnesses
+(`ThemeEngine._effectsForceSupported`, harness-only): the offscreen CI runs
+render on the software renderer too, and `tst_smoke.qml` pins the capability
+ON for the supported-UI assertions, then releases it in a dedicated block
+that asserts the degraded state.
