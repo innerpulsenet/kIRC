@@ -154,6 +154,9 @@ Kirigami.ApplicationWindow {
     property string lastNickname: ""
     property string lastSaslUser: ""
     property string lastSaslPass: ""
+    // IRC server password (PASS) for the current attempt/reconnects.  Memory
+    // only — never persisted by the window (the settings pane owns KWallet).
+    property string lastServerPass: ""
     property int lastSaslMechanism: 0
     property bool userDisconnect: false
     property int reconnectAttempt: 0
@@ -612,7 +615,9 @@ Kirigami.ApplicationWindow {
             // the connection form.)
             HeaderButton {
                 text: "[" + qsTr("join") + "]"
-                visible: root.pageStack.depth > 1
+                // Chat actions only: hidden on the settings pane where they
+                // would do nothing (the old layout showed a dead [join]).
+                visible: root.pageStack.depth > 1 && !root.currentPageIsSettings()
                 enabled: root.pageStack.depth > 1 && root.bridge.connection_state === 2
                 onClicked: root.requestChatJoin()
 
@@ -623,8 +628,11 @@ Kirigami.ApplicationWindow {
             HeaderButton {
                 id: searchButton
                 text: "[" + qsTr("search") + "]"
-                enabled: root.pageStack.depth > 1
-                visible: root.pageStack.depth > 1
+                // Only where there is something to search: the settings pane
+                // has no message search, so the button is hidden there instead
+                // of being an enabled no-op.
+                enabled: root.pageStack.depth > 1 && !root.currentPageIsSettings()
+                visible: root.pageStack.depth > 1 && !root.currentPageIsSettings()
                 onClicked: root.focusChatSearch()
 
                 Controls.ToolTip.visible: hovered
@@ -815,24 +823,30 @@ Kirigami.ApplicationWindow {
     pageStack.initialPage: ConnectPage {
         bridge: root.bridge
         kircConfig: root.appConfig
+        hostWindow: root
 
         // The form's SASL mechanism choice flows here (same 0/1/2 mapping).
-        onConnectRequested: (host, port, tls, nickname, saslUser, saslPass, saslMechanism) => {
+        onConnectRequested: (host, port, tls, nickname, saslUser, saslPass, saslMechanism, serverPass) => {
             // Remember what was attempted; persisted once the connection
             // actually succeeds (state 2 below). The SASL password is kept in
             // memory only (never KConfig): reused by tryReconnect and handed
             // to the tray through sessionSaslPassword so a tray reconnect
-            // does not SASL-904-loop.
+            // does not SASL-904-loop.  The server password follows the same
+            // rule (memory + sessionServerPassword for the tray).
             root.lastHost = host
             root.lastPort = port
             root.lastTls = tls
             root.lastNickname = nickname
             root.lastSaslUser = saslUser
             root.lastSaslPass = saslPass
+            root.lastServerPass = (serverPass === undefined || serverPass === null) ? "" : serverPass
             root.lastSaslMechanism = (saslMechanism === undefined) ? root.saslMechanism : saslMechanism
             root.saslMechanism = root.lastSaslMechanism
             if (root.appConfig !== null && root.appConfig.sessionSaslPassword !== undefined) {
                 root.appConfig.sessionSaslPassword = saslPass
+            }
+            if (root.appConfig !== null && root.appConfig.sessionServerPassword !== undefined) {
+                root.appConfig.sessionServerPassword = root.lastServerPass
             }
             root.userDisconnect = false
             root.lastDropWasAuthFailure = false
@@ -840,6 +854,7 @@ Kirigami.ApplicationWindow {
             reconnectTimer.stop()
 
             root.applySaslMechanism()
+            root.applyServerPassword()
             root.bridge.connect_server(host, port, tls, nickname, saslUser, saslPass)
             root.openChat()
         }
@@ -931,6 +946,7 @@ Kirigami.ApplicationWindow {
             return
         }
         root.applySaslMechanism()
+        root.applyServerPassword()
         root.bridge.connect_server(root.lastHost, root.lastPort, root.lastTls,
                                    root.lastNickname, root.lastSaslUser, root.lastSaslPass)
     }
@@ -1015,6 +1031,28 @@ Kirigami.ApplicationWindow {
         root.bridge.set_sasl_mechanism(root.saslMechanism)
     }
 
+    /// Hand the IRC PASS password to the bridge.  Must run BEFORE
+    /// connect_server (same contract as set_sasl_mechanism).  Guarded with
+    /// typeof so a harness/double that predates the invokable keeps working;
+    /// an empty password is skipped entirely.  When the connect form left the
+    /// field empty, fall back to the KWallet-backed value from the settings
+    /// pane (that is how a password stored in Settings reaches the connect).
+    function applyServerPassword()
+    {
+        if (typeof root.bridge.set_server_password !== "function") {
+            return
+        }
+        var password = root.lastServerPass
+        if ((password === undefined || password === null || password.length === 0)
+                && root.appConfig !== null && root.appConfig.serverPassword !== undefined) {
+            password = String(root.appConfig.serverPassword)
+        }
+        if (password.length === 0) {
+            return
+        }
+        root.bridge.set_server_password(password)
+    }
+
     /// Open the chat page's join dialog when it exists; otherwise drive the
     /// chat page's own join entry (both owned by ChatPage, guarded by
     /// typeof so harnesses without them keep working).
@@ -1062,7 +1100,8 @@ Kirigami.ApplicationWindow {
             }
         }
         root.pageStack.push(Qt.resolvedUrl("SettingsPage.qml"), {
-            "kircConfig": root.appConfig
+            "kircConfig": root.appConfig,
+            "hostWindow": root
         })
     }
 

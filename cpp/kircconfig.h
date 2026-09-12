@@ -34,11 +34,15 @@
 //
 // SECURITY — no password is ever persisted to kirc.conf:
 //   kirc.conf is an ordinary world-readable plaintext INI file, so neither
-//   the SASL password nor the NickServ password may be written there.
+//   the SASL password nor the NickServ password nor the IRC server (PASS)
+//   password may be written there.
 //   The SASL password lives only in memory (sessionSaslPassword, never
 //   saved).  The NickServ password lives in KWallet (folder "kIRC", key
 //   "nickserv-password"); when the wallet is locked or unavailable the value
 //   is kept in memory for this process only and still never hits the disk.
+//   The server password follows the same rule with its own KWallet key
+//   ("server-password") and a memory-only fallback (sessionServerPassword,
+//   used by the tray to reconnect without losing the PASS line).
 //
 // Implemented with the plain KConfig API rather than a KConfigXT .kcfg +
 // generated header: nothing here needs a settings dialog, and plain KConfig
@@ -76,6 +80,10 @@ class KircConfig : public QObject
     Q_PROPERTY(QString nickservNick READ nickservNick WRITE setNickservNick NOTIFY nickservNickChanged)
     Q_PROPERTY(QString nickservPassword READ nickservPassword WRITE setNickservPassword NOTIFY nickservPasswordChanged)
     Q_PROPERTY(QString sessionSaslPassword READ sessionSaslPassword WRITE setSessionSaslPassword NOTIFY sessionSaslPasswordChanged)
+    Q_PROPERTY(int historyLimit READ historyLimit WRITE setHistoryLimit NOTIFY historyLimitChanged)
+    Q_PROPERTY(QString defaultPartReason READ defaultPartReason WRITE setDefaultPartReason NOTIFY defaultPartReasonChanged)
+    Q_PROPERTY(QString serverPassword READ serverPassword WRITE setServerPassword NOTIFY serverPasswordChanged)
+    Q_PROPERTY(QString sessionServerPassword READ sessionServerPassword WRITE setSessionServerPassword NOTIFY sessionServerPasswordChanged)
 
 public:
     explicit KircConfig(QObject *parent = nullptr);
@@ -163,6 +171,30 @@ public:
     QString sessionSaslPassword() const;
     void setSessionSaslPassword(const QString &sessionSaslPassword);
 
+    /// Number of chat-history lines requested when a buffer is joined/opened
+    /// (IRCv3 chathistory).  0 disables the on-join request.  Requires the
+    /// server to advertise the `draft/chathistory` capability; persisted in
+    /// the [UI] group like the other display/behaviour prefs.
+    int historyLimit() const;
+    void setHistoryLimit(int historyLimit);
+
+    /// Reason appended to PART/QUIT when the user does not type one.  Empty
+    /// means "send no reason at all".
+    QString defaultPartReason() const;
+    void setDefaultPartReason(const QString &defaultPartReason);
+
+    /// IRC server password (PASS).  Like the NickServ password this is a
+    /// secret and lives in KWallet (folder "kIRC", key "server-password");
+    /// when the wallet is unavailable it is kept in memory only.  Never
+    /// written to kirc.conf.
+    QString serverPassword() const;
+    void setServerPassword(const QString &serverPassword);
+
+    /// Memory-only server password for this session (tray reconnect).  Never
+    /// loaded from or saved to disk.
+    QString sessionServerPassword() const;
+    void setSessionServerPassword(const QString &sessionServerPassword);
+
     /// Re-read every value from disk.  Called once at startup, before the QML
     /// engine is created, so the form is prefilled on first paint.
     void load();
@@ -195,6 +227,10 @@ Q_SIGNALS:
     void nickservNickChanged();
     void nickservPasswordChanged();
     void sessionSaslPasswordChanged();
+    void historyLimitChanged();
+    void defaultPartReasonChanged();
+    void serverPasswordChanged();
+    void sessionServerPasswordChanged();
 
 private:
     // Defaults mirror the initial values in ConnectPage.qml so a first run
@@ -222,4 +258,8 @@ private:
     QString m_nickservNick;
     QString m_nickservPassword;
     QString m_sessionSaslPassword;
+    int m_historyLimit = 200; // 0 disables the on-join chathistory request
+    QString m_defaultPartReason = QStringLiteral("Leaving"); // empty = send none
+    QString m_serverPassword;
+    QString m_sessionServerPassword;
 };

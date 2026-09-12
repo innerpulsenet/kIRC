@@ -42,7 +42,13 @@ int main(int argc, char *argv[])
     // Window/taskbar/tray icon.  KWin prefers the window's own icon and only
     // falls back to the desktop entry, so without this the title bar shows a
     // generic glyph whenever the launcher/WM can't resolve the app id.
-    app.setWindowIcon(QIcon::fromTheme(QStringLiteral("kirc")));
+    // Prefer the app's own artwork; fall back to the stock KDE name so a dev
+    // tree without the icons installed still gets an icon (never a null one).
+    QIcon appIcon = QIcon::fromTheme(QStringLiteral("kirc"));
+    if (appIcon.isNull()) {
+        appIcon = QIcon::fromTheme(QStringLiteral("preferences-system-network"));
+    }
+    app.setWindowIcon(appIcon);
     // Ties the window to kIRC.desktop on Wayland, where the app id (not the
     // window icon) is what the compositor matches against.
     app.setDesktopFileName(QStringLiteral("kIRC"));

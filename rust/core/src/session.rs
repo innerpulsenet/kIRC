@@ -14,7 +14,7 @@ use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::time::MissedTickBehavior;
 
 use crate::caps::{self, CapLine, CapState};
-use crate::parser::{parse_message, IrcMessage};
+use crate::parser::{parse_message, IrcMessage, MAX_LINE_LEN};
 use crate::sasl::{SaslClient, SaslConfig, SaslMechanism};
 
 /// How often the engine sends a keepalive `PING`.
@@ -22,6 +22,38 @@ pub const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(60);
 
 /// How many consecutive unanswered keepalives trigger a disconnect.
 pub const MAX_MISSED_PONGS: u32 = 2;
+
+/// How long a TCP connect may take before the attempt is abandoned.
+///
+/// `TcpStream::connect` has no deadline of its own: against a blackholed route
+/// (firewall dropping SYNs) it waits out the kernel's whole SYN-retry budget,
+/// which reads to the user as a hung client stuck in Connecting.
+pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// How long the TLS handshake may take, once TCP is up.
+///
+/// A listener that accepts the connection but never speaks TLS (stalled proxy,
+/// plaintext port, half-open middlebox) makes the rustls handshake wait
+/// forever: the session loop has not started yet, so neither the keepalive nor
+/// the registration deadline can rescue the attempt.
+pub const TLS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// How long a single outbound line may take to reach the socket.
+///
+/// The read side cannot wedge the session loop (`tokio::select!` keeps polling
+/// the keepalive and registration timers while a read is stalled), but a write
+/// can: `write_all` parks until the kernel accepts the bytes, so a peer that
+/// stops reading while its receive window fills would freeze the whole loop —
+/// no PING, no deadline, no commands — for the kernel's retransmission budget.
+pub const WRITE_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// How long the registration handshake (CAP LS/REQ/END, SASL, 001) may take.
+///
+/// This is what stops a missed `CAP END` from being a *silent* connect hang: a
+/// server that keeps answering keepalives but never completes registration
+/// (dropped CAP ACK, AUTHENTICATE never answered, no 001) leaves the PING/PONG
+/// watchdog quiet, so only a deadline can end the attempt with a reason.
+pub const REGISTRATION_TIMEOUT: Duration = Duration::from_secs(45);
 
 /// Everything needed to open and register a connection.
 #[derive(Debug, Clone)]
@@ -284,7 +316,24 @@ async fn connect(config: &ConnectionConfig) -> Result<Transport, Box<dyn Error +
         "connecting to {}:{} (tls={}) as {}",
         config.host, config.port, config.tls, config.nickname
     );
-    let tcp = TcpStream::connect((config.host.as_str(), config.port)).await?;
+    let tcp = match tokio::time::timeout(
+        CONNECT_TIMEOUT,
+        TcpStream::connect((config.host.as_str(), config.port)),
+    )
+    .await
+    {
+        Ok(Ok(tcp)) => tcp,
+        Ok(Err(e)) => return Err(e.into()),
+        Err(_) => {
+            return Err(format!(
+                "timed out after {}s connecting to {}:{}",
+                CONNECT_TIMEOUT.as_secs(),
+                config.host,
+                config.port
+            )
+            .into())
+        }
+    };
     let _ = tcp.set_nodelay(true);
 
     if !config.tls {
@@ -300,7 +349,24 @@ async fn connect(config: &ConnectionConfig) -> Result<Transport, Box<dyn Error +
             format!("invalid TLS server name {:?}: {e}", config.host).into()
         })?;
     let connector = TlsConnector::from(tls_config);
-    let stream = connector.connect(server_name, tcp).await?;
+    let stream = match tokio::time::timeout(
+        TLS_HANDSHAKE_TIMEOUT,
+        connector.connect(server_name, tcp),
+    )
+    .await
+    {
+        Ok(Ok(stream)) => stream,
+        Ok(Err(e)) => return Err(e.into()),
+        Err(_) => {
+            return Err(format!(
+                "TLS handshake with {}:{} timed out after {}s",
+                config.host,
+                config.port,
+                TLS_HANDSHAKE_TIMEOUT.as_secs()
+            )
+            .into())
+        }
+    };
     Ok(Transport::Tls(Box::new(stream)))
 }
 
@@ -341,9 +407,7 @@ struct Session {
 impl Session {
     async fn send(&mut self, line: &str) -> io::Result<()> {
         debug!(">> {}", redact_log_line(line));
-        self.writer.write_all(line.as_bytes()).await?;
-        self.writer.write_all(b"\r\n").await?;
-        self.writer.flush().await
+        write_line(&mut self.writer, line).await
     }
 
     async fn emit(&self, event: IrcEvent) {
@@ -661,6 +725,22 @@ impl Session {
                 let reason = numeric_summary(message);
                 self.emit(IrcEvent::JoinFailed { channel, reason }).await;
             }
+            463 | 464 | 465 | 466 if !self.registered => {
+                // Dead-session numerics: 463 (no permission for host), 464
+                // (bad password), 465 (banned), 466 (you will be banned). The
+                // server will never register this connection, and some daemons
+                // keep the socket open after sending one, so a plain Error
+                // would leave the client in Connecting until the registration
+                // deadline. Keep the raw numeric text so an auth failure
+                // ("464 Password incorrect") stays recognisable to the UI and
+                // to the reconnect policy.
+                self.abort(&format!(
+                    "server rejected the connection: {}",
+                    numeric_summary(message)
+                ))
+                .await
+                .ok();
+            }
             400..=499 => {
                 self.emit(IrcEvent::Error {
                     message: numeric_summary(message),
@@ -759,11 +839,7 @@ impl Session {
                 }
             }
             "NEW" => self.caps.add_available(&cap.caps),
-            "DEL" => {
-                for c in &cap.caps {
-                    self.caps.available.remove(c);
-                }
-            }
+            "DEL" => self.caps.remove_available(&cap.caps),
             other => debug!("unhandled CAP subcommand: {other}"),
         }
         Ok(())
@@ -892,8 +968,21 @@ impl Session {
         }
         let mut offset = 0usize;
         while offset < bytes.len() {
-            let end = (offset + 400).min(bytes.len());
-            let chunk = std::str::from_utf8(&bytes[offset..end]).unwrap_or_default();
+            // 400 bytes per chunk, the protocol limit. Step back to a UTF-8
+            // boundary so a multi-byte character split across the cut cannot
+            // turn the chunk into an empty string (which used to be sent
+            // silently: a corrupted SASL exchange at best, a rejected login
+            // at worst).
+            let mut end = (offset + 400).min(bytes.len());
+            while end > offset && !payload.is_char_boundary(end) {
+                end -= 1;
+            }
+            if end == offset {
+                // Cannot happen for UTF-8 (4 bytes max per char), but never
+                // loop without progress.
+                end = bytes.len();
+            }
+            let chunk = &payload[offset..end];
             self.send(&format!("AUTHENTICATE {chunk}")).await?;
             offset = end;
         }
@@ -1370,6 +1459,13 @@ pub async fn run_session(
     ping.set_missed_tick_behavior(MissedTickBehavior::Delay);
     ping.tick().await; // consume the immediate first tick
 
+    // One-shot registration deadline, armed at connect and never extended.
+    // See `REGISTRATION_TIMEOUT`: without it a handshake that never completes
+    // (missing CAP END/001, AUTHENTICATE left unanswered) hangs the session
+    // forever whenever the server keeps answering keepalives.
+    let registration_deadline = tokio::time::sleep(REGISTRATION_TIMEOUT);
+    tokio::pin!(registration_deadline);
+
     loop {
         tokio::select! {
             line = read_line(&mut reader) => {
@@ -1423,6 +1519,20 @@ pub async fn run_session(
                     break;
                 }
             }
+            _ = &mut registration_deadline, if !session.registered => {
+                // Never registered in time: the server either stopped talking
+                // mid-handshake or is waiting for something we already sent.
+                // Abort loudly instead of sitting in Connecting forever.
+                let reason = format!(
+                    "registration did not complete within {}s",
+                    REGISTRATION_TIMEOUT.as_secs()
+                );
+                warn!("{reason}");
+                if let Err(e) = session.abort(&reason).await {
+                    warn!("write error during registration-timeout abort: {e}");
+                }
+                break;
+            }
         }
     }
 
@@ -1434,18 +1544,91 @@ pub async fn run_session(
     Ok(())
 }
 
+/// Write one outbound line plus its CRLF, bounded by [`WRITE_TIMEOUT`].
+///
+/// See [`WRITE_TIMEOUT`] for why the write path needs the bound while the read
+/// path does not.
+async fn write_line<W>(writer: &mut W, line: &str) -> io::Result<()>
+where
+    W: AsyncWrite + Unpin,
+{
+    let write = async {
+        writer.write_all(line.as_bytes()).await?;
+        writer.write_all(b"\r\n").await?;
+        writer.flush().await
+    };
+    match tokio::time::timeout(WRITE_TIMEOUT, write).await {
+        Ok(result) => result,
+        Err(_) => Err(io::Error::new(
+            io::ErrorKind::TimedOut,
+            "write timed out: the peer stopped reading",
+        )),
+    }
+}
+
 /// Read one CRLF-terminated line, sans terminator. `Ok(None)` means EOF.
+///
+/// The line is length-capped at [`MAX_LINE_LEN`] payload bytes (plus 2 for the
+/// CRLF). An overlong line is read to its terminator but discarded, and an
+/// empty string is returned so the caller skips it: `read_until` had no cap at
+/// all, so one endless line from a server or a broken proxy could grow the
+/// buffer without bound and stall the read loop.
 async fn read_line<R>(reader: &mut BufReader<R>) -> io::Result<Option<String>>
 where
     R: AsyncRead + Unpin,
 {
-    let mut buf = Vec::with_capacity(512);
-    let read = reader.read_until(b'\n', &mut buf).await?;
-    if read == 0 {
-        return Ok(None);
+    /// Longest accepted line, terminator included.
+    const MAX_READ: usize = MAX_LINE_LEN + 2;
+
+    let mut buf: Vec<u8> = Vec::with_capacity(512);
+    let mut overlong = false;
+    loop {
+        let (consumed, found_newline) = {
+            let available = reader.fill_buf().await?;
+            if available.is_empty() {
+                // EOF. Hand back a trailing partial line once, then None.
+                if buf.is_empty() || overlong {
+                    return Ok(None);
+                }
+                return Ok(Some(String::from_utf8_lossy(&buf).into_owned()));
+            }
+            match available.iter().position(|&b| b == b'\n') {
+                Some(pos) => {
+                    let take = pos + 1;
+                    if buf.len() + take > MAX_READ {
+                        overlong = true;
+                    }
+                    if !overlong {
+                        buf.extend_from_slice(&available[..take]);
+                    }
+                    (take, true)
+                }
+                None => {
+                    let take = available.len();
+                    if buf.len() + take > MAX_READ || overlong {
+                        overlong = true;
+                    } else {
+                        buf.extend_from_slice(available);
+                    }
+                    (take, false)
+                }
+            }
+        };
+        reader.consume(consumed);
+        if overlong {
+            // Discard everything until the terminator arrives, so the next
+            // read starts on a fresh line.
+            buf.clear();
+            if found_newline {
+                warn!("dropping overlong line (> {MAX_LINE_LEN} bytes)");
+                return Ok(Some(String::new()));
+            }
+            continue;
+        }
+        if found_newline {
+            return Ok(Some(String::from_utf8_lossy(&buf).into_owned()));
+        }
     }
-    let text = String::from_utf8_lossy(&buf).into_owned();
-    Ok(Some(text))
 }
 
 #[cfg(test)]
@@ -1698,5 +1881,159 @@ mod tests {
             }
         }
         assert!(saw_error && saw_disconnect);
+    }
+
+    /// `read_line` with a wall-clock bound, so a harness mistake fails the
+    /// test instead of wedging the suite.
+    async fn read_line_bounded<R>(reader: &mut BufReader<R>) -> io::Result<Option<String>>
+    where
+        R: AsyncRead + Unpin,
+    {
+        tokio::time::timeout(Duration::from_secs(5), read_line(reader))
+            .await
+            .expect("read_line blocked past 5s")
+    }
+
+    /// The read path is length-capped: an overlong line is consumed to its
+    /// terminator and dropped (empty string), and the stream stays
+    /// line-synchronised. The old `read_until` buffered without any cap, so a
+    /// single endless line could grow the buffer without bound.
+    #[tokio::test]
+    async fn overlong_line_is_dropped_and_stream_stays_synced() {
+        let (mut client, mut server) = tokio::io::duplex(64 * 1024);
+        let junk = "z".repeat(MAX_LINE_LEN + 500);
+        server.write_all(junk.as_bytes()).await.unwrap();
+        server.write_all(b"\r\n").await.unwrap();
+        server.write_all(b"PING :probe\r\n").await.unwrap();
+
+        let mut reader = BufReader::new(&mut client);
+        assert_eq!(
+            read_line_bounded(&mut reader).await.unwrap(),
+            Some(String::new()),
+            "an overlong line must be dropped, not parsed"
+        );
+        assert_eq!(
+            read_line_bounded(&mut reader).await.unwrap().as_deref(),
+            Some("PING :probe\r\n"),
+            "the reader must resync on the next line"
+        );
+
+        // A line exactly at the parser limit still goes through untouched.
+        let edge = "y".repeat(MAX_LINE_LEN);
+        server.write_all(edge.as_bytes()).await.unwrap();
+        server.write_all(b"\r\n").await.unwrap();
+        server.write_all(b"QUIT :bye\r\n").await.unwrap();
+        assert_eq!(
+            read_line_bounded(&mut reader).await.unwrap().map(|l| l.len()),
+            Some(MAX_LINE_LEN + 2)
+        );
+        assert_eq!(
+            read_line_bounded(&mut reader).await.unwrap().as_deref(),
+            Some("QUIT :bye\r\n")
+        );
+
+        // EOF between lines is None. The write half must be closed for the
+        // read to see EOF at all.
+        drop(server);
+        assert_eq!(read_line_bounded(&mut reader).await.unwrap().as_deref(), None);
+    }
+
+    /// The keepalive must notice a link that has stopped answering: two
+    /// unanswered periods set `should_stop` and put a QUIT on the wire.
+    #[tokio::test]
+    async fn missed_pongs_stop_the_session() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let peer = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let (r, _w) = tokio::io::split(stream);
+            let mut lines = BufReader::new(r).lines();
+            let mut seen = Vec::new();
+            // Read until the peer goes away, recording what the client sent.
+            while let Ok(Some(line)) = lines.next_line().await {
+                seen.push(line);
+            }
+            seen
+        });
+        let stream = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+        let (read_half, write_half) = tokio::io::split(Transport::Plain(stream));
+        // Both halves are held so the peer's reads keep working; the test
+        // drops them at the end to close the socket and let the peer finish.
+        let (events, _rx) = tokio::sync::mpsc::channel::<IrcEvent>(16);
+        let mut session = Session {
+            config: ConnectionConfig {
+                host: "127.0.0.1".to_string(),
+                port,
+                tls: false,
+                nickname: "n".to_string(),
+                username: "u".to_string(),
+                realname: "r".to_string(),
+                server_password: None,
+                sasl: None,
+                sasl_mechanism: 0,
+                request_caps: vec![],
+            },
+            events,
+            writer: write_half,
+            caps: CapState::default(),
+            sasl: None,
+            sasl_configured: false,
+            sasl_active: false,
+            sasl_done: false,
+            cap_end_sent: false,
+            registered: false,
+            batches: HashMap::new(),
+            names_acc: HashMap::new(),
+            ping_counter: 0,
+            outstanding_ping: None,
+            missed_pongs: 0,
+            should_stop: false,
+            disconnect_reason: "connection closed".to_string(),
+            nick_attempts: 0,
+            echo_message: false,
+            error_disconnect_emitted: false,
+        };
+        let held_read_half = read_half;
+
+        // A period with nothing outstanding sends a fresh PING and tracks it.
+        session.handle_ping_tick().await.unwrap();
+        assert!(!session.should_stop);
+        assert!(session.outstanding_ping.is_some());
+        assert_eq!(session.missed_pongs, 0);
+        // Any PONG resets the miss counter and retires the token.
+        session.handle_line("PONG :kirc1").await.unwrap();
+        assert_eq!(session.missed_pongs, 0);
+        assert!(session.outstanding_ping.is_none());
+        // The next period sends a new PING; that same PING stays outstanding
+        // while unanswered periods elapse, and MAX_MISSED_PONGS of them trip
+        // the disconnect.
+        session.handle_ping_tick().await.unwrap();
+        assert_eq!(session.ping_counter, 2, "a fresh period must PING again");
+        assert_eq!(session.missed_pongs, 0);
+        session.handle_ping_tick().await.unwrap();
+        assert_eq!(session.missed_pongs, 1);
+        assert!(!session.should_stop, "one missed period is below the limit");
+        session.handle_ping_tick().await.unwrap();
+        assert_eq!(session.missed_pongs, MAX_MISSED_PONGS);
+        assert!(
+            session.should_stop,
+            "MAX_MISSED_PONGS missed periods must disconnect"
+        );
+        assert!(session.disconnect_reason.contains("ping timeout"));
+        // Closing both halves is what ends the peer's read loop.
+        drop(session);
+        drop(held_read_half);
+        let seen = tokio::time::timeout(Duration::from_secs(5), peer)
+            .await
+            .expect("peer read loop did not finish")
+            .unwrap();
+        assert!(
+            seen.iter().any(|l| l == "PING :kirc1"),
+            "keepalive PING missing: {seen:?}"
+        );
+        assert!(
+            seen.iter().any(|l| l == "QUIT :Ping timeout"),
+            "QUIT on ping timeout missing: {seen:?}"
+        );
     }
 }

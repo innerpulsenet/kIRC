@@ -5,3 +5,4 @@ target/
 .vscode/
 *.user
 rust/vendor/
+**/.qmlls.ini

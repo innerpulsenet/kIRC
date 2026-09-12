@@ -4,9 +4,9 @@
 //
 // A pure, O(1) console/TUI renderer. No bubbles, no avatars, no grouping:
 //
-//     [17:41] patrickh  │ hello there
+//     [17:41] alice  │ hello there
 //     [17:41] * bob joined #pain              <- event rows: dim, no nick column
-//     [17:41] patrickh  │ * waves             <- /me action (the core bakes "* ")
+//     [17:41] alice  │ * waves             <- /me action (the core bakes "* ")
 //     [17:41] ! 473 #pain Cannot join channel (+i)  <- failures: warn + "!"
 //     ───────── Today ──────────              <- day rule (showDay/dayLabel)
 //

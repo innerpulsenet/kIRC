@@ -13,7 +13,9 @@
 // context property (a KircConfig, see cpp/kircconfig.cpp).  That property only
 // exists in the real application: standalone/offline harnesses instantiate
 // this page without it, so the prefill is guarded on null and the page keeps
-// working with its built-in defaults.
+// working with its built-in defaults.  Secrets are never persisted from this
+// form: the SASL password stays in memory, and the server password (PASS)
+// only arrives here prefilled from KWallet — persistence lives in Settings.
 //
 // LAYOUT NOTE: the form must never be positioned against its direct `parent`.
 // Inside a ScrollView that parent is the flickable's *content item*, whose
@@ -46,6 +48,11 @@ Kirigami.Page {
     // Persisted connection profile (KircConfig). Null in standalone harnesses.
     property var kircConfig: null
 
+    // The application window (set by main.qml).  Replaces the deprecated
+    // `applicationWindow()` global (qmllint [unqualified]) — the cancel path
+    // flags userDisconnect on it.  Null in standalone harnesses.
+    property var hostWindow: null
+
     property alias host: hostField.text
     property alias nickname: nickField.text
     property alias tls: tlsSwitch.checked
@@ -53,6 +60,10 @@ Kirigami.Page {
     property alias saslEnabled: saslSwitch.checked
     property alias saslUser: saslUserField.text
     property alias saslPass: saslPassField.text
+    // IRC server password (PASS).  Session-only on this form: it is prefilled
+    // from KWallet when the user stored one in Settings, but what is typed
+    // here is never written to kirc.conf (the settings pane owns persistence).
+    property alias serverPass: serverPassField.text
 
     // SASL mechanism id, same mapping as IrcBridge::set_sasl_mechanism and
     // KircConfig.saslMechanism: 0 = Auto, 1 = PLAIN, 2 = EXTERNAL.
@@ -100,7 +111,7 @@ Kirigami.Page {
     function selC() { return ThemeEngine.rowSelectedColor(ThemeEngine.withAlpha(Kirigami.Theme.highlightColor, 0.20)) }
     function hoverC() { return ThemeEngine.rowHoverColor(ThemeEngine.withAlpha(Kirigami.Theme.textColor, 0.07)) }
 
-    signal connectRequested(string host, int port, bool tls, string nickname, string saslUser, string saslPass, int saslMechanism)
+    signal connectRequested(string host, int port, bool tls, string nickname, string saslUser, string saslPass, int saslMechanism, string serverPass)
 
     Connections {
         target: page.bridge
@@ -310,6 +321,11 @@ Kirigami.Page {
         if (cfg.saslMechanism !== undefined && cfg.saslMechanism >= 0 && cfg.saslMechanism <= 2) {
             page.saslMechanism = cfg.saslMechanism
         }
+        // Server password (PASS): prefilled from KWallet via KircConfig.
+        // Never persisted from this form — see the property comment above.
+        if (cfg.serverPassword !== undefined && cfg.serverPassword !== null) {
+            page.serverPass = cfg.serverPassword
+        }
     }
 
     Controls.ScrollView {
@@ -410,17 +426,22 @@ Kirigami.Page {
                         onTextEdited: page.lastError = ""
                     }
 
-                    Item { Layout.fillWidth: true }
-
+                    // The TLS toggle sits next to the port it applies to, not
+                    // at the far end of the row: an unrelated-looking toggle
+                    // behind a hover tooltip was the previous layout's worst
+                    // guess-the-purpose control.
                     TermToggle {
                         id: tlsSwitch
                         Layout.fillWidth: false
+                        Layout.leftMargin: 8
                         text: qsTr("TLS")
                         checked: true
 
                         Controls.ToolTip.visible: hovered
                         Controls.ToolTip.text: qsTr("Encrypt the connection with TLS")
                     }
+
+                    Item { Layout.fillWidth: true }
                 }
 
                 // ---------------- nickname ----------------
@@ -438,6 +459,35 @@ Kirigami.Page {
                         placeholderText: qsTr("yournick")
                         onAccepted: page.tryConnect()
                         onTextEdited: page.lastError = ""
+                    }
+                }
+
+                // ---------------- server password (IRC PASS) ----------------
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 8
+
+                    TermLabel {
+                        text: qsTr("server pass:")
+                    }
+
+                    TermField {
+                        id: serverPassField
+                        // Never written to disk from this form: the settings
+                        // pane owns KWallet persistence (kirc.conf is plaintext).
+                        placeholderText: qsTr("only if the server asks for one")
+                        echoMode: showServerPass.checked ? TextInput.Normal : TextInput.Password
+                        onAccepted: page.tryConnect()
+                        onTextEdited: page.lastError = ""
+                    }
+
+                    TermButton {
+                        id: showServerPass
+                        checkable: true
+                        prompt: checked ? qsTr("[hide]") : qsTr("[show]")
+
+                        Controls.ToolTip.visible: hovered
+                        Controls.ToolTip.text: checked ? qsTr("Hide server password") : qsTr("Show server password")
                     }
                 }
 
@@ -472,6 +522,10 @@ Kirigami.Page {
                         anchors.left: parent.left
                         anchors.right: parent.right
                         anchors.top: parent.top
+                        // Indented one step so the SASL sub-rows read as a
+                        // group under the "authenticate with SASL" toggle
+                        // instead of blending into the top-level fields.
+                        anchors.leftMargin: 14
                         spacing: 6
 
                         RowLayout {
@@ -592,7 +646,7 @@ Kirigami.Page {
                     implicitHeight: Math.round(Kirigami.Units.gridUnit * 2)
                     onClicked: {
                         if (page.connecting) {
-                            var win = applicationWindow()
+                            var win = page.hostWindow
                             if (win && win.userDisconnect !== undefined) {
                                 win.userDisconnect = true
                             }
@@ -654,6 +708,7 @@ Kirigami.Page {
                               nickField.text,
                               saslSwitch.checked ? saslUserField.text : "",
                               saslSwitch.checked ? saslPassField.text : "",
-                              saslSwitch.checked ? page.saslMechanism : 0)
+                              saslSwitch.checked ? page.saslMechanism : 0,
+                              serverPassField.text)
     }
 }

@@ -27,4 +27,7 @@ rand = "0.8"
 log = "0.4"
 
 [dev-dependencies]
-tokio = { version = "1", features = ["full"] }
+# `test-util` (not part of `full`) provides the paused clock used by the
+# connectivity tests: `tokio::time::pause` / `advance` drive the registration,
+# TLS-handshake and keepalive deadlines without waiting them out in real time.
+tokio = { version = "1", features = ["full", "test-util"] }

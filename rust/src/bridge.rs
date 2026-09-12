@@ -231,7 +231,7 @@ const FAILURE_PHRASES: &[&str] = &[
     // in case the reason ever arrives without its numeric prefix.
     "cannot join channel",
     // The requested nick was taken and the session fell back to an alternate
-    // ("* patrickh_ is in use, trying patrickh__").
+    // ("* alice_ is in use, trying alice__").
     "is in use, trying",
 ];
 
@@ -488,6 +488,16 @@ pub mod qobject {
         #[qinvokable]
         fn set_sasl_mechanism(self: Pin<&mut Self>, mechanism: i32);
 
+        /// Set the IRC `PASS` password for the next connection. Must be
+        /// called BEFORE `connect_server`, which snapshots it into the
+        /// session config (same contract as `set_sasl_mechanism`).
+        ///
+        /// Session-only secret: held in memory, never persisted, never logged
+        /// (`PASS` is redacted by the engine's log path), and cleared as soon
+        /// as the session is torn down. An empty string disables `PASS`.
+        #[qinvokable]
+        fn set_server_password(self: Pin<&mut Self>, password: QString);
+
         /// Start a new IRC session (replacing any existing one).
         #[qinvokable]
         fn connect_server(
@@ -687,6 +697,20 @@ pub struct IrcBridgeRust {
     /// the next `connect_server` call: 0 = auto (SCRAM-SHA-256 when the
     /// server advertises it, else PLAIN), 1 = PLAIN, 2 = EXTERNAL.
     sasl_mechanism: i32,
+    /// IRC `PASS` password for the next connection (`set_server_password`).
+    ///
+    /// Memory only: never written to any settings store, never logged, and
+    /// nulled as soon as the session is torn down. `None` sends no `PASS`.
+    server_password: Option<String>,
+    /// Monotonic id of the session whose events may still be applied.
+    ///
+    /// Bumped by `connect_server` / `disconnect_server`; the event pump and
+    /// the session task of an older epoch compare it and drop what they
+    /// carry. Without this, a `Disconnected` that the *replaced* session had
+    /// already queued can land after the new session's `Connecting` /
+    /// `Registered` — flipping the UI back to Disconnected and wiping the new
+    /// session's buffers through `clear_all_stores`.
+    session_epoch: u64,
 }
 
 impl Default for IrcBridgeRust {
@@ -700,6 +724,8 @@ impl Default for IrcBridgeRust {
             command_tx: None,
             session: None,
             sasl_mechanism: 0,
+            server_password: None,
+            session_epoch: 0,
         }
     }
 }
@@ -1178,6 +1204,30 @@ impl qobject::IrcBridge {
         self.as_mut().rust_mut().sasl_mechanism = normalized;
     }
 
+    /// Store the `PASS` password used by the NEXT `connect_server` call.
+    ///
+    /// Additive to the frozen bridge contract (same pattern as
+    /// `set_sasl_mechanism`). The value is deliberately kept out of every
+    /// persistent store and out of the log: it lives in this field until the
+    /// connection supersedes it, and `shutdown_session` clears it on every
+    /// disconnect. An empty string means "no PASS".
+    pub fn set_server_password(mut self: Pin<&mut Self>, password: QString) {
+        let password = rs(&password);
+        self.as_mut().rust_mut().server_password = if password.is_empty() {
+            None
+        } else {
+            Some(password)
+        };
+    }
+
+    /// Invalidate every event the current session still has queued, and
+    /// return the new epoch. See `IrcBridgeRust::session_epoch`.
+    fn bump_session_epoch(mut self: Pin<&mut Self>) -> u64 {
+        let mut rust = self.as_mut().rust_mut();
+        rust.session_epoch = rust.session_epoch.wrapping_add(1);
+        rust.session_epoch
+    }
+
     /// Start a fresh IRC session, replacing any existing one.
     pub fn connect_server(
         mut self: Pin<&mut Self>,
@@ -1192,8 +1242,15 @@ impl qobject::IrcBridge {
         // again here is harmless *if* we tolerate the "already installed" error.
         let _ = rustls::crypto::ring::default_provider().install_default();
 
+        // Read the server password BEFORE the teardown below, which clears
+        // it: this connection owns the copy from here on.
+        let server_password = self.rust().server_password.clone();
+
         // Drop the previous session and command channel first.
         self.as_mut().shutdown_session();
+        // Whatever the replaced session still has queued is stale: bumping
+        // the epoch makes the pump drop it instead of clobbering this one.
+        let epoch = self.as_mut().bump_session_epoch();
 
         let host_s = rs(&host);
         let nick_s = rs(&nickname);
@@ -1233,7 +1290,7 @@ impl qobject::IrcBridge {
             nickname: nick_s.clone(),
             username: nick_s.clone(),
             realname: nick_s.clone(),
-            server_password: None,
+            server_password,
             sasl,
             sasl_mechanism: mechanism_id,
             request_caps: Vec::new(),
@@ -1261,6 +1318,12 @@ impl qobject::IrcBridge {
         runtime().spawn(async move {
             while let Some(event) = event_rx.recv().await {
                 let queued = qt_thread_events.queue(move |mut qobject| {
+                    // An event from a session that has since been replaced is
+                    // dropped: it would otherwise undo the new session's
+                    // state and clear its buffers.
+                    if qobject.as_ref().rust().session_epoch != epoch {
+                        return;
+                    }
                     handle_event(qobject.as_mut(), event);
                 });
                 if queued.is_err() {
@@ -1276,6 +1339,11 @@ impl qobject::IrcBridge {
             if let Err(err) = kirc_core::run_session(config, event_tx, command_rx).await {
                 let message = format!("IRC session ended: {err}");
                 let _ = qt_thread_session.queue(move |mut qobject| {
+                    // Same epoch rule as the event pump: a replaced session's
+                    // failure must not touch the new session's UI state.
+                    if qobject.as_ref().rust().session_epoch != epoch {
+                        return;
+                    }
                     qobject
                         .as_mut()
                         .set_connection_state(qobject::ConnectionStatus::Disconnected);
@@ -1295,6 +1363,9 @@ impl qobject::IrcBridge {
     /// Tear down the current IRC session.
     pub fn disconnect_server(mut self: Pin<&mut Self>) {
         self.as_mut().shutdown_session();
+        // No straggler event from the session being torn down may touch the
+        // UI after this point: the state set below is the final word.
+        self.as_mut().bump_session_epoch();
         // Forget the old server's logs outright; the Disconnected handler's
         // console line (if any) is added after its own clear.
         clear_all_stores();
@@ -1313,6 +1384,9 @@ impl qobject::IrcBridge {
     /// (or an unregistered 433 wait) cannot pin the UI in Connecting.
     fn shutdown_session(mut self: Pin<&mut Self>) {
         let mut rust = self.as_mut().rust_mut();
+        // A server password never outlives the session it was set for. The
+        // value handed to `connect_server` is snapshotted before this runs.
+        rust.server_password = None;
         if let Some(tx) = rust.command_tx.as_ref() {
             let _ = tx.try_send(ClientCommand::Quit);
         }
@@ -1715,11 +1789,11 @@ mod tests {
         // Any other 4xx/5xx numeric.
         assert!(line_is_error("*", "401 ghost No such nick/channel"));
         assert!(line_is_error("*", "404 #pain Cannot send to channel"));
-        assert!(line_is_error("*", "433 * patrickh :Nickname is already in use"));
+        assert!(line_is_error("*", "433 * alice :Nickname is already in use"));
         assert!(line_is_error("*", "500 Unknown command"));
         assert!(line_is_error("*", "599 Unknown error"));
-        // The nick fallback ("* patrickh_ is in use, trying patrickh__").
-        assert!(line_is_error("*", "patrickh_ is in use, trying patrickh__"));
+        // The nick fallback ("* alice_ is in use, trying alice__").
+        assert!(line_is_error("*", "alice_ is in use, trying alice__"));
         // Disconnect-with-reason console lines.
         assert!(line_is_error("*", "Disconnected: connection closed by server"));
         assert!(line_is_error(
@@ -1732,7 +1806,7 @@ mod tests {
         assert!(line_is_error("NickServ", "You are not registered"));
         assert!(line_is_error("nickserv", "You are not logged in"));
         assert!(line_is_error("NickServ", "Password incorrect"));
-        assert!(line_is_error("NickServ", "Identification failed for patrickh"));
+        assert!(line_is_error("NickServ", "Identification failed for alice"));
         assert!(line_is_error("ChanServ", "Nickname is not registered"));
     }
 
@@ -1746,7 +1820,7 @@ mod tests {
         ));
         assert!(!line_is_error("*", "375 - Start of /MOTD command"));
         assert!(!line_is_error("*", "376 - End of /MOTD command"));
-        assert!(!line_is_error("*", "001 patrickh Welcome to the network"));
+        assert!(!line_is_error("*", "001 alice Welcome to the network"));
         // Joins/parts/modes/topics and ordinary console lines.
         assert!(!line_is_error("*", "alice joined #kirc"));
         assert!(!line_is_error("*", "bob left #kirc"));
@@ -1760,9 +1834,9 @@ mod tests {
         assert!(!line_is_error("alice", "Disconnected: my wifi died"));
         assert!(!line_is_error("bob", "incorrect usage of the word literally"));
         // Successful identify/log-in notices are not errors.
-        assert!(!line_is_error("NickServ", "You are now identified for patrickh."));
-        assert!(!line_is_error("NickServ", "You are now logged in as patrickh"));
-        assert!(!line_is_error("NickServ", "You are already logged in as patrickh"));
+        assert!(!line_is_error("NickServ", "You are now identified for alice."));
+        assert!(!line_is_error("NickServ", "You are now logged in as alice"));
+        assert!(!line_is_error("NickServ", "You are already logged in as alice"));
         assert!(!line_is_error("NickServ", "Password accepted - you are now recognized"));
         // A 3-digit token that is not a numeric reply is not a numeric.
         assert!(!line_is_error("*", "4730 not a numeric"));

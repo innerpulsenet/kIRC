@@ -17,6 +17,28 @@ QtObject {
     property string nickname: ""
     property string connected_server: ""
 
+    // ---- call recording (asserted by tst_cmds.qml) ------------------------
+    // Every invokable appends { "fn": name, "args": [...] } here so a test can
+    // assert the exact call a slash command produced (the wire line, the
+    // bridge call) instead of grepping stderr.  Purely additive: the STUB
+    // traces and every signal stay exactly as they were.
+    property var calls: []
+
+    function record(name, args) {
+        bridge.calls = bridge.calls.concat([{ "fn": name, "args": args }])
+    }
+    function clearCalls() {
+        bridge.calls = []
+    }
+    /// "fn(arg1, arg2) fn2(arg)" for the calls made since the last clear.
+    function callTrace() {
+        var out = []
+        for (var i = 0; i < bridge.calls.length; ++i) {
+            out.push(bridge.calls[i].fn + "(" + bridge.calls[i].args.join(", ") + ")")
+        }
+        return out.join(" ")
+    }
+
     // timestamp is the preformatted "HH:MM" string ("" when unknown); the
     // cxx-qt bridge passes the very string its STORE row carries.
     signal message_received(string target, string nick, string text, string timestamp, bool is_self, bool is_highlight)
@@ -33,14 +55,24 @@ QtObject {
     signal query_opened(string nick)
 
     function mark_read() {
+        bridge.record("mark_read", [])
         console.error("STUB mark_read()")
         bridge.unread_count = 0
     }
     function set_sasl_mechanism(mechanism) {
+        bridge.record("set_sasl_mechanism", [mechanism])
         console.error("STUB set_sasl_mechanism(" + mechanism + ")")
         bridge.sasl_mechanism = mechanism
     }
+    // Mirrors IrcBridge::set_server_password (PASS for the next connection).
+    // The secret itself is never recorded or echoed, not even by a test
+    // double, so the call trace stays safe to print.
+    function set_server_password(password) {
+        bridge.record("set_server_password", ["<redacted>"])
+        console.error("STUB set_server_password(<redacted>)")
+    }
     function connect_server(host, port, tls, nickname, sasl_user, sasl_pass) {
+        bridge.record("connect_server", [host, port, tls, nickname, sasl_user])
         console.error("STUB connect_server(" + host + ", " + port + ", " + tls + ", " + nickname + ", " + sasl_user + ")")
         bridge.nickname = nickname
         bridge.connected_server = host
@@ -62,16 +94,20 @@ QtObject {
         })
     }
     function disconnect_server() {
+        bridge.record("disconnect_server", [])
         bridge.connection_state = 0
         bridge.state_changed(0)
     }
     function send_message(target, text) {
+        bridge.record("send_message", [target, text])
         console.error("STUB send_message(" + target + ", " + text + ")")
     }
     function request_history(target, limit) {
+        bridge.record("request_history", [target, limit])
         console.error("STUB request_history(" + target + ", " + limit + ")")
     }
     function join_channel(channel) {
+        bridge.record("join_channel", [channel])
         console.error("STUB join_channel(" + channel + ")")
         if (channel.indexOf("pain") !== -1) {
             var reason = "473 " + channel + " Cannot join channel (+i)"
@@ -84,6 +120,7 @@ QtObject {
         Qt.callLater(function() { bridge.channel_joined(channel) })
     }
     function part_channel(channel) {
+        bridge.record("part_channel", [channel])
         console.error("STUB part_channel(" + channel + ")")
         bridge.channel_parted(channel)
     }
@@ -94,9 +131,11 @@ QtObject {
         return channel.charAt(0) === "#" ? "kIRC development" : ""
     }
     function send_raw(line) {
+        bridge.record("send_raw", [line])
         console.error("STUB send_raw(" + line + ")")
     }
     function clear_buffer(target) {
+        bridge.record("clear_buffer", [target])
         console.error("STUB clear_buffer(" + target + ")")
     }
 }

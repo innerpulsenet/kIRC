@@ -263,8 +263,9 @@ Kirigami.Page {
             page.forgetPendingJoin(channel)
             page.addBuffer(channel)
             page.openChannel(channel)
-            if (page.bridge !== null) {
-                page.bridge.request_history(channel, 200)
+            var limit = page.historyRequestLimit()
+            if (limit > 0 && page.bridge !== null) {
+                page.bridge.request_history(channel, limit)
             }
             page.joinError = ""
         }
@@ -1645,158 +1646,967 @@ Kirigami.Page {
         messageInput.forceActiveFocus()
     }
 
+    // ---------------------------------------------------------------------- //
+    // Slash commands
+    //
+    // `commandTable` is the single source of truth: the dispatcher, `/help`
+    // and command tab-completion all read the same list, so a command can
+    // never exist in one place and be missing in another.  A handler returns
+    // true when the line was consumed (the composer clears) and false when it
+    // was malformed — then a local `usage:` line is printed and the typed
+    // text is kept so it can be fixed.
+    //
+    // Wire safety: every hand-built protocol line goes through
+    // `sendRawLine()`, which folds CR/LF (the composer is a TextArea —
+    // Shift+Enter inserts a newline), so one command is always exactly one
+    // wire line; `/raw` rejects embedded newlines outright.  Message text
+    // proper (PRIVMSG / ACTION / CTCP) goes through `bridge.send_message()`,
+    // where the core performs its own one-PRIVMSG-per-line split.
+    // ---------------------------------------------------------------------- //
+
+    /// Canonical name, aliases, usage line, one-line description and handler.
+    /// Order = the order `/help` prints.
+    readonly property var commandTable: [
+        // -- core IRC ------------------------------------------------------- //
+        { "names": ["join"], "usage": "/join <#channel> [key]",
+          "desc": "join a channel (a bare name gains #)", "run": page.cmdJoin },
+        { "names": ["part", "leave", "close", "wc"], "usage": "/part [#channel] [reason]",
+          "desc": "leave a channel", "run": page.cmdPart },
+        { "names": ["msg"], "usage": "/msg <target> <text>",
+          "desc": "send a private message", "run": page.cmdMsg },
+        { "names": ["query"], "usage": "/query <nick>",
+          "desc": "open a private message buffer", "run": page.cmdQuery },
+        { "names": ["notice"], "usage": "/notice <target> <text>",
+          "desc": "send a notice", "run": page.cmdNotice },
+        { "names": ["me", "action"], "usage": "/me <action>",
+          "desc": "send an action (CTCP ACTION)", "run": page.cmdMe },
+        { "names": ["nick"], "usage": "/nick <new nick>",
+          "desc": "change your nickname", "run": page.cmdNick },
+        { "names": ["quit"], "usage": "/quit [reason]",
+          "desc": "disconnect from the server", "run": page.cmdQuit },
+        { "names": ["topic"], "usage": "/topic [#channel] [new topic]",
+          "desc": "show or set a channel topic", "run": page.cmdTopic },
+        { "names": ["kick", "remove"], "usage": "/kick [#channel] <nick> [reason]",
+          "desc": "kick a user", "run": page.cmdKick },
+        { "names": ["mode"], "usage": "/mode [#channel] <modes…> [args…]",
+          "desc": "set modes (defaults to the active channel)", "run": page.cmdMode },
+        { "names": ["op"], "usage": "/op [#channel] <nick> [nick…]",
+          "desc": "give operator status (+o)", "run": page.cmdOp },
+        { "names": ["deop"], "usage": "/deop [#channel] <nick> [nick…]",
+          "desc": "remove operator status (-o)", "run": page.cmdDeop },
+        { "names": ["voice"], "usage": "/voice [#channel] <nick> [nick…]",
+          "desc": "give voice (+v)", "run": page.cmdVoice },
+        { "names": ["devoice"], "usage": "/devoice [#channel] <nick> [nick…]",
+          "desc": "remove voice (-v)", "run": page.cmdDevoice },
+        { "names": ["halfop"], "usage": "/halfop [#channel] <nick> [nick…]",
+          "desc": "give half-operator status (+h)", "run": page.cmdHalfop },
+        { "names": ["dehalfop"], "usage": "/dehalfop [#channel] <nick> [nick…]",
+          "desc": "remove half-operator status (-h)", "run": page.cmdDehalfop },
+        { "names": ["whois"], "usage": "/whois [server] <nick>",
+          "desc": "user information", "run": page.cmdWhois },
+        { "names": ["whowas"], "usage": "/whowas <nick> [count]",
+          "desc": "past user information", "run": page.cmdWhowas },
+        { "names": ["who"], "usage": "/who [channel|mask]",
+          "desc": "list users", "run": page.cmdWho },
+        { "names": ["names"], "usage": "/names [#channel]",
+          "desc": "list channel members", "run": page.cmdNames },
+        { "names": ["list"], "usage": "/list [pattern]",
+          "desc": "list channels on the network", "run": page.cmdList },
+        { "names": ["motd"], "usage": "/motd [server]",
+          "desc": "message of the day", "run": page.cmdMotd },
+        { "names": ["version"], "usage": "/version [server]",
+          "desc": "server version", "run": page.cmdVersion },
+        { "names": ["time"], "usage": "/time [server]",
+          "desc": "server time", "run": page.cmdTime },
+        { "names": ["ping"], "usage": "/ping [target]",
+          "desc": "ping the server (defaults to it)", "run": page.cmdPing },
+        { "names": ["away"], "usage": "/away [reason]",
+          "desc": "mark yourself away", "run": page.cmdAway },
+        { "names": ["back"], "usage": "/back",
+          "desc": "clear the away status", "run": page.cmdBack },
+        { "names": ["invite"], "usage": "/invite <nick> [#channel]",
+          "desc": "invite someone to a channel", "run": page.cmdInvite },
+        { "names": ["oper"], "usage": "/oper <name> <password>",
+          "desc": "become an IRC operator", "run": page.cmdOper },
+        { "names": ["userhost"], "usage": "/userhost <nick> [nick…]",
+          "desc": "user@host replies for nicks", "run": page.cmdUserhost },
+        { "names": ["ison"], "usage": "/ison <nick> [nick…]",
+          "desc": "online-status replies for nicks", "run": page.cmdIson },
+        { "names": ["setname"], "usage": "/setname <real name>",
+          "desc": "change your real name (IRCv3 SETNAME)", "run": page.cmdSetname },
+        { "names": ["ctcp"], "usage": "/ctcp <target> <message>",
+          "desc": "send a CTCP query", "run": page.cmdCtcp },
+        // -- channel moderation --------------------------------------------- //
+        { "names": ["ban"], "usage": "/ban [#channel] [mask|nick]",
+          "desc": "ban a mask or nick (no mask: list the bans)", "run": page.cmdBan },
+        { "names": ["unban"], "usage": "/unban [#channel] <mask|nick>",
+          "desc": "remove a ban", "run": page.cmdUnban },
+        { "names": ["kickban"], "usage": "/kickban [#channel] <nick> [reason]",
+          "desc": "ban and kick a user", "run": page.cmdKickban },
+        { "names": ["quiet"], "usage": "/quiet [#channel] [mask|nick]",
+          "desc": "quiet a mask or nick (no mask: list the quiets)", "run": page.cmdQuiet },
+        { "names": ["unquiet"], "usage": "/unquiet [#channel] <mask|nick>",
+          "desc": "remove a quiet", "run": page.cmdUnquiet },
+        { "names": ["knock"], "usage": "/knock <#channel> [message]",
+          "desc": "ask to be invited to a channel", "run": page.cmdKnock },
+        // -- IRCv3 ---------------------------------------------------------- //
+        { "names": ["chathistory"], "usage": "/chathistory [target] [count]",
+          "desc": "request scrollback (CHATHISTORY LATEST)", "run": page.cmdChathistory },
+        { "names": ["markread"], "usage": "/markread [target]",
+          "desc": "mark a buffer read (draft/markread)", "run": page.cmdMarkread },
+        { "names": ["monitor"], "usage": "/monitor +|- <nick> [nick…] | list | status",
+          "desc": "watch nicks for online/offline (MONITOR)", "run": page.cmdMonitor },
+        { "names": ["account"], "usage": "/account <name> <password>",
+          "desc": "services login (NickServ IDENTIFY)", "run": page.cmdAccount },
+        { "names": ["cap"], "usage": "/cap <LS|LIST|REQ|END> [caps…]",
+          "desc": "capability negotiation passthrough", "run": page.cmdCap },
+        { "names": ["batch"], "usage": "/batch <params…>",
+          "desc": "raw BATCH passthrough", "run": page.cmdBatch },
+        // -- local / client ------------------------------------------------- //
+        { "names": ["help"], "usage": "/help [command]",
+          "desc": "this list, or the line for one command", "run": page.cmdHelp },
+        { "names": ["clear"], "usage": "/clear",
+          "desc": "clear the active buffer", "run": page.cmdClear },
+        { "names": ["echo"], "usage": "/echo <text>",
+          "desc": "print a local line", "run": page.cmdEcho },
+        { "names": ["raw", "quote"], "usage": "/raw <line>",
+          "desc": "send a raw IRC line (one line only)", "run": page.cmdRaw }
+    ]
+
+    /// Look a command up by name (leading "/" optional, case-insensitive).
+    function findCommand(name)
+    {
+        var word = String(name === undefined || name === null ? "" : name).toLowerCase()
+        if (word.charAt(0) === "/") {
+            word = word.substring(1)
+        }
+        for (var i = 0; i < page.commandTable.length; ++i) {
+            var names = page.commandTable[i].names
+            for (var j = 0; j < names.length; ++j) {
+                if (names[j] === word) {
+                    return page.commandTable[i]
+                }
+            }
+        }
+        return null
+    }
+
+    /// Split "/cmd rest…" and run its handler.  false = not consumed (unknown
+    /// command or bad arguments); the composer keeps the typed text.
     function runSlash(body)
     {
         var space = body.indexOf(" ")
-        var cmd = (space < 0 ? body : body.substring(0, space)).toLowerCase()
+        var word = (space < 0 ? body : body.substring(0, space))
         var rest = space < 0 ? "" : body.substring(space + 1).trim()
-        if (cmd === "/join") {
-            var bits = rest.split(/\s+/).filter(function (w) { return w.length > 0 })
-            if (bits.length === 0) {
-                return false
+        var entry = page.findCommand(word)
+        if (entry === null) {
+            page.localLine(qsTr("unknown command %1 — /help lists every command").arg(word))
+            return false
+        }
+        return entry.run(rest)
+    }
+
+    // ---- wire + local-line helpers ----------------------------------------- //
+
+    /// Fold CR/LF into spaces.  The composer is a TextArea (Shift+Enter adds
+    /// a newline), so every hand-built protocol line passes through this: one
+    /// command is always exactly one wire line, never several.
+    function foldToLine(text)
+    {
+        return String(text === undefined || text === null ? "" : text).replace(/[\r\n]+/g, " ")
+    }
+
+    function hasNewline(text)
+    {
+        return /[\r\n]/.test(String(text))
+    }
+
+    /// The only way a hand-built protocol line leaves this page.  A raw line
+    /// must never carry an embedded newline — the core would send each line
+    /// as its own command.
+    function sendRawLine(line)
+    {
+        if (page.bridge === null || typeof page.bridge.send_raw !== "function") {
+            return
+        }
+        var safe = page.foldToLine(line).trim()
+        if (safe.length === 0) {
+            return
+        }
+        page.bridge.send_raw(safe)
+    }
+
+    /// `HH:MM` stamp for a locally printed line — the same preformatted form
+    /// the bridge writes into its rows.
+    function stamp()
+    {
+        var d = new Date()
+        function pad(n) { return (n < 10 ? "0" : "") + n }
+        return pad(d.getHours()) + ":" + pad(d.getMinutes())
+    }
+
+    /// Print a local line into the active buffer (nick `*`: the console/event
+    /// style) through the model's incremental append — the same path live
+    /// traffic uses, so no full-buffer reload.  The row lives in the model
+    /// only (the bridge has no QML-callable store append), so switching away
+    /// and back drops it.
+    function localLine(text)
+    {
+        var body = page.foldToLine(text).trim()
+        if (body.length === 0) {
+            return
+        }
+        msgModel.append_message(page.currentChannel, "*", body, page.stamp(), false, false)
+        page.scrollToEnd()
+    }
+
+    function usageLine(usage)
+    {
+        page.localLine(qsTr("usage: %1").arg(usage))
+    }
+
+    // ---- argument helpers -------------------------------------------------- //
+
+    /// Whitespace-split argument tokens, CR/LF already folded.
+    function argTokens(rest)
+    {
+        var parts = page.foldToLine(rest).split(/\s+/)
+        var out = []
+        for (var i = 0; i < parts.length; ++i) {
+            if (parts[i].length > 0) {
+                out.push(parts[i])
             }
-            page.joinChannel(bits[0], bits.length > 1 ? bits.slice(1).join(" ") : "")
+        }
+        return out
+    }
+
+    /// IRC's trailing-parameter convention: a leading ":" is presentation —
+    /// "/kick bob :bye" means reason "bye"; the colon is added back where the
+    /// protocol needs it.
+    function stripColon(token)
+    {
+        var t = String(token === undefined || token === null ? "" : token)
+        return t.charAt(0) === ":" ? t.substring(1) : t
+    }
+
+    /// First token + untouched remainder (newlines kept) for commands whose
+    /// text argument may legitimately be multi-line: PRIVMSG text goes
+    /// through the bridge call where the core splits it line by line.
+    function splitFirst(rest)
+    {
+        var m = /^\s*(\S+)(?:\s+([\s\S]*))?$/.exec(String(rest === undefined || rest === null ? "" : rest))
+        return { "first": m ? m[1] : "", "rest": (m !== null && m[2] !== undefined) ? m[2] : "" }
+    }
+
+    /// "<channel> rest…" when the first token is a channel; otherwise the
+    /// current buffer when it is a channel.  `channel` is "" when neither
+    /// applies — the caller rejects with a usage line.
+    function takeChannel(tokens)
+    {
+        if (tokens.length > 0 && page.isChannel(tokens[0])) {
+            return { "channel": tokens[0], "rest": tokens.slice(1) }
+        }
+        if (page.isChannel(page.currentChannel)) {
+            return { "channel": page.currentChannel, "rest": tokens }
+        }
+        return { "channel": "", "rest": tokens }
+    }
+
+    /// A ban/quiet mask from a user-typed argument: a bare nick becomes
+    /// nick!*@*, anything that already looks like a mask is used as typed.
+    function banMask(token)
+    {
+        var m = page.stripColon(token)
+        if (/[!@*?]/.test(m)) {
+            return m
+        }
+        return m + "!*@*"
+    }
+
+    /// Scrollback the on-join CHATHISTORY request asks for: the Settings
+    /// value (`historyLimit`) when it is available, else the frozen default
+    /// 200.  0 disables the automatic request.
+    function historyRequestLimit()
+    {
+        var cfg = (page.hostWindow !== null && page.hostWindow !== undefined)
+            ? page.hostWindow.appConfig : null
+        if (cfg !== null && cfg !== undefined && cfg.historyLimit !== undefined && cfg.historyLimit !== null) {
+            var n = Number(cfg.historyLimit)
+            if (!isNaN(n)) {
+                return Math.max(0, Math.round(n))
+            }
+        }
+        return 200
+    }
+
+    // ---- handlers: core IRC ------------------------------------------------ //
+
+    function cmdJoin(rest)
+    {
+        var bits = page.argTokens(rest)
+        if (bits.length === 0) {
+            page.usageLine("/join <#channel> [key]")
+            return false
+        }
+        page.joinChannel(bits[0], bits.length > 1 ? page.stripColon(bits.slice(1).join(" ")) : "")
+        return true
+    }
+
+    /// Configured default PART/QUIT reason (Settings > Connection).  Empty when
+    /// unset, in which case no reason is sent at all.
+    function defaultPartReason()
+    {
+        var cfg = (page.hostWindow !== null && page.hostWindow !== undefined)
+            ? page.hostWindow.appConfig : null
+        if (cfg === null || cfg === undefined || cfg.defaultPartReason === undefined) {
+            return ""
+        }
+        return page.stripColon(String(cfg.defaultPartReason).trim())
+    }
+
+    function cmdPart(rest)
+    {
+        var bits = page.argTokens(rest)
+        if (bits.length > 0 && !page.isChannel(bits[0])) {
+            // A non-channel first token: close that buffer (query or
+            // console) — the old /close <nick> behaviour.
+            page.closeBuffer(bits[0])
             return true
         }
-        if (cmd === "/part" || cmd === "/close" || cmd === "/wc") {
-            if (page.bridge === null) {
+        if (bits.length === 0 && !page.isChannel(page.currentChannel)) {
+            if (page.currentChannel !== "*server*") {
+                page.closeBuffer(page.currentChannel)
                 return true
             }
-            var words = rest.length > 0 ? rest.split(" ") : []
-            var chan = words.length > 0 && words[0].length > 0 ? words[0] : page.currentChannel
-            var reason = words.length > 1 ? words.slice(1).join(" ").trim() : ""
-            if (!page.isChannel(chan)) {
-                page.closeBuffer(chan)
-                return true
-            }
-            if (reason.length > 0) {
-                page.bridge.send_raw("PART " + chan + " :" + reason)
-            } else if (typeof page.bridge.part_channel === "function") {
-                page.bridge.part_channel(chan)
-            } else {
-                page.bridge.send_raw("PART " + chan)
-            }
-            return true
+            page.usageLine("/part [#channel] [reason]")
+            return false
         }
-        if (cmd === "/query" || cmd === "/msg") {
-            var qbits = rest.split(" ")
-            var nick = qbits[0]
-            if (!nick) {
-                return false
-            }
-            page.addBuffer(nick)
-            page.openChannel(nick)
-            if (cmd === "/msg" && qbits.length > 1) {
-                page.bridge.send_message(nick, qbits.slice(1).join(" "))
-            }
-            return true
+        var chan = bits.length > 0 ? bits[0] : page.currentChannel
+        var reason = page.stripColon(bits.slice(1).join(" "))
+        if (reason.length === 0) {
+            // No reason typed: use the configured default (Settings >
+            // Connection).  An explicit reason always wins.
+            reason = page.defaultPartReason()
         }
-        if (cmd === "/me") {
-            if (page.currentChannel === "*server*" || rest.length === 0) {
-                return false
-            }
-            page.bridge.send_message(page.currentChannel, "\u0001ACTION " + rest + "\u0001")
-            return true
+        if (reason.length > 0) {
+            page.sendRawLine("PART " + chan + " :" + reason)
+        } else if (page.bridge !== null && typeof page.bridge.part_channel === "function") {
+            page.bridge.part_channel(chan)
+        } else {
+            page.sendRawLine("PART " + chan)
         }
-        if (cmd === "/nick") {
-            if (rest.length === 0) {
-                return false
-            }
-            page.bridge.send_raw("NICK " + rest.split(" ")[0])
-            return true
+        return true
+    }
+
+    function cmdMsg(rest)
+    {
+        var parts = page.splitFirst(rest)
+        var target = page.stripColon(parts.first)
+        if (target.length === 0) {
+            page.usageLine("/msg <target> <text> (or /query <nick>)")
+            return false
         }
-        if (cmd === "/whois") {
-            var who = rest.length > 0 ? rest.split(" ")[0] : page.currentChannel
-            if (page.isChannel(who) || who === "*server*") {
-                return false
-            }
-            page.addBuffer(who)
-            page.openChannel(who)
-            page.bridge.send_raw("WHOIS " + who)
-            return true
+        page.addBuffer(target)
+        page.openChannel(target)
+        var text = parts.rest.trim()
+        if (text.length > 0 && page.bridge !== null) {
+            // Multi-line text is the sanctioned multi-line path: the
+            // bridge/core sends one PRIVMSG per line.
+            page.bridge.send_message(target, text)
         }
-        if (cmd === "/notice") {
-            var nbits = rest.split(" ")
-            if (nbits.length < 2) {
-                return false
-            }
-            page.bridge.send_raw("NOTICE " + nbits[0] + " :" + nbits.slice(1).join(" "))
-            return true
+        return true
+    }
+
+    function cmdQuery(rest)
+    {
+        var bits = page.argTokens(rest)
+        if (bits.length === 0) {
+            page.usageLine("/query <nick>")
+            return false
         }
-        if (cmd === "/away") {
-            page.bridge.send_raw(rest.length > 0 ? ("AWAY :" + rest) : "AWAY")
-            return true
+        page.addBuffer(bits[0])
+        page.openChannel(bits[0])
+        return true
+    }
+
+    function cmdNotice(rest)
+    {
+        var parts = page.splitFirst(rest)
+        var target = page.stripColon(parts.first)
+        var text = parts.rest.trim()
+        if (target.length === 0 || text.length === 0) {
+            page.usageLine("/notice <target> <text>")
+            return false
         }
-        if (cmd === "/back") {
-            page.bridge.send_raw("AWAY")
-            return true
+        // NOTICE has no bridge call; it is a hand-built line, so the fold in
+        // sendRawLine keeps multi-line input to a single wire command.
+        page.sendRawLine("NOTICE " + target + " :" + text)
+        return true
+    }
+
+    function cmdMe(rest)
+    {
+        var text = rest.trim()
+        if (text.length === 0 || page.currentChannel === "*server*" || page.bridge === null) {
+            page.usageLine("/me <action>")
+            return false
         }
-        if (cmd === "/topic") {
-            if (!page.isChannel(page.currentChannel)) {
-                return false
-            }
-            if (rest.length === 0) {
-                page.bridge.send_raw("TOPIC " + page.currentChannel)
-            } else {
-                page.bridge.send_raw("TOPIC " + page.currentChannel + " :" + rest)
-            }
-            return true
+        page.bridge.send_message(page.currentChannel, "\u0001ACTION " + text + "\u0001")
+        return true
+    }
+
+    function cmdNick(rest)
+    {
+        var bits = page.argTokens(rest)
+        if (bits.length === 0) {
+            page.usageLine("/nick <new nick>")
+            return false
         }
-        if (cmd === "/invite") {
-            var inv = rest.split(" ")
-            if (inv.length === 0 || inv[0].length === 0) {
-                return false
-            }
-            var ichan = inv.length > 1 ? inv[1] : page.currentChannel
-            page.bridge.send_raw("INVITE " + inv[0] + " " + ichan)
-            return true
+        page.sendRawLine("NICK " + bits[0])
+        return true
+    }
+
+    function cmdQuit(rest)
+    {
+        var reason = rest.trim()
+        if (reason.length === 0) {
+            // Same default-reason rule as /part.
+            reason = page.defaultPartReason()
         }
-        if (cmd === "/kick") {
-            var kb = rest.split(" ")
-            if (kb.length === 0 || !page.isChannel(page.currentChannel)) {
-                return false
-            }
-            var kreason = kb.length > 1 ? kb.slice(1).join(" ") : ""
-            page.bridge.send_raw("KICK " + page.currentChannel + " " + kb[0] + (kreason ? (" :" + kreason) : ""))
-            return true
+        if (page.hostWindow !== null && page.hostWindow !== undefined) {
+            page.hostWindow.userDisconnect = true
         }
-        if (cmd === "/mode") {
-            if (rest.length === 0) {
-                return false
-            }
-            page.bridge.send_raw("MODE " + rest)
-            return true
+        if (reason.length > 0) {
+            // Say where we went before tearing the session down: the queued
+            // QUIT is processed before the disconnect.
+            page.sendRawLine("QUIT :" + reason)
         }
-        if (cmd === "/ctcp") {
-            var cb = rest.split(" ")
-            if (cb.length < 2) {
-                return false
-            }
-            page.bridge.send_message(cb[0], "\u0001" + cb.slice(1).join(" ").toUpperCase() + "\u0001")
-            return true
-        }
-        if (cmd === "/clear") {
-            if (typeof page.bridge.clear_buffer === "function") {
-                page.bridge.clear_buffer(page.currentChannel)
-            }
-            page.refreshHistory()
-            return true
-        }
-        if (cmd === "/quit") {
-            if (page.hostWindow !== null) {
-                page.hostWindow.userDisconnect = true
-            }
+        if (page.bridge !== null && typeof page.bridge.disconnect_server === "function") {
             page.bridge.disconnect_server()
-            return true
         }
-        if (cmd === "/raw" || cmd === "/quote") {
-            if (rest.length === 0) {
+        return true
+    }
+
+    function cmdTopic(rest)
+    {
+        var target = page.takeChannel(page.argTokens(rest))
+        if (target.channel.length === 0) {
+            page.usageLine("/topic [#channel] [new topic]")
+            return false
+        }
+        var text = page.stripColon(target.rest.join(" "))
+        if (text.length > 0) {
+            page.sendRawLine("TOPIC " + target.channel + " :" + text)
+        } else {
+            page.sendRawLine("TOPIC " + target.channel)
+        }
+        return true
+    }
+
+    function cmdKick(rest)
+    {
+        var target = page.takeChannel(page.argTokens(rest))
+        if (target.channel.length === 0 || target.rest.length === 0) {
+            page.usageLine("/kick [#channel] <nick> [reason]")
+            return false
+        }
+        var nick = page.stripColon(target.rest[0])
+        var reason = page.stripColon(target.rest.slice(1).join(" "))
+        page.sendRawLine("KICK " + target.channel + " " + nick + (reason.length > 0 ? (" :" + reason) : ""))
+        return true
+    }
+
+    function cmdMode(rest)
+    {
+        var bits = page.argTokens(rest)
+        if (bits.length === 0) {
+            if (!page.isChannel(page.currentChannel)) {
+                page.usageLine("/mode [#channel] <modes…> [args…]")
                 return false
             }
-            page.bridge.send_raw(rest)
+            page.sendRawLine("MODE " + page.currentChannel)
             return true
         }
-        return false
+        var first = bits[0]
+        var modesOnly = (first.charAt(0) === "+" || first.charAt(0) === "-")
+        var target = modesOnly ? page.currentChannel : first
+        if (modesOnly && !page.isChannel(target)) {
+            page.usageLine("/mode [#channel] <modes…> [args…]")
+            return false
+        }
+        var modes = modesOnly ? bits : bits.slice(1)
+        page.sendRawLine("MODE " + target + (modes.length > 0 ? (" " + modes.join(" ")) : ""))
+        return true
+    }
+
+    /// Shared /op, /deop, /voice, /devoice, /halfop, /dehalfop body.
+    function modeNicks(mode, rest, usage)
+    {
+        var target = page.takeChannel(page.argTokens(rest))
+        if (target.channel.length === 0 || target.rest.length === 0) {
+            page.usageLine(usage)
+            return false
+        }
+        page.sendRawLine("MODE " + target.channel + " " + mode + " " + target.rest.join(" "))
+        return true
+    }
+
+    function cmdOp(rest) { return page.modeNicks("+o", rest, "/op [#channel] <nick> [nick…]") }
+    function cmdDeop(rest) { return page.modeNicks("-o", rest, "/deop [#channel] <nick> [nick…]") }
+    function cmdVoice(rest) { return page.modeNicks("+v", rest, "/voice [#channel] <nick> [nick…]") }
+    function cmdDevoice(rest) { return page.modeNicks("-v", rest, "/devoice [#channel] <nick> [nick…]") }
+    function cmdHalfop(rest) { return page.modeNicks("+h", rest, "/halfop [#channel] <nick> [nick…]") }
+    function cmdDehalfop(rest) { return page.modeNicks("-h", rest, "/dehalfop [#channel] <nick> [nick…]") }
+
+    function cmdWhois(rest)
+    {
+        var bits = page.argTokens(rest)
+        if (bits.length === 0 || bits.length > 2) {
+            page.usageLine("/whois [server] <nick>")
+            return false
+        }
+        var who = page.stripColon(bits[bits.length - 1])
+        if (page.isChannel(who) || who === "*server*" || who.length === 0) {
+            page.usageLine("/whois [server] <nick>")
+            return false
+        }
+        page.addBuffer(who)
+        page.openChannel(who)
+        page.sendRawLine("WHOIS " + bits.join(" "))
+        return true
+    }
+
+    function cmdWhowas(rest)
+    {
+        var bits = page.argTokens(rest)
+        if (bits.length === 0 || bits.length > 2 || page.isChannel(bits[0])) {
+            page.usageLine("/whowas <nick> [count]")
+            return false
+        }
+        page.sendRawLine("WHOWAS " + bits.join(" "))
+        return true
+    }
+
+    function cmdWho(rest)
+    {
+        var bits = page.argTokens(rest)
+        if (bits.length === 0) {
+            if (!page.isChannel(page.currentChannel)) {
+                page.usageLine("/who [channel|mask]")
+                return false
+            }
+            page.sendRawLine("WHO " + page.currentChannel)
+            return true
+        }
+        if (bits.length > 1) {
+            page.usageLine("/who [channel|mask]")
+            return false
+        }
+        page.sendRawLine("WHO " + bits[0])
+        return true
+    }
+
+    function cmdNames(rest)
+    {
+        var bits = page.argTokens(rest)
+        var target = bits.length > 0 ? bits[0] : page.currentChannel
+        if (!page.isChannel(target)) {
+            page.usageLine("/names [#channel]")
+            return false
+        }
+        page.sendRawLine("NAMES " + target)
+        return true
+    }
+
+    function cmdList(rest)
+    {
+        var bits = page.argTokens(rest)
+        // LIST takes one comma-separated pattern parameter.
+        page.sendRawLine(bits.length > 0 ? ("LIST " + bits.join(",")) : "LIST")
+        return true
+    }
+
+    function cmdMotd(rest)
+    {
+        var bits = page.argTokens(rest)
+        page.sendRawLine(bits.length > 0 ? ("MOTD " + bits[0]) : "MOTD")
+        return true
+    }
+
+    function cmdVersion(rest)
+    {
+        var bits = page.argTokens(rest)
+        page.sendRawLine(bits.length > 0 ? ("VERSION " + bits[0]) : "VERSION")
+        return true
+    }
+
+    function cmdTime(rest)
+    {
+        var bits = page.argTokens(rest)
+        page.sendRawLine(bits.length > 0 ? ("TIME " + bits[0]) : "TIME")
+        return true
+    }
+
+    function cmdPing(rest)
+    {
+        var bits = page.argTokens(rest)
+        var target = bits.length > 0 ? bits[0] : ""
+        if (target.length === 0 && page.bridge !== null) {
+            // Default to the server we are actually on.
+            var server = String(page.bridge.connected_server)
+            var cut = server.indexOf(":")
+            target = cut > 0 ? server.substring(0, cut) : server
+        }
+        if (target.length === 0) {
+            page.usageLine("/ping [target]")
+            return false
+        }
+        page.sendRawLine("PING :" + target)
+        return true
+    }
+
+    function cmdAway(rest)
+    {
+        var reason = page.stripColon(rest.trim())
+        page.sendRawLine(reason.length > 0 ? ("AWAY :" + reason) : "AWAY")
+        return true
+    }
+
+    function cmdBack(rest)
+    {
+        page.sendRawLine("AWAY")
+        return true
+    }
+
+    function cmdInvite(rest)
+    {
+        var bits = page.argTokens(rest)
+        if (bits.length === 0 || bits.length > 2) {
+            page.usageLine("/invite <nick> [#channel]")
+            return false
+        }
+        var chan = bits.length > 1 ? bits[1] : page.currentChannel
+        if (!page.isChannel(chan)) {
+            page.usageLine("/invite <nick> [#channel]")
+            return false
+        }
+        page.sendRawLine("INVITE " + bits[0] + " " + chan)
+        return true
+    }
+
+    function cmdOper(rest)
+    {
+        var bits = page.argTokens(rest)
+        if (bits.length < 2) {
+            page.usageLine("/oper <name> <password>")
+            return false
+        }
+        // The password only ever goes to the wire — never into a local row.
+        page.sendRawLine("OPER " + bits[0] + " " + bits.slice(1).join(" "))
+        return true
+    }
+
+    function cmdUserhost(rest)
+    {
+        var bits = page.argTokens(rest)
+        if (bits.length === 0) {
+            page.usageLine("/userhost <nick> [nick…]")
+            return false
+        }
+        page.sendRawLine("USERHOST " + bits.join(" "))
+        return true
+    }
+
+    function cmdIson(rest)
+    {
+        var bits = page.argTokens(rest)
+        if (bits.length === 0) {
+            page.usageLine("/ison <nick> [nick…]")
+            return false
+        }
+        page.sendRawLine("ISON " + bits.join(" "))
+        return true
+    }
+
+    function cmdSetname(rest)
+    {
+        var name = page.stripColon(rest.trim())
+        if (name.length === 0) {
+            page.usageLine("/setname <real name>")
+            return false
+        }
+        // Needs the server's SETNAME capability; servers without it answer
+        // 421 and the console shows that.
+        page.sendRawLine("SETNAME :" + name)
+        return true
+    }
+
+    function cmdCtcp(rest)
+    {
+        var parts = page.splitFirst(rest)
+        var target = page.stripColon(parts.first)
+        var text = parts.rest.trim()
+        if (target.length === 0 || text.length === 0 || page.bridge === null) {
+            page.usageLine("/ctcp <target> <message>")
+            return false
+        }
+        page.bridge.send_message(target, "\u0001" + page.foldToLine(text).toUpperCase() + "\u0001")
+        return true
+    }
+
+    // ---- handlers: channel moderation -------------------------------------- //
+
+    /// Shared /ban, /unban, /quiet, /unquiet body.  With no mask and
+    /// `allowEmpty`, the mode doubles as a server-side list request
+    /// (`MODE #chan +b`).  A bare nick is expanded to nick!*@*.
+    function modeMask(mode, rest, allowEmpty, usage)
+    {
+        var target = page.takeChannel(page.argTokens(rest))
+        if (target.channel.length === 0) {
+            page.usageLine(usage)
+            return false
+        }
+        if (target.rest.length === 0) {
+            if (!allowEmpty) {
+                page.usageLine(usage)
+                return false
+            }
+            page.sendRawLine("MODE " + target.channel + " " + mode)
+            return true
+        }
+        var masks = []
+        for (var i = 0; i < target.rest.length; ++i) {
+            masks.push(page.banMask(target.rest[i]))
+        }
+        page.sendRawLine("MODE " + target.channel + " " + mode + " " + masks.join(" "))
+        return true
+    }
+
+    function cmdBan(rest) { return page.modeMask("+b", rest, true, "/ban [#channel] [mask|nick]") }
+    function cmdUnban(rest) { return page.modeMask("-b", rest, false, "/unban [#channel] <mask|nick>") }
+    function cmdQuiet(rest) { return page.modeMask("+q", rest, true, "/quiet [#channel] [mask|nick]") }
+    function cmdUnquiet(rest) { return page.modeMask("-q", rest, false, "/unquiet [#channel] <mask|nick>") }
+
+    function cmdKickban(rest)
+    {
+        var target = page.takeChannel(page.argTokens(rest))
+        if (target.channel.length === 0 || target.rest.length === 0) {
+            page.usageLine("/kickban [#channel] <nick> [reason]")
+            return false
+        }
+        var nick = page.stripColon(target.rest[0])
+        var reason = page.stripColon(target.rest.slice(1).join(" "))
+        page.sendRawLine("MODE " + target.channel + " +b " + page.banMask(nick))
+        page.sendRawLine("KICK " + target.channel + " " + nick + (reason.length > 0 ? (" :" + reason) : ""))
+        return true
+    }
+
+    function cmdKnock(rest)
+    {
+        var bits = page.argTokens(rest)
+        if (bits.length === 0 || !page.isChannel(bits[0])) {
+            page.usageLine("/knock <#channel> [message]")
+            return false
+        }
+        var msg = page.stripColon(bits.slice(1).join(" "))
+        page.sendRawLine("KNOCK " + bits[0] + (msg.length > 0 ? (" :" + msg) : ""))
+        return true
+    }
+
+    // ---- handlers: IRCv3 ---------------------------------------------------- //
+
+    function cmdChathistory(rest)
+    {
+        var bits = page.argTokens(rest)
+        var target = bits.length > 0 ? bits[0] : page.currentChannel
+        if (target.length === 0 || target === "*server*") {
+            page.usageLine("/chathistory [target] [count]")
+            return false
+        }
+        var limit = page.historyRequestLimit()
+        if (limit <= 0) {
+            limit = 200
+        }
+        if (bits.length > 1) {
+            var n = Number(bits[1])
+            if (isNaN(n) || n <= 0) {
+                page.usageLine("/chathistory [target] [count]")
+                return false
+            }
+            limit = Math.min(1000, Math.max(1, Math.round(n)))
+        }
+        if (page.bridge !== null && typeof page.bridge.request_history === "function") {
+            // The bridge's own call: the core emits
+            // "CHATHISTORY LATEST <target> * <limit>".
+            page.bridge.request_history(target, limit)
+        }
+        return true
+    }
+
+    function cmdMarkread(rest)
+    {
+        var bits = page.argTokens(rest)
+        var target = bits.length > 0 ? bits[0] : page.currentChannel
+        if (target.length === 0 || target === "*server*") {
+            page.usageLine("/markread [target]")
+            return false
+        }
+        if (page.sameTarget(target, page.currentChannel) && page.bridge !== null
+                && typeof page.bridge.mark_read === "function") {
+            page.bridge.mark_read()
+        }
+        page.sendRawLine("MARKREAD " + target)
+        return true
+    }
+
+    function cmdMonitor(rest)
+    {
+        var bits = page.argTokens(rest)
+        if (bits.length === 0) {
+            page.usageLine("/monitor +|- <nick> [nick…] | list | status")
+            return false
+        }
+        var head = bits[0].toLowerCase()
+        var nicks = bits.slice(1)
+        if (head === "+" || head === "-") {
+            if (nicks.length === 0) {
+                page.usageLine("/monitor +|- <nick> [nick…] | list | status")
+                return false
+            }
+            page.sendRawLine("MONITOR " + head + " " + nicks.join(","))
+            return true
+        }
+        if (head === "list" || head === "l") {
+            page.sendRawLine("MONITOR L")
+            return true
+        }
+        if (head === "status" || head === "s") {
+            page.sendRawLine("MONITOR S")
+            return true
+        }
+        if (head === "clear" || head === "c") {
+            page.sendRawLine("MONITOR C")
+            return true
+        }
+        // A bare nick list means "add".
+        page.sendRawLine("MONITOR + " + bits.join(","))
+        return true
+    }
+
+    function cmdAccount(rest)
+    {
+        var bits = page.argTokens(rest)
+        if (bits.length < 2) {
+            page.usageLine("/account <name> <password> (services login)")
+            return false
+        }
+        // Services login, the NickServ classic.  Like the identify-on-connect
+        // flow, the password only ever goes to the wire.
+        page.sendRawLine("PRIVMSG NickServ :IDENTIFY " + bits[0] + " " + bits.slice(1).join(" "))
+        return true
+    }
+
+    function cmdCap(rest)
+    {
+        var bits = page.argTokens(rest)
+        if (bits.length === 0) {
+            page.usageLine("/cap <LS|LIST|REQ|END> [caps…]")
+            return false
+        }
+        var sub = bits[0].toUpperCase()
+        var extra = bits.slice(1)
+        var line = "CAP " + sub
+        if (extra.length > 0) {
+            // CAP REQ takes the whole capability list as ONE trailing
+            // parameter; the other subcommands pass through as typed.
+            line += " " + (sub === "REQ" ? (":" + extra.join(" ")) : extra.join(" "))
+        }
+        page.sendRawLine(line)
+        return true
+    }
+
+    function cmdBatch(rest)
+    {
+        var bits = page.argTokens(rest)
+        if (bits.length === 0) {
+            page.usageLine("/batch <params…> (raw passthrough)")
+            return false
+        }
+        // IRCv3 defines BATCH server→client; this is a raw escape hatch for
+        // testing/experimentation, not a capability clients negotiate.
+        page.sendRawLine("BATCH " + bits.join(" "))
+        return true
+    }
+
+    // ---- handlers: local / client ------------------------------------------- //
+
+    /// One `/help` line: usage, description, and the alias forms.
+    function helpLine(entry)
+    {
+        var suffix = ""
+        if (entry.names.length > 1) {
+            var aliasList = []
+            for (var i = 1; i < entry.names.length; ++i) {
+                aliasList.push("/" + entry.names[i])
+            }
+            suffix = "   (also " + aliasList.join(", ") + ")"
+        }
+        return entry.usage + " — " + entry.desc + suffix
+    }
+
+    function cmdHelp(rest)
+    {
+        var filter = page.stripColon(String(rest).trim().toLowerCase())
+        if (filter.length > 0) {
+            var entry = page.findCommand(filter)
+            if (entry === null) {
+                page.localLine(qsTr("no such command: %1 — /help lists every command").arg(filter))
+                return false
+            }
+            page.localLine(page.helpLine(entry))
+            return true
+        }
+        page.localLine(qsTr("kIRC commands (%1) — /help <command> for one line").arg(page.commandTable.length))
+        for (var i = 0; i < page.commandTable.length; ++i) {
+            page.localLine(page.helpLine(page.commandTable[i]))
+        }
+        return true
+    }
+
+    function cmdClear(rest)
+    {
+        if (page.bridge !== null && typeof page.bridge.clear_buffer === "function") {
+            page.bridge.clear_buffer(page.currentChannel)
+        }
+        page.refreshHistory()
+        return true
+    }
+
+    function cmdEcho(rest)
+    {
+        var text = rest.trim()
+        if (text.length === 0) {
+            page.usageLine("/echo <text>")
+            return false
+        }
+        page.localLine(text)
+        return true
+    }
+
+    function cmdRaw(rest)
+    {
+        var line = String(rest).replace(/\s+$/, "")
+        if (line.trim().length === 0) {
+            page.usageLine("/raw <line>")
+            return false
+        }
+        if (page.hasNewline(line)) {
+            // A raw blob must never become several wire commands.
+            page.localLine("/raw rejected: a raw line must be a single line")
+            return false
+        }
+        page.sendRawLine(line)
+        return true
     }
 
     function isNickServ(nick)
@@ -1966,10 +2776,32 @@ Kirigami.Page {
     property var tabMatches: []
     property int tabIndex: 0
 
-    function tabComplete()
+    /// Every command name and alias that starts with the typed prefix.
+    function commandMatches(prefix)
     {
-        var text = messageInput.text
-        var pos = messageInput.cursorPosition
+        var lower = String(prefix).toLowerCase()
+        var out = []
+        for (var i = 0; i < page.commandTable.length; ++i) {
+            var names = page.commandTable[i].names
+            for (var j = 0; j < names.length; ++j) {
+                var full = "/" + names[j]
+                if (full.indexOf(lower) === 0) {
+                    out.push(full)
+                }
+            }
+        }
+        out.sort()
+        return out
+    }
+
+    /// One completion step for the composer.  Returns { text, cursor } or
+    /// null when there is nothing to complete.  The leading word completes
+    /// against the command table when the line starts with "/"; otherwise
+    /// the word under the cursor completes against the active channel's nick
+    /// list (a nick completed at the very start of the line is followed by
+    /// ": ").
+    function nextCompletion(text, pos)
+    {
         var start = pos
         while (start > 0) {
             var ch = text.charAt(start - 1)
@@ -1980,32 +2812,50 @@ Kirigami.Page {
         }
         var prefix = text.substring(start, pos)
         if (prefix.length === 0) {
-            return
+            return null
         }
+        var isCommand = start === 0 && prefix.charAt(0) === "/"
         if (prefix !== page.tabPrefix) {
             page.tabPrefix = prefix
             page.tabIndex = 0
-            var lower = prefix.toLowerCase()
-            var out = []
-            for (var i = 0; i < page.nickList.length; ++i) {
-                var n = String(page.nickList[i]).replace(/^[@+%~&]/, "")
-                if (n.toLowerCase().indexOf(lower) === 0) {
-                    out.push(n)
+            if (isCommand) {
+                page.tabMatches = page.commandMatches(prefix)
+            } else {
+                var lower = prefix.toLowerCase()
+                var out = []
+                for (var i = 0; i < page.nickList.length; ++i) {
+                    var n = String(page.nickList[i]).replace(/^[@+%~&]/, "")
+                    if (n.toLowerCase().indexOf(lower) === 0) {
+                        out.push(n)
+                    }
                 }
+                page.tabMatches = out
             }
-            page.tabMatches = out
         }
         if (page.tabMatches.length === 0) {
-            return
+            return null
         }
         var pick = page.tabMatches[page.tabIndex % page.tabMatches.length]
         page.tabIndex = (page.tabIndex + 1) % page.tabMatches.length
-        var insert = (start === 0) ? (pick + ": ") : pick
-        messageInput.text = text.substring(0, start) + insert + text.substring(pos)
-        messageInput.cursorPosition = start + insert.length
+        var insert = isCommand
+            ? (page.tabMatches.length === 1 ? (pick + " ") : pick)
+            : (start === 0 ? (pick + ": ") : pick)
+        return {
+            "text": text.substring(0, start) + insert + text.substring(pos),
+            "cursor": start + insert.length
+        }
     }
 
-    // ---------------------------------------------------------------------- //
+    function tabComplete()
+    {
+        var next = page.nextCompletion(messageInput.text, messageInput.cursorPosition)
+        if (next === null) {
+            return
+        }
+        messageInput.text = next.text
+        messageInput.cursorPosition = next.cursor
+    }
+
     // Join dialog (replaces the old bottom "Join a channel..." text field)
     // ---------------------------------------------------------------------- //
     function openJoinDialog()

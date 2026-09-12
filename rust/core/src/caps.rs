@@ -97,6 +97,18 @@ impl CapState {
         }
     }
 
+    /// Forget capabilities the server removed with `CAP DEL`.
+    ///
+    /// Names are folded exactly like in [`CapState::add_available`], so a
+    /// case-different `DEL` still clears the entry (a stale `available` entry
+    /// would make the next re-negotiation request a capability the server no
+    /// longer offers, which it can then NAK — or silently ignore).
+    pub fn remove_available(&mut self, caps: &[String]) {
+        for c in caps {
+            self.available.remove(&normalize_cap(c));
+        }
+    }
+
     /// Whether the server advertised (and can therefore be asked for) `cap`.
     pub fn supports(&self, cap: &str) -> bool {
         self.available.contains(cap)
@@ -128,9 +140,12 @@ impl CapState {
     }
 }
 
-/// Strip the optional `=value` suffix from a capability token.
+/// Strip the optional `=value` suffix from a capability token and fold it to
+/// lower case. Capability names are case-insensitive on the wire (IRCv3
+/// `CAP`), and every lookup in this module is written against the lower-case
+/// spelling, so a server advertising `SASL` must still satisfy `supports("sasl")`.
 fn normalize_cap(cap: &str) -> String {
-    cap.split('=').next().unwrap_or(cap).to_string()
+    cap.split('=').next().unwrap_or(cap).to_ascii_lowercase()
 }
 
 #[cfg(test)]
@@ -189,6 +204,23 @@ mod tests {
         assert!(st.supports("sasl"));
         assert!(st.has("server-time"));
         assert!(!st.has("sasl"));
+    }
+
+    #[test]
+    fn capability_names_are_case_insensitive() {
+        // IRCv3 capability names are case-insensitive; a server that shouts
+        // must still satisfy the lower-case lookups.
+        let mut st = CapState::default();
+        st.add_available(&v(&["SASL=PLAIN", "Server-Time"]));
+        assert!(st.supports("sasl"));
+        assert!(st.supports("server-time"));
+        assert_eq!(st.sasl_mechanisms_offered(), v(&["PLAIN"]));
+        st.add_acked(&v(&["Server-Time"]));
+        assert!(st.has("server-time"));
+        // DEL folds the same way.
+        st.remove_available(&v(&["SERVER-TIME"]));
+        assert!(!st.supports("server-time"));
+        assert!(st.supports("sasl"));
     }
 
     #[test]

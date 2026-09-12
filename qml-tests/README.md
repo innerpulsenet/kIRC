@@ -17,6 +17,10 @@ What it covers:
 
 * `main.qml` instantiates; the page stack starts on `ConnectPage`; header state
   text follows `connection_state`.
+* Slash commands: `tst_cmds.qml` (second stage of `run.sh`) drives the real
+  dispatcher with the exact lines a user types and asserts the recorded bridge
+  calls — one wire line per command, `/help` output, local lines, malformed
+  argument rejection, and command tab-completion.
 * Filling the form and pressing Connect calls `bridge.connect_server(...)` and
   pushes `ChatPage`.
 * Messages arrive as `message_received` / `history_batch_received`, the model is
@@ -49,6 +53,20 @@ Caveats:
 * The doubles are intentionally *not* the screenshot-harness doubles: these rows
   are the minimal set the assertions need. The richer visual harness lives
   outside the repository (it never ships).
+
+## Command harness
+
+`qml-tests/run.sh` runs two stages: the UI smoke flow (`tst_smoke.qml`) and the
+slash-command contract (`tst_cmds.qml`). The command stage loads the real
+`ChatPage.qml` against the recording `IrcBridge` double (`calls` / `callTrace()`,
+cleared per case) and drives `runSlash()` with the lines a user types, asserting
+the exact call sequence each one produces: the wire line for hand-built
+commands, the bridge invokable (`send_message`, `join_channel`, `part_channel`,
+`clear_buffer`, `request_history`, `mark_read`) where one exists. It also pins
+`/help` (one row per command plus the header), local lines (`/echo`, usage
+rejection, `/raw` newline rejection), and command tab-completion through both
+`nextCompletion()` and the real composer (`tabComplete()`). Exit code 0 = every
+stage passed.
 
 ## Perf harness
 

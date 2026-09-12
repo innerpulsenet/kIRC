@@ -2,7 +2,8 @@
 # Runtime smoke test for the kIRC QML UI.
 #
 # Builds a temporary org.kde.kirc module out of the real qml/ files plus the
-# cxx-qt test doubles in this directory, then runs tst_smoke.qml headless.
+# cxx-qt test doubles in this directory, then runs tst_smoke.qml and
+# tst_cmds.qml headless.
 #
 # Usage:  qml-tests/run.sh
 # Env:    QML_BIN (default /usr/lib64/qt6/bin/qml)
@@ -32,10 +33,21 @@ cp "$here"/IrcBridge.qml "$here"/MessageListModel.qml "$tmp/org/kde/kirc/"
 printf 'module org.kde.kirc\nsingleton ThemeEngine 1.0 ThemeEngine.qml\nIrcBridge 1.0 IrcBridge.qml\nMessageListModel 1.0 MessageListModel.qml\nChatPage 1.0 ChatPage.qml\nConnectPage 1.0 ConnectPage.qml\nMessageDelegate 1.0 MessageDelegate.qml\n' \
     > "$tmp/org/kde/kirc/qmldir"
 
-cp "$here"/tst_smoke.qml "$tmp/"
+cp "$here"/tst_smoke.qml "$here"/tst_cmds.qml "$tmp/"
 
 # QT_FORCE_STDERR_LOGGING: without it Qt logs to the journal, not the terminal.
-exec env QML2_IMPORT_PATH="$tmp" \
-         QT_FORCE_STDERR_LOGGING=1 \
-         QT_QPA_PLATFORM="$qpa" \
-         "$qmlbin" "$tmp/tst_smoke.qml"
+run_qml() {
+    env QML2_IMPORT_PATH="$tmp" \
+        QT_FORCE_STDERR_LOGGING=1 \
+        QT_QPA_PLATFORM="$qpa" \
+        "$qmlbin" "$1"
+}
+
+# Stage 1: the UI smoke flow.
+# Stage 2: the slash-command contract — each command's wire line, /help
+# output, malformed-argument rejection and command tab-completion, asserted
+# on the recording bridge double.
+status=0
+run_qml "$tmp/tst_smoke.qml" || status=1
+run_qml "$tmp/tst_cmds.qml" || status=1
+exit "$status"

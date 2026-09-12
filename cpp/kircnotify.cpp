@@ -4,6 +4,7 @@
 
 #include <KNotification>
 
+#include <QIcon>
 #include <QPixmap>
 #include <QStandardPaths>
 
@@ -13,10 +14,22 @@ namespace {
 //  - "message" is the event konversation and neochat use for a chat message,
 //    so Plasma's per-event notification settings and Do-Not-Disturb apply to
 //    it exactly as they do for those clients.
-//  - "preferences-system-network" matches the application/tray icon.
+//  - the icon is the app's own artwork ("kirc") whenever the theme resolves
+//    it; a stock name like "preferences-system-network" made every
+//    notification show a generic network glyph instead of kirc.png.  The
+//    stock name stays as a runtime fallback so a tree without the icons
+//    installed still gets one.
 constexpr auto kEventId = "message";
-constexpr auto kIconName = "preferences-system-network";
+constexpr auto kIconName = "kirc";
+constexpr auto kIconFallbackName = "preferences-system-network";
 constexpr auto kComponentName = "kIRC";
+
+QString notificationIconName()
+{
+    return QIcon::hasThemeIcon(QString::fromLatin1(kIconName))
+        ? QString::fromLatin1(kIconName)
+        : QString::fromLatin1(kIconFallbackName);
+}
 
 // Where KNotify looks for a component's event declarations.  Note the file is
 // named after the component exactly as passed to KNotification (our
@@ -54,16 +67,20 @@ void KircNotifier::notify(const QString &title, const QString &body)
         KNotification::event(QString::fromLatin1(kEventId),
                              heading,
                              body,
-                             QPixmap(),
+                             notificationIconName(),
                              KNotification::CloseOnTimeout,
                              QString::fromLatin1(kComponentName));
     } else {
         // Standard event: always deliverable, and still honours Plasma's
-        // Do-Not-Disturb and the user's global notification settings.
-        KNotification::event(KNotification::Notification,
-                             heading,
-                             body,
-                             QPixmap(),
-                             KNotification::CloseOnTimeout);
+        // Do-Not-Disturb and the user's global notification settings.  (This
+        // overload takes no icon name, so it is set on the created event.)
+        KNotification *notification = KNotification::event(KNotification::Notification,
+                                                           heading,
+                                                           body,
+                                                           QPixmap(),
+                                                           KNotification::CloseOnTimeout);
+        if (notification) {
+            notification->setIconName(notificationIconName());
+        }
     }
 }

@@ -23,8 +23,20 @@
 
 namespace {
 
-// A communicator app, so Plasma groups it with chat clients.
-constexpr auto kTrayIconName = "preferences-system-network";
+// The app's own artwork first: a stock KDE name ("preferences-system-network")
+// is EXACTLY why the tray kept showing a generic network glyph no matter what
+// was installed — the theme resolves the stock name and never looks at
+// kirc.png.  Use "kirc" whenever the icon theme can resolve it, and fall back
+// to the old stock name so a dev tree without icons installed still gets one.
+constexpr auto kTrayIconName = "kirc";
+constexpr auto kTrayIconFallbackName = "preferences-system-network";
+
+QString trayIconName()
+{
+    return QIcon::hasThemeIcon(QString::fromLatin1(kTrayIconName))
+        ? QString::fromLatin1(kTrayIconName)
+        : QString::fromLatin1(kTrayIconFallbackName);
+}
 
 // D-Bus coordinates of the StatusNotifierItem watcher, used only to answer
 // "is there actually a tray host (Plasma panel) to get the window back from?".
@@ -67,9 +79,12 @@ KircTray::KircTray(KircConfig *config, QObject *parent)
     m_item = new KStatusNotifierItem(QStringLiteral("kIRC"), this);
     m_item->setCategory(KStatusNotifierItem::Communications);
     m_item->setStatus(KStatusNotifierItem::Active);
-    m_item->setIconByName(QString::fromLatin1(kTrayIconName));
+    // The same name drives the pixmap and the tooltip's icon lookup, so both
+    // stay consistent with whatever trayIconName() resolved.
+    m_iconName = trayIconName();
+    m_item->setIconByName(m_iconName);
     m_item->setTitle(QStringLiteral("kIRC"));
-    m_item->setToolTip(QString::fromLatin1(kTrayIconName), QStringLiteral("kIRC"), tr("IRC client"));
+    m_item->setToolTip(m_iconName, QStringLiteral("kIRC"), tr("IRC client"));
 
     // We provide the whole menu ourselves (Show/Hide, Connect, Disconnect,
     // Quit) because the standard "Quit" action cannot implement hide-to-tray.
@@ -210,7 +225,7 @@ void KircTray::updateIndicators()
     if (unread > 0) {
         subtitle += QStringLiteral(" — ") + tr("%n unread message(s)", "", unread);
     }
-    m_item->setToolTip(QString::fromLatin1(kTrayIconName), QStringLiteral("kIRC"), subtitle);
+    m_item->setToolTip(m_iconName, QStringLiteral("kIRC"), subtitle);
 
     if (m_connectAction) {
         m_connectAction->setEnabled(state == 0);
@@ -267,6 +282,18 @@ void KircTray::onConnect()
                                    "set_sasl_mechanism",
                                    Q_ARG(int, m_config->saslMechanism()))) {
         qWarning("kIRC: tray could not invoke IrcBridge::set_sasl_mechanism");
+    }
+    // IRC PASS, if one is configured.  Prefer the value entered this session
+    // (memory-only), then the KWallet-backed one — same pattern as the SASL
+    // password below.  Also must be set BEFORE connect_server; a bridge
+    // without the invokable is tolerated (connect proceeds without PASS).
+    const QString serverPassword = m_config->sessionServerPassword().isEmpty()
+        ? m_config->serverPassword()
+        : m_config->sessionServerPassword();
+    if (!serverPassword.isEmpty() && !QMetaObject::invokeMethod(m_bridge,
+                                                                "set_server_password",
+                                                                Q_ARG(QString, serverPassword))) {
+        qWarning("kIRC: tray could not invoke IrcBridge::set_server_password");
     }
     // Reconnect from the last saved profile.  The SASL password is memory-only
     // (KircConfig::sessionSaslPassword, never on disk): empty unless the user

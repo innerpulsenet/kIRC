@@ -17,9 +17,10 @@ constexpr auto kConnectionGroup = "Connection";
 constexpr auto kUiGroup = "UI";
 constexpr auto kServicesGroup = "Services";
 
-// KWallet location of the NickServ password.  Never written to kirc.conf.
+// KWallet location of the secrets.  Never written to kirc.conf.
 constexpr auto kWalletFolder = "kIRC";
-constexpr auto kWalletKey = "nickserv-password";
+constexpr auto kWalletKeyNickserv = "nickserv-password";
+constexpr auto kWalletKeyServer = "server-password";
 
 // Version of the [UI] theme-selection schema (see the header for the policy).
 // Version 1 is what every config written before the Fluent pass implies;
@@ -73,14 +74,14 @@ KWallet::Wallet *openKircWallet()
     return wallet;
 }
 
-bool walletReadPassword(QString *out)
+bool walletReadPassword(const QString &key, QString *out)
 {
     KWallet::Wallet *wallet = openKircWallet();
     if (!wallet) {
         return false;
     }
     QString value;
-    const int rc = wallet->readPassword(QString::fromLatin1(kWalletKey), value);
+    const int rc = wallet->readPassword(key, value);
     delete wallet;
     if (rc != 0) {
         return false;
@@ -89,25 +90,25 @@ bool walletReadPassword(QString *out)
     return true;
 }
 
-bool walletWritePassword(const QString &value)
+bool walletWritePassword(const QString &key, const QString &value)
 {
     KWallet::Wallet *wallet = openKircWallet();
     if (!wallet) {
         return false;
     }
-    const int rc = wallet->writePassword(QString::fromLatin1(kWalletKey), value);
+    const int rc = wallet->writePassword(key, value);
     delete wallet;
     return rc == 0;
 }
 
-void walletRemovePassword()
+void walletRemovePassword(const QString &key)
 {
     KWallet::Wallet *wallet = openKircWallet();
     if (!wallet) {
         return;
     }
-    if (wallet->hasEntry(QString::fromLatin1(kWalletKey))) {
-        wallet->removeEntry(QString::fromLatin1(kWalletKey));
+    if (wallet->hasEntry(key)) {
+        wallet->removeEntry(key);
     }
     delete wallet;
 }
@@ -457,6 +458,65 @@ void KircConfig::setSessionSaslPassword(const QString &sessionSaslPassword)
     Q_EMIT sessionSaslPasswordChanged();
 }
 
+int KircConfig::historyLimit() const
+{
+    return m_historyLimit;
+}
+
+void KircConfig::setHistoryLimit(int historyLimit)
+{
+    if (historyLimit < 0) {
+        historyLimit = 0;
+    }
+    if (m_historyLimit == historyLimit) {
+        return;
+    }
+    m_historyLimit = historyLimit;
+    Q_EMIT historyLimitChanged();
+}
+
+QString KircConfig::defaultPartReason() const
+{
+    return m_defaultPartReason;
+}
+
+void KircConfig::setDefaultPartReason(const QString &defaultPartReason)
+{
+    if (m_defaultPartReason == defaultPartReason) {
+        return;
+    }
+    m_defaultPartReason = defaultPartReason;
+    Q_EMIT defaultPartReasonChanged();
+}
+
+QString KircConfig::serverPassword() const
+{
+    return m_serverPassword;
+}
+
+void KircConfig::setServerPassword(const QString &serverPassword)
+{
+    if (m_serverPassword == serverPassword) {
+        return;
+    }
+    m_serverPassword = serverPassword;
+    Q_EMIT serverPasswordChanged();
+}
+
+QString KircConfig::sessionServerPassword() const
+{
+    return m_sessionServerPassword;
+}
+
+void KircConfig::setSessionServerPassword(const QString &sessionServerPassword)
+{
+    if (m_sessionServerPassword == sessionServerPassword) {
+        return;
+    }
+    m_sessionServerPassword = sessionServerPassword;
+    Q_EMIT sessionServerPasswordChanged();
+}
+
 void KircConfig::load()
 {
     KConfig config(configFilePath(), KConfig::SimpleConfig);
@@ -491,6 +551,11 @@ void KircConfig::load()
     m_reconnectAfterAuthFailure =
         ui.readEntry(QStringLiteral("ReconnectAfterAuthFailure"), m_reconnectAfterAuthFailure);
     m_showTimestamps = ui.readEntry(QStringLiteral("ShowTimestamps"), m_showTimestamps);
+    m_historyLimit = ui.readEntry(QStringLiteral("HistoryLimit"), m_historyLimit);
+    if (m_historyLimit < 0) {
+        m_historyLimit = 200;
+    }
+    m_defaultPartReason = ui.readEntry(QStringLiteral("DefaultPartReason"), m_defaultPartReason);
 
     // ---- one-time theme-schema migration (< 3 -> 3; policy in the header) --
     // A config file that predates the key is version 1 by definition; a fresh
@@ -542,10 +607,17 @@ void KircConfig::load()
     const QString legacyPassword = services.readEntry(QStringLiteral("Password"), QString());
     m_nickservPassword.clear();
     QString walletPassword;
-    if (walletReadPassword(&walletPassword)) {
+    if (walletReadPassword(QString::fromLatin1(kWalletKeyNickserv), &walletPassword)) {
         m_nickservPassword = walletPassword;
     } else if (!legacyPassword.isEmpty()) {
         m_nickservPassword = legacyPassword;
+    }
+    // The IRC server password (PASS) is a secret too: KWallet only, no
+    // plaintext fallback (there was never a legacy kirc.conf key for it).
+    m_serverPassword.clear();
+    QString walletServerPassword;
+    if (walletReadPassword(QString::fromLatin1(kWalletKeyServer), &walletServerPassword)) {
+        m_serverPassword = walletServerPassword;
     }
 
     Q_EMIT hostChanged();
@@ -570,6 +642,9 @@ void KircConfig::load()
     Q_EMIT identifyOnConnectChanged();
     Q_EMIT nickservNickChanged();
     Q_EMIT nickservPasswordChanged();
+    Q_EMIT historyLimitChanged();
+    Q_EMIT defaultPartReasonChanged();
+    Q_EMIT serverPasswordChanged();
 }
 
 void KircConfig::save()
@@ -607,6 +682,8 @@ void KircConfig::save()
     ui.writeEntry(QStringLiteral("ReconnectLimit"), m_reconnectLimit);
     ui.writeEntry(QStringLiteral("ReconnectAfterAuthFailure"), m_reconnectAfterAuthFailure);
     ui.writeEntry(QStringLiteral("ShowTimestamps"), m_showTimestamps);
+    ui.writeEntry(QStringLiteral("HistoryLimit"), m_historyLimit);
+    ui.writeEntry(QStringLiteral("DefaultPartReason"), m_defaultPartReason);
 
     KConfigGroup services = config.group(QString::fromLatin1(kServicesGroup));
     services.writeEntry(QStringLiteral("IdentifyOnConnect"), m_identifyOnConnect);
@@ -617,9 +694,15 @@ void KircConfig::save()
     // unavailable the in-memory value is kept for this process only.
     services.deleteEntry(QStringLiteral("Password"));
     if (m_nickservPassword.isEmpty()) {
-        walletRemovePassword();
+        walletRemovePassword(QString::fromLatin1(kWalletKeyNickserv));
     } else {
-        walletWritePassword(m_nickservPassword);
+        walletWritePassword(QString::fromLatin1(kWalletKeyNickserv), m_nickservPassword);
+    }
+    // Same rule for the IRC server password: KWallet only, never kirc.conf.
+    if (m_serverPassword.isEmpty()) {
+        walletRemovePassword(QString::fromLatin1(kWalletKeyServer));
+    } else {
+        walletWritePassword(QString::fromLatin1(kWalletKeyServer), m_serverPassword);
     }
 
     config.sync();

@@ -20,9 +20,14 @@
 //     marked in the navigation, sections without are dimmed, and the pane
 //     follows the first section that matches),
 //   * every control persists through KircConfig (cpp/kircconfig.h),
-//   * a password is never written to kirc.conf: the NickServ password goes to
-//     KWallet via KircConfig.nickservPassword, the SASL password is session
-//     only and is not editable here.
+//   * a password is never written to kirc.conf: the NickServ *and* server
+//     (PASS) passwords go to KWallet via KircConfig, the SASL password is
+//     session only and is not editable here.
+//
+// Rows beyond the original rebuild: server password (Connection), on-join
+// history limit (`historyLimit`, 0 = off) and the default part/quit reason
+// (`defaultPartReason`, consumed by ChatPage when /part or /quit has no
+// reason of its own).
 
 import QtQuick
 import QtQuick.Controls as Controls
@@ -40,6 +45,11 @@ Kirigami.Page {
     id: page
 
     property var kircConfig: null
+    // The application window (set by main.qml).  Replaces the deprecated
+    // `applicationWindow()` global: it keeps qmllint clean and, more
+    // importantly, keeps the SASL-user save working if the global is removed
+    // in a future Qt.  Null in standalone harnesses.
+    property var hostWindow: null
     // Lets the window find an already-open instance (openSettings/openAbout).
     readonly property bool isKircSettingsPage: true
 
@@ -72,14 +82,14 @@ Kirigami.Page {
     // (used by the live filter).
     readonly property var sectionKeywords: [
         ["identity", "nickname", "nickserv", "account", "password", "sasl", "mechanism", "user", "plain", "external", "auto"],
-        ["connection", "autojoin", "channel", "reconnect", "retry", "authentication", "identify"],
+        ["connection", "autojoin", "channel", "password", "server", "pass", "history", "lines", "scrollback", "reconnect", "retry", "authentication", "identify", "part", "quit", "reason", "leave"],
         ["appearance", "theme", "font", "size", "timestamps", "colour", "color", "palette"],
         ["notifications", "notification", "highlight", "direct message", "tray", "minimize"],
         ["about", "version", "kirc", "license", "kde", "passwords"]
     ]
     readonly property var sectionRowLabels: [
         ["Nickname", "NickServ account", "NickServ password", "SASL user", "SASL mechanism"],
-        ["Identify", "Autojoin", "Reconnect", "Retry limit", "Auth failures"],
+        ["Server password", "Identify", "Autojoin", "History", "Reconnect", "Retry limit", "Auth failures", "Part reason"],
         ["Theme", "Font family", "Font size", "Timestamps"],
         ["Highlights", "Direct messages", "System tray"],
         ["Version", "Passwords"]
@@ -468,6 +478,15 @@ Kirigami.Page {
             c.reconnectLimit = parseInt(retryField.text, 10) || 0
             c.reconnectAfterAuthFailure = authRetrySwitch.checked
         }
+        if (page.hasPref("historyLimit")) {
+            c.historyLimit = parseInt(historyLimitField.text, 10) || 0
+        }
+        if (page.hasPref("defaultPartReason")) {
+            c.defaultPartReason = defaultPartReasonField.text
+        }
+        // The server password is a secret like the others: it goes to KWallet
+        // through KircConfig.save(), never into kirc.conf.
+        c.serverPassword = serverPassField.text
         if (page.hasPref("showTimestamps")) {
             c.showTimestamps = timestampsSwitch.checked
         }
@@ -558,6 +577,15 @@ Kirigami.Page {
             if (page.hasPref("reconnectLimit")) {
                 retryField.text = String(c.reconnectLimit)
                 authRetrySwitch.checked = c.reconnectAfterAuthFailure
+            }
+            if (page.hasPref("historyLimit")) {
+                historyLimitField.text = String(c.historyLimit)
+            }
+            if (page.hasPref("defaultPartReason")) {
+                defaultPartReasonField.text = c.defaultPartReason
+            }
+            if (c.serverPassword !== undefined && c.serverPassword !== null) {
+                serverPassField.text = c.serverPassword
             }
             if (page.hasPref("showTimestamps")) {
                 timestampsSwitch.checked = c.showTimestamps
@@ -742,6 +770,20 @@ Kirigami.Page {
                         elide: Text.ElideRight
                     }
 
+                    // The selected section matched on its keywords but has no
+                    // matching *rows* — say so instead of showing an empty pane.
+                    Text {
+                        Layout.fillWidth: true
+                        Layout.margins: 10
+                        visible: page.filter.length > 0 && page.sectionMatches(page.sectionIndex)
+                                 && page.sectionMatchCount(page.sectionIndex) === 0
+                        text: qsTr("no matching rows in this section — see the numbered sections")
+                        color: page.fgDim()
+                        font.family: page.mono
+                        font.pointSize: page.ptSmall
+                        elide: Text.ElideRight
+                    }
+
                     // ========================================================== //
                     // Identity
                     // ========================================================== //
@@ -830,7 +872,7 @@ Kirigami.Page {
                                     id: saslUserField
                                     placeholderText: qsTr("SASL account name")
                                     onEditingFinished: {
-                                        var win = applicationWindow()
+                                        var win = page.hostWindow
                                         if (win && win.appConfig) {
                                             win.appConfig.saslUser = text
                                             win.appConfig.save()
@@ -853,7 +895,7 @@ Kirigami.Page {
                                     model: [qsTr("Auto"), qsTr("PLAIN"), qsTr("EXTERNAL")]
                                     onActivated: {
                                         page.persist()
-                                        var win = applicationWindow()
+                                        var win = page.hostWindow
                                         if (win && win.saslMechanism !== undefined) {
                                             win.saslMechanism = page.saslMechanismId(currentIndex)
                                         }
@@ -887,6 +929,42 @@ Kirigami.Page {
 
                         SectionHeader { title: page.sectionName(1) }
 
+                        // ---- server password (IRC PASS) ----
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            visible: page.rowVisible(qsTr("Server password"))
+                            spacing: 0
+
+                            TermRow {
+                                label: qsTr("Server password")
+                                TermField {
+                                    id: serverPassField
+                                    echoMode: showServerPass.checked ? TextInput.Normal : TextInput.Password
+                                    placeholderText: qsTr("only if the server asks for one")
+                                    onEditingFinished: page.persist()
+                                }
+                                TermButton {
+                                    id: showServerPass
+                                    checkable: true
+                                    prompt: checked ? qsTr("[hide]") : qsTr("[show]")
+                                }
+                            }
+
+                            Text {
+                                Layout.fillWidth: true
+                                Layout.leftMargin: 10
+                                Layout.rightMargin: 10
+                                Layout.bottomMargin: 5
+                                text: qsTr("sent as PASS before connect — stored in KWallet, never written to kirc.conf")
+                                color: page.fgDim()
+                                font.family: page.mono
+                                font.pointSize: page.ptSmall
+                                elide: Text.ElideRight
+                            }
+
+                            TermRule {}
+                        }
+
                         ColumnLayout {
                             Layout.fillWidth: true
                             visible: page.rowVisible(qsTr("Identify"))
@@ -896,7 +974,7 @@ Kirigami.Page {
                                 label: qsTr("Identify")
                                 TermToggle {
                                     id: identifySwitch
-                                    text: qsTr("Identify on connect, then autojoin")
+                                    text: qsTr("Identify then autojoin")
                                     onToggled: page.persist()
                                 }
                             }
@@ -1022,6 +1100,40 @@ Kirigami.Page {
                             TermRule {}
                         }
 
+                        // ---- history lines fetched on join (chathistory) ----
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            visible: page.rowVisible(qsTr("History")) && page.hasPref("historyLimit")
+                            spacing: 0
+
+                            TermRow {
+                                label: qsTr("History")
+                                TermField {
+                                    id: historyLimitField
+                                    Layout.preferredWidth: Math.round(Kirigami.Units.gridUnit * 5)
+                                    Layout.fillWidth: false
+                                    placeholderText: qsTr("200 (0 = off)")
+                                    inputMethodHints: Qt.ImhDigitsOnly
+                                    validator: IntValidator { bottom: 0; top: 1000 }
+                                    onEditingFinished: page.persist()
+                                }
+                            }
+
+                            Text {
+                                Layout.fillWidth: true
+                                Layout.leftMargin: 10
+                                Layout.rightMargin: 10
+                                Layout.bottomMargin: 5
+                                text: qsTr("lines fetched when a channel is joined (0 = off)")
+                                color: page.fgDim()
+                                font.family: page.mono
+                                font.pointSize: page.ptSmall
+                                elide: Text.ElideRight
+                            }
+
+                            TermRule {}
+                        }
+
                         ColumnLayout {
                             Layout.fillWidth: true
                             visible: page.rowVisible(qsTr("Reconnect"))
@@ -1031,7 +1143,7 @@ Kirigami.Page {
                                 label: qsTr("Reconnect")
                                 TermToggle {
                                     id: reconnectSwitch
-                                    text: qsTr("Reconnect automatically if dropped")
+                                    text: qsTr("Reconnect if dropped")
                                     checked: true
                                     onToggled: page.persist()
                                 }
@@ -1056,6 +1168,19 @@ Kirigami.Page {
                                     onEditingFinished: page.persist()
                                 }
                             }
+
+                            Text {
+                                Layout.fillWidth: true
+                                Layout.leftMargin: 10
+                                Layout.rightMargin: 10
+                                Layout.bottomMargin: 5
+                                text: qsTr("automatic reconnect attempts (0 = unlimited)")
+                                color: page.fgDim()
+                                font.family: page.mono
+                                font.pointSize: page.ptSmall
+                                elide: Text.ElideRight
+                            }
+
                             TermRule {}
                         }
 
@@ -1068,10 +1193,40 @@ Kirigami.Page {
                                 label: qsTr("Auth failures")
                                 TermToggle {
                                     id: authRetrySwitch
-                                    text: qsTr("Reconnect after authentication failure")
+                                    text: qsTr("Reconnect on auth failure")
                                     onToggled: page.persist()
                                 }
                             }
+                            TermRule {}
+                        }
+
+                        // ---- default part/quit reason ----
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            visible: page.rowVisible(qsTr("Part reason")) && page.hasPref("defaultPartReason")
+                            spacing: 0
+
+                            TermRow {
+                                label: qsTr("Part reason")
+                                TermField {
+                                    id: defaultPartReasonField
+                                    placeholderText: qsTr("Leaving")
+                                    onEditingFinished: page.persist()
+                                }
+                            }
+
+                            Text {
+                                Layout.fillWidth: true
+                                Layout.leftMargin: 10
+                                Layout.rightMargin: 10
+                                Layout.bottomMargin: 5
+                                text: qsTr("used for /part and /quit when no reason is typed")
+                                color: page.fgDim()
+                                font.family: page.mono
+                                font.pointSize: page.ptSmall
+                                elide: Text.ElideRight
+                            }
+
                             TermRule {}
                         }
                     }
@@ -1182,14 +1337,6 @@ Kirigami.Page {
                                                 border.width: 1
                                                 border.color: page.ruleC()
                                             }
-                                        }
-
-                                        Text {
-                                            text: qsTr("dense")
-                                            color: page.fgDim()
-                                            font.family: page.mono
-                                            font.pointSize: page.ptSmall
-                                            Layout.alignment: Qt.AlignVCenter
                                         }
                                     }
 

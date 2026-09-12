@@ -21,6 +21,7 @@
 
 #include <QObject>
 #include <QPointer>
+#include <QString>
 
 class QAction;
 class QMenu;
@@ -72,5 +73,9 @@ private:
     QAction *m_connectAction = nullptr;
     QAction *m_disconnectAction = nullptr;
     QAction *m_quitAction = nullptr;
+    // Resolved once at construction: "kirc" when the icon theme has it, else
+    // the stock fallback (see kirctray.cpp).  Used for both the pixmap and the
+    // tooltip so they can never disagree.
+    QString m_iconName;
     bool m_available = false;
 };
