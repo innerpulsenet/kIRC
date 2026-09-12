@@ -10,10 +10,18 @@ param(
 $ErrorActionPreference = 'Stop'
 $repo = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
 $build = [IO.Path]::GetFullPath($BuildDir)
+if (-not (Test-Path -LiteralPath $CraftRoot -ErrorAction SilentlyContinue)) {
+    throw "Craft root not found: $CraftRoot (set KIRC_CRAFT_ROOT or pass -CraftRoot)"
+}
 if (-not $VsRoot) {
+    # The development machine's Build Tools install wins when it is present.
+    # Compose that probe with [IO.Path]::Combine, not Join-Path: Join-Path
+    # resolves the drive qualifier and throws "A drive with the name 'E' does
+    # not exist" on every machine without an E: drive, CI included.
     $localVs = 'E:\BuildTools'
+    $localVcvars = [IO.Path]::Combine($localVs, 'VC\Auxiliary\Build\vcvarsall.bat')
     $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
-    if (Test-Path -LiteralPath (Join-Path $localVs 'VC\Auxiliary\Build\vcvarsall.bat')) {
+    if (Test-Path -LiteralPath $localVcvars -ErrorAction SilentlyContinue) {
         $VsRoot = $localVs
     } elseif (Test-Path -LiteralPath $vswhere) {
         $VsRoot = (& $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath).Trim()

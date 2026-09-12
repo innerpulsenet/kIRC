@@ -17,6 +17,9 @@ if ($ArchiveName -notmatch '^[A-Za-z0-9._-]+\.zip$') {
 $repo = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
 $build = [IO.Path]::GetFullPath($BuildDir)
 $stage = [IO.Path]::GetFullPath($StageDir)
+if (-not (Test-Path -LiteralPath $CraftRoot -ErrorAction SilentlyContinue)) {
+    throw "Craft root not found: $CraftRoot (set KIRC_CRAFT_ROOT or pass -CraftRoot)"
+}
 $stageRoot = [IO.Path]::GetFullPath((Join-Path $repo 'stage'))
 if (-not $stage.StartsWith($stageRoot + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
     throw "StageDir must be below $stageRoot"
