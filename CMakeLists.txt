@@ -161,7 +161,10 @@ cxx_qt_import_qml_module(kirc_qml
 # Shared sources build everywhere.  Each platform contributes exactly one
 # implementation of the secret store, tray and notification backends.
 # ---------------------------------------------------------------------------
-qt_add_executable(kIRC
+# WIN32 (GUI subsystem): without it MSVC links /subsystem:console and every
+# app start also pops a console window.  The keyword is ignored on the other
+# desktop platforms, so no platform guard is needed.
+qt_add_executable(kIRC WIN32
     cpp/main.cpp
     cpp/kircconfig.cpp
     cpp/kircconfig.h
@@ -239,6 +242,32 @@ if(NOT WIN32)
 endif()
 
 install(TARGETS kIRC RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+
+# ---------------------------------------------------------------------------
+# Tests (opt-in).  tst_config_secrets links kircconfig.cpp against a scripted
+# fake secret store defined in the test itself — never a platform backend —
+# so it builds identically on every platform and touches no real credentials.
+# ---------------------------------------------------------------------------
+option(KIRC_BUILD_TESTS "Build kIRC test executables" OFF)
+
+if(KIRC_BUILD_TESTS)
+    find_package(Qt6 REQUIRED COMPONENTS Test)
+
+    add_executable(tst_config_secrets
+        qml-tests/tst_config_secrets.cpp
+        cpp/kircconfig.cpp
+        cpp/kircconfig.h
+        cpp/secretstore.h
+    )
+    target_include_directories(tst_config_secrets PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/cpp)
+    target_link_libraries(tst_config_secrets PRIVATE
+        Qt6::Test
+        ${KIRC_KCONFIG_TARGET}
+    )
+    if(MSVC)
+        target_compile_options(tst_config_secrets PRIVATE /utf-8)
+    endif()
+endif()
 
 if(NOT WIN32)
     # KNotify only delivers an event id that is declared for the component, so
