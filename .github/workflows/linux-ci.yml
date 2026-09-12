@@ -64,6 +64,16 @@ jobs:
             qt6-qtbase-devel qt6-qtdeclarative-devel \
             kf6-kirigami-devel kf6-kconfig-devel kf6-knotifications-devel \
             kf6-kstatusnotifieritem-devel kf6-kwallet-devel
+          # The smoke stage asserts the font picker offers >= 5 monospace
+          # families, matching a real Fedora Workstation (which ships many).
+          # A bare container has only DejaVu Sans Mono, so round the set out.
+          dnf -y --setopt=install_weak_deps=False install \
+            liberation-mono-fonts \
+            google-noto-mono-fonts \
+            google-noto-sans-mono-fonts \
+            jetbrains-mono-fonts
+          dnf -y --setopt=install_weak_deps=False install cascadia-code-fonts \
+            || echo "note: cascadia-code-fonts unavailable; enough mono families without it"
 
       - name: Cache cargo registry and engine-build artifacts
         uses: actions/cache@v4
