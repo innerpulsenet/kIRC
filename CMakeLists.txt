@@ -195,6 +195,11 @@ if(WIN32)
     # (cpp/main.cpp embeddedAppIcon) look up at runtime.
     # Credential Manager APIs (CredReadW/CredWriteW/CredDeleteW).
     target_link_libraries(kIRC PRIVATE Advapi32)
+    # Phase 5 toasts (cpp/kircnotify_windows.cpp): the WinRT activation
+    # machinery (RoActivateInstance/RoGetActivationFactory) lives in
+    # runtimeobject.lib, and SetCurrentProcessExplicitAppUserModelID
+    # (cpp/main.cpp) in shell32.
+    target_link_libraries(kIRC PRIVATE runtimeobject Shell32)
     # The executable's MSVC import library is written as kIRC.lib next to
     # kIRC.exe, and the Rust staticlib arrives in the same directory as
     # kirc.lib (see cxx_qt_import_crate above).  NTFS names are
