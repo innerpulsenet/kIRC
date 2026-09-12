@@ -23,8 +23,9 @@ Everything needed to produce a Fedora RPM lives in this directory:
 
 ## Releases (CI)
 
-`.github/workflows/rpm-release.yml` builds and publishes the RPM whenever a version
-tag is pushed:
+`.github/workflows/rpm-release.yml` (the **Release** workflow) builds the RPM *and* the
+Windows x64 package whenever a version tag is pushed, then publishes both as one
+GitHub Release:
 
 ```sh
 packaging/set-version.sh 0.7.0      # optional: stamp the tree locally first
@@ -55,11 +56,28 @@ What the job does, in order:
 5. `rpmbuild -ba` — produces the binary RPM **and** the SRPM.
 6. Copies the packages into the mounted workspace (rpmbuild writes to `$HOME`, which
    lives inside the container and is not visible to the host-side actions), verifies
-   they contain `/usr/bin/kIRC` and the scalable icon, uploads them as a workflow
-   artifact, and attaches both to the GitHub Release.
+   they contain `/usr/bin/kIRC` and the scalable icon, and uploads them as a workflow
+   artifact.
 
-The workflow can also be run manually (`workflow_dispatch`) with a tag to rebuild an
-existing release without pushing a new tag.
+In parallel, the `windows` job calls `.github/workflows/windows-ci.yml` — the same
+workflow that gates branches and pull requests — passing the resolved version. That run
+stamps the tree with `packaging/set-version.py`, builds with MSVC against the Craft
+prefix, runs the engine, CTest and QML suites, and stages
+`kIRC-<version>-windows-x64.zip` and `kIRC-<version>-setup-x64.exe` with their SHA-256
+files. Branch and PR runs of the same workflow build the unversioned names and publish
+nothing.
+
+Finally, one `publish` job downloads both platforms' artifacts, verifies every expected
+asset is present and that the checksums match, and creates the Release. Publishing from
+a single job is what keeps the two builds from racing to create the same release; a
+failed Windows build blocks the release rather than shipping a Linux-only one.
+
+The workflow can also be run manually (`workflow_dispatch`) with a tag. That builds and
+verifies everything but publishes nothing (the publish job is tag-only), which is how to
+rehearse a release — including from a branch, before the workflow reaches `main`.
+
+Windows release artifacts are **unsigned**. Signing credentials belong in the release
+environment, not the repository.
 
 
 The spec carries no patches: the application's own `CMakeLists.txt` already has

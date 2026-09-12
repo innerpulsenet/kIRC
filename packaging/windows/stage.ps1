@@ -5,9 +5,14 @@ param(
     [string]$StageDir = (Join-Path $PSScriptRoot '..\..\stage\windows-release'),
     [string]$CraftRoot = $(if ($env:KIRC_CRAFT_ROOT) { $env:KIRC_CRAFT_ROOT } else { 'E:\CraftRoot' }),
     [string]$VCRedistRoot = $(if ($env:KIRC_VC_REDIST_ROOT) { $env:KIRC_VC_REDIST_ROOT } else { 'E:\BuildTools\VC\Redist\MSVC' }),
+    [string]$ArchiveName = 'kIRC-windows-x64.zip',
     [switch]$Archive
 )
 $ErrorActionPreference = 'Stop'
+# The name lands inside the .sha256 file as well, so keep it a bare file name.
+if ($ArchiveName -notmatch '^[A-Za-z0-9._-]+\.zip$') {
+    throw "ArchiveName must be a bare .zip file name: $ArchiveName"
+}
 
 $repo = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
 $build = [IO.Path]::GetFullPath($BuildDir)
@@ -65,7 +70,7 @@ try {
     if (Test-Path -LiteralPath $stage) { Remove-Item -LiteralPath $stage -Recurse -Force }
     Move-Item -LiteralPath $temp -Destination $stage
     if ($Archive) {
-        $zip = Join-Path (Split-Path $stage -Parent) 'kIRC-windows-x64.zip'
+        $zip = Join-Path (Split-Path $stage -Parent) $ArchiveName
         if (Test-Path -LiteralPath $zip) { Remove-Item -LiteralPath $zip -Force }
         Compress-Archive -Path (Join-Path $stage '*') -DestinationPath $zip -CompressionLevel Optimal
         $hash = Get-FileHash -Algorithm SHA256 -LiteralPath $zip

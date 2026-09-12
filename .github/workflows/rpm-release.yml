@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: MIT OR Apache-2.0
 #
-# Build a Fedora RPM for every release tag and publish it as a GitHub Release.
+# Build the Fedora RPM and the Windows x64 package for every release tag, and
+# publish them together as one GitHub Release.
 #
 #   git tag v0.7.0 && git push origin v0.7.0
 #
@@ -11,8 +12,16 @@
 # require — this workflow regenerates those vendored inputs from the tag.
 #
 # Tags may be v0.7 or v0.7.0 or v0.7.1; only the numeric form matters.
+#
+# The Windows half is .github/workflows/windows-ci.yml — the same workflow that
+# gates branches and pull requests — called here with the resolved version, so
+# a release ships exactly what CI builds.  One publish job uploads both
+# platforms' assets, so the two builds never race to create the release, and a
+# failed Windows build blocks the release instead of quietly shipping without
+# it.  A workflow_dispatch run builds everything and publishes nothing, which
+# is the way to rehearse a release.
 
-name: RPM release
+name: Release
 
 on:
   push:
@@ -25,9 +34,9 @@ on:
         required: true
         type: string
 
-# Required to create the Release and upload assets.
+# Only the publish job creates the Release; everything else is read-only.
 permissions:
-  contents: write
+  contents: read
 
 env:
   # Must match CMakeLists.txt's FetchContent GIT_TAG and the spec's Source1 /
@@ -37,6 +46,39 @@ env:
   CORROSION_VERSION: '0.5.2'
 
 jobs:
+  version:
+    name: Resolve the release version
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.v.outputs.tag }}
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - name: Resolve the version from the tag
+        id: v
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${{ github.event.inputs.tag || github.ref_name }}"
+          case "$tag" in
+            v*) ;;
+            *) echo "::error::expected a v* tag, got '$tag'"; exit 1 ;;
+          esac
+          version="${tag#v}"
+          # Cargo requires exactly three components (major.minor.patch), so a
+          # v0.8 tag has to become 0.8.0: stamping `version = "0.8"` into the
+          # crate manifests makes `cargo vendor` fail with "unexpected end of
+          # input while parsing minor version number". Normalise once, here, so
+          # the source tarball name, the spec's Version, the AppStream release,
+          # the manifests and the Windows assets cannot disagree about the
+          # version.
+          if ! [[ "$version" =~ ^([0-9]+)(\.([0-9]+))?(\.([0-9]+))?$ ]]; then
+            echo "::error::tag '$tag' does not yield a major[.minor[.patch]] version (e.g. v0.8 or v0.8.1)"; exit 1
+          fi
+          version="${BASH_REMATCH[1]}.${BASH_REMATCH[3]:-0}.${BASH_REMATCH[5]:-0}"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "::notice::building kIRC $version from $tag"
+
   engine-tests:
     name: Protocol engine tests
     runs-on: ubuntu-latest
@@ -54,38 +96,13 @@ jobs:
 
   rpm:
     name: Build RPM
-    needs: engine-tests
+    needs: [version, engine-tests]
     runs-on: ubuntu-latest
     container: fedora:latest
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-
-      - name: Resolve the version from the tag
-        id: v
-        shell: bash
-        run: |
-          set -euo pipefail
-          tag="${{ github.event.inputs.tag || github.ref_name }}"
-          case "$tag" in
-            v*) ;;
-            *) echo "::error::expected a v* tag, got '$tag'"; exit 1 ;;
-          esac
-          version="${tag#v}"
-          # Cargo requires exactly three components (major.minor.patch), so a
-          # v0.8 tag has to become 0.8.0: stamping `version = "0.8"` into the
-          # crate manifests makes `cargo vendor` fail with "unexpected end of
-          # input while parsing minor version number". Normalise once, here, so
-          # the source tarball name, the spec's Version, the AppStream release
-          # and the manifests cannot disagree about the version.
-          if ! [[ "$version" =~ ^([0-9]+)(\.([0-9]+))?(\.([0-9]+))?$ ]]; then
-            echo "::error::tag '$tag' does not yield a major[.minor[.patch]] version (e.g. v0.8 or v0.8.1)"; exit 1
-          fi
-          version="${BASH_REMATCH[1]}.${BASH_REMATCH[3]:-0}.${BASH_REMATCH[5]:-0}"
-          echo "tag=$tag" >> "$GITHUB_OUTPUT"
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "::notice::building kIRC $version from $tag"
 
       - name: Install build dependencies
         run: |
@@ -99,13 +116,13 @@ jobs:
           rpmdev-setuptree
 
       - name: Stamp the tree with the release version
-        run: packaging/set-version.sh "${{ steps.v.outputs.version }}"
+        run: packaging/set-version.sh "${{ needs.version.outputs.version }}"
 
       - name: Generate the vendored source archives
         shell: bash
         run: |
           set -euo pipefail
-          ver="${{ steps.v.outputs.version }}"
+          ver="${{ needs.version.outputs.version }}"
           sources="$HOME/rpmbuild/SOURCES"
 
           # Source2 — `cargo vendor` output with a top-level vendor/ directory,
@@ -170,7 +187,7 @@ jobs:
           # Note: listing to a file rather than piping into `grep -q`, whose
           # early exit would SIGPIPE `rpm` and fail the step under pipefail.
           listing="$(mktemp)"
-          rpm -qlp dist/kirc-"${{ steps.v.outputs.version }}"-*.x86_64.rpm > "$listing"
+          rpm -qlp dist/kirc-"${{ needs.version.outputs.version }}"-*.x86_64.rpm > "$listing"
           for path in /usr/bin/kIRC \
                       /usr/share/icons/hicolor/scalable/apps/kirc.svg \
                       /usr/share/applications/kIRC.desktop \
@@ -181,15 +198,63 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: kirc-rpm-${{ steps.v.outputs.version }}
+          name: kirc-rpm-${{ needs.version.outputs.version }}
           path: dist/*.rpm
           if-no-files-found: error
 
+  windows:
+    name: Build Windows package
+    needs: version
+    # The branch/PR Windows workflow, called with the release version: it
+    # stamps the tree, builds, runs the suites and stages version-named
+    # assets. Keeping one workflow means a release cannot silently diverge
+    # from what CI proves on every push.
+    uses: ./.github/workflows/windows-ci.yml
+    with:
+      version: ${{ needs.version.outputs.version }}
+
+  publish:
+    name: Publish the release
+    needs: [version, rpm, windows]
+    # Tags publish; a workflow_dispatch run stops here, having built and
+    # checked everything, so a release can be rehearsed without creating one.
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Collect the RPM assets
+        uses: actions/download-artifact@v4
+        with:
+          name: kirc-rpm-${{ needs.version.outputs.version }}
+          path: dist
+
+      - name: Collect the Windows assets
+        uses: actions/download-artifact@v4
+        with:
+          name: kIRC-windows-x64
+          path: dist
+
+      - name: Inventory the release assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          ls -la dist
+          # Both platforms must be present: publishing half a release is worse
+          # than failing, because the missing half looks deliberate.
+          for pattern in 'kirc-*.x86_64.rpm' 'kirc-*.src.rpm' \
+                         "kIRC-${{ needs.version.outputs.version }}-windows-x64.zip" \
+                         "kIRC-${{ needs.version.outputs.version }}-setup-x64.exe"; do
+            compgen -G "dist/$pattern" > /dev/null || { echo "::error::no release asset matches $pattern"; exit 1; }
+          done
+          # The sums name their files without a directory, so check from there.
+          ( cd dist && sha256sum -c ./*.sha256 )
+          echo "::notice::release assets verified"
+
       - name: Publish the release
-        if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/*.rpm
+          files: dist/*
           fail_on_unmatched_files: true
           generate_release_notes: true
-          name: kIRC ${{ steps.v.outputs.version }}
+          name: kIRC ${{ needs.version.outputs.version }}

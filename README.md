@@ -176,11 +176,13 @@ An RPM spec is provided in `packaging/` for Fedora:
 rpmbuild -ba packaging/kirc.spec   # binary RPM and source RPM
 ```
 
-Pushing a version tag (`git tag v1.0 && git push origin v1.0`) builds and publishes
-that RPM — plus the source RPM — as a GitHub Release via
-`.github/workflows/rpm-release.yml`. The tag is the source of truth: it stamps the spec,
-the AppStream metadata, the crate versions and the version the binary reports (`v1.0`
-normalizes to `1.0.0`).
+Pushing a version tag (`git tag v1.0 && git push origin v1.0`) builds that RPM — plus
+the source RPM — and the Windows ZIP and installer, and publishes all of them as one
+GitHub Release via `.github/workflows/rpm-release.yml`. The tag is the source of truth:
+it stamps the spec, the AppStream metadata, the crate versions, the Windows version
+resource and the version the binary reports (`v1.0` normalizes to `1.0.0`). The Windows
+assets are `kIRC-<version>-windows-x64.zip` and `kIRC-<version>-setup-x64.exe`, each with
+a SHA-256 file, and are unsigned.
 
 For Windows, stage a self-contained directory and checksummed ZIP, then build the
 per-user NSIS installer:
