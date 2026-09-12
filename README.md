@@ -119,6 +119,11 @@ An RPM spec is provided in `packaging/` for Fedora:
 rpmbuild -bb packaging/kirc.spec
 ```
 
+Pushing a version tag (`git tag v0.7.0 && git push origin v0.7.0`) builds and publishes
+that RPM — plus the source RPM — as a GitHub Release via
+`.github/workflows/rpm-release.yml`. The tag is the source of truth: it stamps the spec,
+the AppStream metadata, the crate versions and the version the binary reports.
+
 ## Configuration
 
 Preferences live in `~/.config/kIRC/kirc.conf`. **Secrets are never written there** — the

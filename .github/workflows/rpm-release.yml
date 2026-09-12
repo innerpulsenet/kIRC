@@ -1,0 +1,170 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+#
+# Build a Fedora RPM for every release tag and publish it as a GitHub Release.
+#
+#   git tag v0.7.0 && git push origin v0.7.0
+#
+# The tag is the single source of truth: the leading "v" is stripped and the
+# result becomes the RPM version, the AppStream release, the crate versions and
+# the version the application reports.  The spec lives in packaging/ and builds
+# fully offline (vendored crates + vendored cxx-qt-cmake), exactly as Koji/COPR
+# require — this workflow regenerates those vendored inputs from the tag.
+#
+# Tags may be v0.7 or v0.7.0 or v0.7.1; only the numeric form matters.
+
+name: RPM release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to build (e.g. v0.7.0)'
+        required: true
+        type: string
+
+# Required to create the Release and upload assets.
+permissions:
+  contents: write
+
+env:
+  # Must match CMakeLists.txt's FetchContent GIT_TAG and the spec's Source1 /
+  # %global cxxqt_dir.
+  CXXQT_VERSION: '0.10.0'
+
+jobs:
+  engine-tests:
+    name: Protocol engine tests
+    runs-on: ubuntu-latest
+    container: fedora:latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install toolchain
+        run: |
+          dnf -y --setopt=install_weak_deps=False install \
+            cargo rust gcc gcc-c++ perl
+
+      - name: cargo test
+        run: cargo test --manifest-path rust/core/Cargo.toml
+
+  rpm:
+    name: Build RPM
+    needs: engine-tests
+    runs-on: ubuntu-latest
+    container: fedora:latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve the version from the tag
+        id: v
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${{ github.event.inputs.tag || github.ref_name }}"
+          case "$tag" in
+            v*) ;;
+            *) echo "::error::expected a v* tag, got '$tag'"; exit 1 ;;
+          esac
+          version="${tag#v}"
+          if ! [[ "$version" =~ ^[0-9]+(\.[0-9]+)*$ ]]; then
+            echo "::error::tag '$tag' does not yield a numeric version (e.g. v0.7.0)"; exit 1
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "::notice::building kIRC $version from $tag"
+
+      - name: Install build dependencies
+        run: |
+          dnf -y --setopt=install_weak_deps=False install \
+            rpm-build rpmdevtools \
+            cmake gcc-c++ cargo rust \
+            qt6-qtbase-devel qt6-qtdeclarative-devel \
+            kf6-kirigami-devel kf6-kconfig-devel kf6-knotifications-devel \
+            kf6-kstatusnotifieritem-devel kf6-kwallet-devel \
+            desktop-file-utils libappstream-glib curl tar gzip
+          rpmdev-setuptree
+
+      - name: Stamp the tree with the release version
+        run: packaging/set-version.sh "${{ steps.v.outputs.version }}"
+
+      - name: Generate the vendored source archives
+        shell: bash
+        run: |
+          set -euo pipefail
+          ver="${{ steps.v.outputs.version }}"
+          sources="$HOME/rpmbuild/SOURCES"
+
+          # Source2 — `cargo vendor` output with a top-level vendor/ directory,
+          # which %setup -a 2 unpacks to the path the spec's cargo config uses.
+          # This runs BEFORE the tree tarball on purpose: stamping the version
+          # rewrites the crate manifests, and `cargo vendor` is what brings
+          # rust/Cargo.lock back in step, so Source0 ships a consistent pair.
+          ( cd rust && cargo vendor vendor >/dev/null )
+          tar czf "$sources/kirc-vendor-$ver.tar.gz" -C rust vendor
+
+          # Source0 — the whole tree under a single kirc-<version>/ directory.
+          # Built from the working tree (not `git archive`) because the step
+          # above has just stamped the version into it.  The transform strips
+          # the leading "./" so entries are kirc-<ver>/... and not kirc-<ver>/./...
+          tar czf "$sources/kirc-$ver.tar.gz" \
+            --exclude=.git --exclude=build --exclude=rust/target \
+            --exclude=rust/vendor --exclude=.hermes --exclude='*.tar.gz' \
+            --transform "s,^\./,kirc-$ver/," .
+
+          # Source1 — cxx-qt-cmake, matching CMakeLists.txt's FetchContent tag.
+          curl -fsSL -o "$sources/cxx-qt-cmake-$CXXQT_VERSION.tar.gz" \
+            "https://github.com/kdab/cxx-qt-cmake/archive/refs/tags/$CXXQT_VERSION.tar.gz"
+
+          cp packaging/kirc.spec "$HOME/rpmbuild/SPECS/"
+          ls -la "$sources"
+
+      - name: rpmbuild
+        run: rpmbuild -ba "$HOME/rpmbuild/SPECS/kirc.spec"
+
+      - name: Collect the packages into the workspace
+        shell: bash
+        run: |
+          # rpmbuild writes to $HOME, which lives inside the container and is
+          # NOT visible to the host-side actions below — the workspace is.
+          set -euo pipefail
+          mkdir -p dist
+          find "$HOME/rpmbuild/RPMS" "$HOME/rpmbuild/SRPMS" -name '*.rpm' -exec cp -v {} dist/ \;
+          ls -la dist
+
+      - name: Verify the RPM metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          rpm -qp --queryformat '%{NAME} %{VERSION}-%{RELEASE} %{ARCH}\n' dist/*.rpm
+          # The payload must contain the launcher, and the icon must resolve.
+          # Note: listing to a file rather than piping into `grep -q`, whose
+          # early exit would SIGPIPE `rpm` and fail the step under pipefail.
+          listing="$(mktemp)"
+          rpm -qlp dist/kirc-"${{ steps.v.outputs.version }}"-*.x86_64.rpm > "$listing"
+          for path in /usr/bin/kIRC \
+                      /usr/share/icons/hicolor/scalable/apps/kirc.svg \
+                      /usr/share/applications/kIRC.desktop \
+                      /usr/share/knotifications6/kIRC.notifyrc; do
+            grep -qx "$path" "$listing" || { echo "::error::$path missing from the RPM"; exit 1; }
+          done
+          echo "::notice::payload verified"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kirc-rpm-${{ steps.v.outputs.version }}
+          path: dist/*.rpm
+          if-no-files-found: error
+
+      - name: Publish the release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.rpm
+          fail_on_unmatched_files: true
+          generate_release_notes: true
+          name: kIRC ${{ steps.v.outputs.version }}

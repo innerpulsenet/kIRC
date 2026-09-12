@@ -9,9 +9,50 @@ Everything needed to produce a Fedora RPM lives in this directory:
 | `kirc.spec` | Fedora spec — offline-capable build (vendored cargo + vendored cxx-qt-cmake) |
 | `kIRC.desktop` | Desktop entry installed to `/usr/share/applications` |
 | `org.kde.kirc.metainfo.xml` | AppStream metadata installed to `/usr/share/metainfo` |
-| `kirc.svg` | Source icon (Breeze-style flat speech bubble with a `#`) |
+| `kirc.svg` | Source icon (terminal tile with a `#`, in the `tui` palette) |
+| `kirc-small.svg` | Simplified icon for the 16/22/24 px renders (no window chrome) |
 | `icons/hicolor/<size>x<size>/apps/kirc.png` | Pre-rendered hicolor PNGs (16–256 px) |
+| `set-version.sh` | Stamps one release version into the spec, AppStream data, crate manifests and the app |
 | `README.md` | This file |
+
+## Releases (CI)
+
+`.github/workflows/rpm-release.yml` builds and publishes the RPM whenever a version
+tag is pushed:
+
+```sh
+packaging/set-version.sh 0.7.0      # optional: stamp the tree locally first
+git commit -am "kIRC 0.7.0"
+git tag v0.7.0
+git push origin main v0.7.0
+```
+
+The tag is the source of truth: the workflow strips the leading `v` and that becomes
+the RPM version, the AppStream release, both crate versions and the version the binary
+reports (`--version`). Tags may be `v0.7`, `v0.7.0` or `v0.7.1`; the numeric part must
+be digits and dots.
+
+What the job does, in order:
+
+1. `cargo test --manifest-path rust/core/Cargo.toml` — the protocol engine suite gates
+   the release.
+2. Installs the spec's `BuildRequires` in a `fedora:latest` container.
+3. `packaging/set-version.sh <tag>` — stamps the version into the tree.
+4. Regenerates the three archives the spec consumes:
+   * `kirc-<version>.tar.gz` (Source0) — the tree under one `kirc-<version>/`
+     directory, built from the *stamped* working tree rather than `git archive`,
+   * `kirc-vendor-<version>.tar.gz` (Source2) — `cargo vendor`, top-level `vendor/`,
+   * `cxx-qt-cmake-<version>.tar.gz` (Source1) — downloaded, matching
+     `CMakeLists.txt`'s `FetchContent` tag.
+5. `rpmbuild -ba` — produces the binary RPM **and** the SRPM.
+6. Copies the packages into the mounted workspace (rpmbuild writes to `$HOME`, which
+   lives inside the container and is not visible to the host-side actions), verifies
+   they contain `/usr/bin/kIRC` and the scalable icon, uploads them as a workflow
+   artifact, and attaches both to the GitHub Release.
+
+The workflow can also be run manually (`workflow_dispatch`) with a tag to rebuild an
+existing release without pushing a new tag.
+
 
 The spec carries no patches: the application's own `CMakeLists.txt` already has
 `install(TARGETS kIRC ...)`, so a plain `%cmake`/`%cmake_install` is enough.
@@ -106,9 +147,13 @@ needs no SVG rasteriser as a `BuildRequires`:
 
 ```sh
 cd packaging
-for s in 16 22 32 48 64 128 256; do
+for s in 16 22 24 32 48 64 128 256; do
   mkdir -p icons/hicolor/${s}x${s}/apps
-  rsvg-convert -w $s -h $s -o icons/hicolor/${s}x${s}/apps/kirc.png kirc.svg
+  # 16–24 px render from the simplified variant: the window chrome and round
+  # caps of the main icon merge into a blob at taskbar sizes.
+  src=kirc.svg
+  [ "$s" -le 24 ] && src=kirc-small.svg
+  rsvg-convert -w $s -h $s -o icons/hicolor/${s}x${s}/apps/kirc.png "$src"
 done
 ```
 
@@ -172,6 +217,8 @@ appstream-util validate-relax org.kde.kirc.metainfo.xml
   `LICENSE`/`LICENSES/` files (e.g. reuse-tool style) to the repo root and a
   `%license` line to the spec is the clean fix.
 * No man page (`rpmlint`: `no-manual-page-for-binary`).
-* The desktop entry / metainfo / icons are installed by the *spec*, not by the
-  application's `CMakeLists.txt`. If upstream later adds `install()` rules for
-  them, drop the corresponding `%install` lines to avoid double-installing.
+* The desktop entry, AppStream metadata and icons are installed **twice**: by the
+  application's `CMakeLists.txt` (`install()` rules) and again explicitly in the
+  spec's `%install`.  Both write identical paths, so the result is correct, but the
+  spec's explicit copies are now redundant — dropping that block is a safe cleanup
+  whenever someone next touches the spec.
