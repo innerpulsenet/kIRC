@@ -2848,6 +2848,15 @@ Kirigami.Page {
         return true
     }
 
+    /// The window's Help entry (p9): print the command reference into the
+    /// active buffer — the very list `/help` prints, from the one
+    /// `commandTable` both share.  That is what keeps `/join` discoverable
+    /// now the header has no [join] control.
+    function showHelp()
+    {
+        return page.cmdHelp("")
+    }
+
     function cmdClear(rest)
     {
         if (page.bridge !== null && typeof page.bridge.clear_buffer === "function") {

@@ -251,10 +251,15 @@ Item {
             }
             harness.ok("every stored/retired theme id resolves to a schema-4 theme",
                        reachOk, reachBad.join(","))
-            harness.ok("the theme list offers all ten built-ins",
-                       ThemeEngine.availableThemeIds.length === 10
+            // The theme list is additive — new palettes land in it (ai-slop
+            // arrived with the phase-9 tree) — so the exact total is not
+            // pinned; every built-in must simply be offered.  Name each one:
+            // a palette that silently vanished from BUILTIN_IDS would keep the
+            // count above the floor, so the floor alone proves nothing.
+            harness.ok("the theme list offers every built-in",
+                       ThemeEngine.availableThemeIds.length >= 11
                        && ["tui", "phosphor", "amber", "ice", "breeze", "bbs", "c64", "vt",
-                           "ega", "synthwave"].every(function (id) {
+                           "ega", "synthwave", "ai-slop"].every(function (id) {
                                return ThemeEngine.availableThemeIds.indexOf(id) >= 0
                            }),
                        "ids=" + ThemeEngine.availableThemeIds.join(","))
@@ -708,6 +713,75 @@ Item {
                 break
             }
             case 13: {
+                // ---- p9: one identity line, one [menu], buffer-aware title --
+                if (harness.win) {
+                    var header = harness.win.header
+                    harness.ok("no [join] control in the header",
+                               harness.countControls(header, "[join]") === 0,
+                               "found=" + harness.countControls(header, "[join]"))
+                    harness.ok("exactly one [menu] control in the header",
+                               harness.countControls(header, "[menu]") === 1,
+                               "found=" + harness.countControls(header, "[menu]"))
+                    var folded = []
+                    var foldedTexts = ["[settings]", "[disconnect]", "[theme]"]
+                    for (var fi = 0; fi < foldedTexts.length; ++fi) {
+                        if (harness.countControls(header, foldedTexts[fi]) > 0) {
+                            folded.push(foldedTexts[fi])
+                        }
+                    }
+                    harness.ok("[settings]/[disconnect]/[theme] folded into [menu]",
+                               folded.length === 0, folded.join(","))
+                    // One nick, once: the identity line.  (The old header showed
+                    // it in the subtitle AND again after the status tag.)
+                    var nick = harness.win.bridge.nickname
+                    harness.ok("the header shows the nick exactly once",
+                               nick.length > 0 && harness.countTextContaining(header, nick) === 1,
+                               "found=" + harness.countTextContaining(header, nick) + " nick=" + nick)
+                    harness.ok("the identity line reads 'nick @ server'",
+                               harness.countTextContaining(header, "@ irc.test.example") === 1,
+                               "server items=" + harness.countTextContaining(header, "@ irc.test.example"))
+                    harness.ok("the status tag does not repeat the nick",
+                               String(harness.win.statusTag).indexOf(nick) === -1,
+                               harness.win.statusTag)
+                    // The menu: exact order, separator before the destructive
+                    // pair, Exit last.
+                    var menu = harness.findAppMenu()
+                    harness.ok("the [menu] button owns the application menu", menu !== null)
+                    if (menu !== null) {
+                        var order = []
+                        for (var mi = 0; mi < menu.count; ++mi) {
+                            var rowText = menu.itemAt(mi).text
+                            order.push(rowText === undefined ? "[sep]" : String(rowText))
+                        }
+                        harness.ok("menu order: Search, Settings, Theme, Help, —, Disconnect, Exit",
+                                   order.join("|") === "Search|Settings|Theme|Help|[sep]|Disconnect|Exit",
+                                   order.join("|"))
+                    }
+                    // ---- the window title follows the buffer type ----------
+                    var titlePage = harness.win.pageStack.depth > 1
+                            ? harness.win.pageStack.get(1) : null
+                    if (titlePage === null) {
+                        harness.failures++
+                        console.error("FAIL title check: no chat page")
+                    } else {
+                        titlePage.openChannel("#kirc")
+                        harness.ok("window title keeps the channel '#'",
+                                   harness.win.title.indexOf("#") >= 0
+                                   && harness.win.title.indexOf("kirc") >= 0,
+                                   harness.win.title)
+                        titlePage.openChannel("querynick")
+                        harness.ok("window title has no '#' for a query",
+                                   harness.win.title.indexOf("#") < 0
+                                   && harness.win.title.indexOf("querynick") >= 0,
+                                   harness.win.title)
+                        titlePage.openChannel("*server*")
+                        harness.ok("window title reads 'Server' for the console",
+                                   harness.win.title.indexOf("Server") >= 0
+                                   && harness.win.title.indexOf("#") < 0,
+                                   harness.win.title)
+                        titlePage.openChannel("#kirc")
+                    }
+                }
                 // disconnect must fall back to the connection form
                 if (harness.win) { harness.win.bridge.disconnect_server() }
                 break
@@ -779,6 +853,85 @@ Item {
         for (var i = 0; i < roots.length; ++i) {
             var f = harness.findByPredicate(roots[i], pred, 0)
             if (f !== null) { return f }
+        }
+        return null
+    }
+
+    /// Every object under `root` that carries a `text` property, deduped
+    /// (a Control's contentItem is also reachable through `children`, and
+    /// popups declared inside a control land in its `resources`).
+    /// The header's own bookkeeping — used to count controls and to prove a
+    /// string appears exactly once (p9: the identity line's nick).
+    function collectTextItems(root, depth, out) {
+        if (root === null || root === undefined || depth > 18) { return out }
+        if (root.text !== undefined && out.indexOf(root) === -1) { out.push(root) }
+        var kids = root.children || []
+        for (var i = 0; i < kids.length; ++i) {
+            harness.collectTextItems(kids[i], depth + 1, out)
+        }
+        var res = root.resources || []
+        for (var r = 0; r < res.length; ++r) {
+            harness.collectTextItems(res[r], depth + 1, out)
+        }
+        if (root.contentItem !== undefined && root.contentItem !== null) {
+            harness.collectTextItems(root.contentItem, depth + 1, out)
+        }
+        return out
+    }
+
+    /// Count of Controls (objects with a `pressed` property) under `root`
+    /// whose `text` matches exactly.  The `pressed` guard skips the
+    /// contentItem Label that mirrors a button's text.
+    function countControls(root, text) {
+        if (root === undefined || root === null) { return 0 }
+        var items = harness.collectTextItems(root, 0, [])
+        var n = 0
+        for (var i = 0; i < items.length; ++i) {
+            if (String(items[i].text) === text && items[i].pressed !== undefined) { ++n }
+        }
+        return n
+    }
+
+    /// Count of items under `root` whose `text` contains `fragment`.
+    function countTextContaining(root, fragment) {
+        if (root === undefined || root === null) { return 0 }
+        var items = harness.collectTextItems(root, 0, [])
+        var n = 0
+        for (var i = 0; i < items.length; ++i) {
+            if (items[i].text !== undefined
+                    && String(items[i].text).indexOf(fragment) !== -1) { ++n }
+        }
+        return n
+    }
+
+    /// The header's [menu] button (its text is the bracketed translation and
+    /// it is the control the popup is anchored to).
+    function findMenuButton() {
+        if (harness.win.header === undefined || harness.win.header === null) { return null }
+        var pred = function (o) { return o.text === "[menu]" && o.pressed !== undefined }
+        return harness.findByPredicate(harness.win.header, pred, 0)
+    }
+
+    /// The application Menu the [menu] control owns: the one whose first row
+    /// is Search.  Menus declared inside a control are Popups, so they live
+    /// in its `resources` list (not `children`); both are scanned.  The theme
+    /// picker is the sibling Menu of the same button.
+    function findAppMenu() {
+        var btn = harness.findMenuButton()
+        if (btn === null) { return null }
+        var pools = []
+        if (btn.resources !== undefined && btn.resources !== null) { pools.push(btn.resources) }
+        if (btn.children !== undefined && btn.children !== null) { pools.push(btn.children) }
+        for (var p = 0; p < pools.length; ++p) {
+            var pool = pools[p]
+            for (var i = 0; i < pool.length; ++i) {
+                var k = pool[i]
+                if (typeof k.itemAt === "function" && typeof k.popup === "function"
+                        && k.count > 0 && k.itemAt(0) !== null
+                        && String(k.itemAt(0).text) === "Search") {
+                    return k
+                }
+            }
         }
         return null
     }

@@ -217,15 +217,13 @@ Kirigami.ApplicationWindow {
         onTriggered: root.tryReconnect()
     }
 
-    /// Buffer name for humans. "*server*" is internal; the header glyph
-    /// already shows "#" for channels so the title drops the prefix.
+    /// Buffer name for the window title.  "*server*" is internal and reads
+    /// "Server"; every other buffer is shown exactly as it is typed — a
+    /// channel keeps its prefix (`#pain`), a query keeps its nick.
     function channelLabel(target)
     {
         if (target === "*server*") {
             return qsTr("Server")
-        }
-        if (target.length > 1 && root.isChannel(target)) {
-            return target.substring(1)
         }
         return target
     }
@@ -287,33 +285,48 @@ Kirigami.ApplicationWindow {
         return root.chatChannel
     }
 
-    // Secondary header line: nick @ server, plus the channel topic when one
-    // is known.  Derived from live bridge state + the chat page below; empty
-    // when there is nothing useful to say (connection form, settings pane).
-    readonly property string headerSubtitle: {
+    // Identity line (p9): `nick @ server` is one of the most useful facts in
+    // the window, so it is shown once, bold, immediately beside the live
+    // status tag — not as dim filler.  The two halves are separate labels so
+    // the nick carries the accent colour.  Empty when there is nothing useful
+    // to say (connection form, settings pane).
+    readonly property string identityNick: {
         if (root.pageStack.depth <= 1 || root.currentPageIsSettings()) {
             return ""
         }
-        var bits = []
-        var nick = root.bridge.nickname
+        return root.bridge.nickname
+    }
+
+    /// The ` @ host` half of the identity line; the port/TLS decoration the
+    /// bridge appends is dropped (`irc.example.net:6697 (TLS)` reads as the
+    /// host alone).  Without a nick it degrades to the bare host.
+    readonly property string identityServer: {
+        if (root.pageStack.depth <= 1 || root.currentPageIsSettings()) {
+            return ""
+        }
         var server = root.bridge.connected_server
-        if (nick.length > 0 && server.length > 0) {
-            var cut = server.indexOf(":")
-            var shortServer = cut > 0 ? server.substring(0, cut) : server
-            bits.push(nick + " @ " + shortServer)
-        } else if (nick.length > 0) {
-            bits.push(nick)
-        } else if (server.length > 0) {
-            bits.push(server)
+        var cut = server.indexOf(":")
+        var shortServer = cut > 0 ? server.substring(0, cut) : server
+        if (shortServer.length === 0) {
+            return ""
+        }
+        return root.bridge.nickname.length > 0 ? (" @ " + shortServer) : shortServer
+    }
+
+    /// The active channel's topic: dim, trailing, and the first thing to
+    /// yield on a narrow window — the identity line above owns the prominence.
+    readonly property string headerTopic: {
+        if (root.pageStack.depth <= 1 || root.currentPageIsSettings()) {
+            return ""
         }
         var page = root.pageStack.currentItem
         // qmllint disable missing-property
         if (page && page["currentTopic"] !== undefined && String(page["currentTopic"]).length > 0
                 && root.isChannel(root.chatChannel)) {
-            bits.push(String(page["currentTopic"]))
+            return String(page["currentTopic"])
         }
         // qmllint enable missing-property
-        return bits.join(" · ")
+        return ""
     }
 
     // Tooltip for the connection status pill ("Connected to …" etc).
@@ -561,28 +574,44 @@ Kirigami.ApplicationWindow {
                 font.bold: true
                 font.pointSize: Kirigami.Theme.defaultFont.pointSize + 1
                 elide: Text.ElideRight
-                Layout.fillWidth: true
                 // Never elide below a readable floor: the title yields last.
                 Layout.minimumWidth: Math.min(implicitWidth, Math.round(Kirigami.Units.gridUnit * 6))
                 Layout.alignment: Qt.AlignVCenter
             }
 
-            // Secondary line (nick @ server · topic), dim and truncating
-            // gracefully. A fixed width cap keeps long topics from squeezing
-            // the controls off the header; below a comfortable width the line
-            // yields entirely so the channel title stays readable at the
-            // minimum window size.
-            Controls.Label {
-                visible: root.headerSubtitle.length > 0
-                         && root.width >= Kirigami.Units.gridUnit * 40
-                text: root.headerSubtitle
-                color: root.fgDim
-                font.family: root.monoFamily
-                font.pointSize: Math.max(1, Kirigami.Theme.defaultFont.pointSize - 1)
-                elide: Text.ElideRight
-                Layout.fillWidth: true
-                Layout.maximumWidth: Kirigami.Units.gridUnit * 22
+            // ---- identity: `nick @ server` (p9) --------------------------
+            // The account the session is on.  Shown once, bold, next to the
+            // status tag; the nick carries the accent so the pair reads as one
+            // fact — who you are, and whether it is live.  Plain monospace
+            // text: no badge, no pill.
+            RowLayout {
                 Layout.alignment: Qt.AlignVCenter
+                visible: root.identityNick.length > 0 || root.identityServer.length > 0
+                spacing: 0
+
+                Controls.Label {
+                    text: root.identityNick
+                    visible: text.length > 0
+                    color: root.fgAccent
+                    font.family: root.monoFamily
+                    font.bold: true
+                    elide: Text.ElideRight
+                    Layout.maximumWidth: Kirigami.Units.gridUnit * 10
+                    Layout.minimumWidth: 0
+                    Layout.alignment: Qt.AlignVCenter
+                }
+
+                Controls.Label {
+                    text: root.identityServer
+                    visible: text.length > 0
+                    color: root.fgPrimary
+                    font.family: root.monoFamily
+                    font.bold: true
+                    elide: Text.ElideRight
+                    Layout.maximumWidth: Kirigami.Units.gridUnit * 14
+                    Layout.minimumWidth: 0
+                    Layout.alignment: Qt.AlignVCenter
+                }
             }
 
             // ---- connection status: bracketed terminal text ----
@@ -602,6 +631,31 @@ Kirigami.ApplicationWindow {
                 HoverHandler {
                     id: statusHover
                 }
+            }
+
+            // ---- channel topic: dim, trailing, yields first ----------------
+            // A fixed cap keeps a long topic from squeezing the controls off
+            // the header; below a comfortable width it yields entirely so the
+            // buffer title and the identity line stay readable.
+            Controls.Label {
+                visible: root.headerTopic.length > 0
+                         && root.width >= Kirigami.Units.gridUnit * 40
+                text: root.headerTopic
+                color: root.fgDim
+                font.family: root.monoFamily
+                font.pointSize: Math.max(1, Kirigami.Theme.defaultFont.pointSize - 1)
+                elide: Text.ElideRight
+                Layout.maximumWidth: Kirigami.Units.gridUnit * 22
+                Layout.minimumWidth: 0
+                Layout.alignment: Qt.AlignVCenter
+            }
+
+            // Flexible gutter: the buffer + identity + status + topic cluster
+            // stays packed to the left (that is one line of chrome, not a
+            // spread layout); everything after it is pushed to the right edge.
+            Item {
+                Layout.fillWidth: true
+                Layout.minimumWidth: 0
             }
 
             // ---- unread count: `[3]`, opens/clears with the buffers ----
@@ -639,45 +693,11 @@ Kirigami.ApplicationWindow {
                 }
             }
 
-            // ---- own nick: plain text (no avatar chip) ----
-            // Yields below a comfortable width, like the secondary line, so
-            // the ASCII controls never get pushed out of the header.
-            Controls.Label {
-                Layout.alignment: Qt.AlignVCenter
-                visible: root.bridge.nickname.length > 0
-                         && root.width >= Kirigami.Units.gridUnit * 40
-                text: root.bridge.nickname
-                color: root.fgPrimary
-                font.family: root.monoFamily
-                elide: Text.ElideRight
-                Layout.maximumWidth: Kirigami.Units.gridUnit * 8
-
-                Accessible.name: root.bridge.nickname
-
-                Controls.ToolTip.visible: nickHover.hovered
-                Controls.ToolTip.text: root.bridge.nickname
-
-                HoverHandler {
-                    id: nickHover
-                }
-            }
-
-            // Proper ASCII toolbar: Join (Ctrl+J), Search (Ctrl+F), Theme,
-            // Settings, Disconnect, Menu — each with its tooltip.  (Search
-            // forwards to the chat page when one is open; it is disabled on
-            // the connection form.)
-            HeaderButton {
-                text: "[" + qsTr("join") + "]"
-                // Chat actions only: hidden on the settings pane where they
-                // would do nothing (the old layout showed a dead [join]).
-                visible: root.pageStack.depth > 1 && !root.currentPageIsSettings()
-                enabled: root.pageStack.depth > 1 && root.bridge.connection_state === 2
-                onClicked: root.requestChatJoin()
-
-                Controls.ToolTip.visible: hovered
-                Controls.ToolTip.text: qsTr("Join a channel (Ctrl+J)")
-            }
-
+            // ---- toolbar: [search] [menu] (p9) ---------------------------
+            // Join moved to /join (Ctrl+J) with the menu's Help entry as the
+            // discoverable reference; Settings, Theme, Disconnect and Exit
+            // now live in the one [menu].  The nick no longer repeats here:
+            // the identity line above is the only place it is shown.
             HeaderButton {
                 id: searchButton
                 text: "[" + qsTr("search") + "]"
@@ -692,40 +712,83 @@ Kirigami.ApplicationWindow {
                 Controls.ToolTip.text: qsTr("Search messages (Ctrl+F)")
             }
 
+            // ---- the one [menu] (p9) --------------------------------------
+            // One control replaces the old [settings]/[menu] pair; its rows
+            // hold, in this order, Search, Settings, Theme, Help, then — past
+            // the separator — Disconnect and Exit (Exit quits the app).
             HeaderButton {
-                id: settingsButton
-                text: "[" + qsTr("settings") + "]"
-                onClicked: root.openSettings()
+                id: appMenuButton
+                text: "[" + qsTr("menu") + "]"
+                onClicked: appMenu.popup()
 
                 Controls.ToolTip.visible: hovered
-                Controls.ToolTip.text: qsTr("Settings")
-            }
+                Controls.ToolTip.text: qsTr("Menu")
 
-            HeaderButton {
-                id: disconnectButton
-                text: "[" + qsTr("disconnect") + "]"
-                visible: root.bridge.connection_state !== 0
-                onClicked: {
-                    root.userDisconnect = true
-                    reconnectTimer.stop()
-                    root.bridge.disconnect_server()
+                Controls.Menu {
+                    id: appMenu
+                    font.family: root.monoFamily
+                    background: Rectangle {
+                        implicitWidth: Math.round(Kirigami.Units.gridUnit * 13)
+                        color: ThemeEngine.bgPanelColor(Kirigami.Theme.alternateBackgroundColor)
+                        border.width: 1
+                        border.color: ThemeEngine.ruleColorValue(Kirigami.Theme.textColor)
+                    }
+
+                    // Search is also the one toolbar control: an action worth
+                    // keeping in reach when the header is narrow, and the
+                    // menu is where a narrow window can still find it.
+                    TermMenuItem {
+                        text: qsTr("Search")
+                        enabled: root.pageStack.depth > 1 && !root.currentPageIsSettings()
+                        onTriggered: root.focusChatSearch()
+                    }
+
+                    TermMenuItem {
+                        text: qsTr("Settings")
+                        onTriggered: root.openSettings()
+                    }
+
+                    TermMenuItem {
+                        text: qsTr("Theme")
+                        onTriggered: themeMenu.popup()
+                    }
+
+                    TermMenuItem {
+                        text: qsTr("Help")
+                        // The command reference, printed into the active
+                        // buffer exactly as /help does — so /join and the
+                        // rest stay discoverable without the old [join].
+                        enabled: root.pageStack.depth > 1 && !root.currentPageIsSettings()
+                        onTriggered: root.openHelp()
+                    }
+
+                    Controls.MenuSeparator {}
+
+                    TermMenuItem {
+                        text: qsTr("Disconnect")
+                        enabled: root.bridge.connection_state !== 0
+                        onTriggered: {
+                            root.userDisconnect = true
+                            reconnectTimer.stop()
+                            root.bridge.disconnect_server()
+                        }
+                    }
+
+                    TermMenuItem {
+                        text: qsTr("Exit")
+                        // Qt.quit() ends the application without going through
+                        // the window close handler, so it is a real quit even
+                        // with hide-to-tray enabled.
+                        onTriggered: Qt.quit()
+                    }
                 }
 
-                Controls.ToolTip.visible: hovered
-                Controls.ToolTip.text: qsTr("Disconnect")
-            }
-
-            // Theme picker: also reachable from the Settings pane when the
-            // header is too narrow for the control.
-            HeaderButton {
-                id: themeButton
-                text: "[" + qsTr("theme") + "]"
-                visible: root.width >= Kirigami.Units.gridUnit * 36
-                onClicked: themeMenu.popup()
-
-                Controls.ToolTip.visible: hovered
-                Controls.ToolTip.text: qsTr("Theme")
-
+                // Theme picker: kept as its own popup so the Theme row opens
+                // the same flat terminal list the header's old [theme] control
+                // showed.  (It is a sibling of `appMenu` on purpose: a Menu
+                // declared inside a Menu is auto-added as a submenu item
+                // there, and that generated row would not carry the
+                // TermMenuItem chrome.)
                 Controls.Menu {
                     id: themeMenu
                     title: qsTr("Theme")
@@ -762,89 +825,6 @@ Kirigami.ApplicationWindow {
 
                         onObjectAdded: (index, object) => themeMenu.insertItem(index, object)
                         onObjectRemoved: (index, object) => themeMenu.removeItem(object)
-                    }
-                }
-            }
-
-            HeaderButton {
-                id: appMenuButton
-                text: "[" + qsTr("menu") + "]"
-                onClicked: appMenu.popup()
-
-                Controls.ToolTip.visible: hovered
-                Controls.ToolTip.text: qsTr("Menu")
-
-                Controls.Menu {
-                    id: appMenu
-                    font.family: root.monoFamily
-                    background: Rectangle {
-                        implicitWidth: Math.round(Kirigami.Units.gridUnit * 13)
-                        color: ThemeEngine.bgPanelColor(Kirigami.Theme.alternateBackgroundColor)
-                        border.width: 1
-                        border.color: ThemeEngine.ruleColorValue(Kirigami.Theme.textColor)
-                    }
-
-                    TermMenuItem {
-                        text: root.bridge.connection_state === 0 ? qsTr("Connect") : qsTr("Disconnect")
-                        icon.name: root.bridge.connection_state === 0 ? "network-connect" : "network-disconnect"
-                        onTriggered: {
-                            if (root.bridge.connection_state === 0) {
-                                if (root.pageStack.depth > 1) {
-                                    root.pageStack.pop()
-                                }
-                            } else {
-                                root.userDisconnect = true
-                                reconnectTimer.stop()
-                                root.bridge.disconnect_server()
-                            }
-                        }
-                    }
-
-                    TermMenuItem {
-                        text: qsTr("Join channel…")
-                        icon.name: "list-add"
-                        enabled: root.pageStack.depth > 1 && root.bridge.connection_state === 2
-                        onTriggered: root.requestChatJoin()
-                    }
-
-                    Controls.MenuSeparator {}
-
-                    TermMenuItem {
-                        text: root.trayVisibleLabel()
-                        icon.name: root.visible ? "window-minimize" : "window-restore"
-                        enabled: root.trayAvailable
-                        onTriggered: root.toggleToTray()
-                    }
-
-                    TermMenuItem {
-                        text: qsTr("Minimize to tray on close")
-                        checkable: true
-                        checked: root.minimizeToTray
-                        enabled: root.appConfig !== null
-                        onToggled: root.setMinimizeToTray(checked)
-                    }
-
-                    TermMenuItem {
-                        text: qsTr("Settings")
-                        icon.name: "configure"
-                        onTriggered: root.openSettings()
-                    }
-
-                    TermMenuItem {
-                        text: qsTr("About kIRC")
-                        icon.name: "help-about"
-                        onTriggered: root.openAbout()
-                    }
-
-                    Controls.MenuSeparator {}
-
-                    TermMenuItem {
-                        text: qsTr("Quit kIRC")
-                        icon.name: "application-exit"
-                        // Qt.quit() ends the application without going through
-                        // the window close handler, so it is a real quit even
-                        // with hide-to-tray enabled.
-                        onTriggered: Qt.quit()
                     }
                 }
             }
@@ -1182,6 +1162,25 @@ Kirigami.ApplicationWindow {
     }
     // qmllint enable missing-property
 
+    /// Menu > Help (p9): print the command reference into the active buffer,
+    /// exactly as `/help` does.  That is where `/join` and the rest of the
+    /// commands stay discoverable now that the header has no [join] control.
+    // qmllint disable missing-property
+    function openHelp()
+    {
+        var page = root.pageStack.currentItem
+        if (page && typeof page["showHelp"] === "function") {
+            page["showHelp"]()
+            return
+        }
+        // Older ChatPage without the hook: the dispatcher is the same code
+        // path /help takes.
+        if (page && typeof page["runSlash"] === "function") {
+            page["runSlash"]("/help")
+        }
+    }
+    // qmllint enable missing-property
+
     /// Push the settings pane (single instance: pop back to it if open).
     function openSettings()
     {
@@ -1235,36 +1234,5 @@ Kirigami.ApplicationWindow {
         root.appConfig.nickname = root.lastNickname
         root.appConfig.saslUser = root.lastSaslUser
         root.appConfig.save()
-    }
-
-    function setMinimizeToTray(enabled)
-    {
-        if (root.appConfig === null) {
-            return
-        }
-        root.appConfig.minimizeToTray = enabled
-        root.appConfig.save()
-    }
-
-    function trayVisibleLabel()
-    {
-        if (!root.trayAvailable) {
-            return qsTr("Minimize to tray unavailable")
-        }
-        return root.visible ? qsTr("Hide to tray") : qsTr("Restore from tray")
-    }
-
-    function toggleToTray()
-    {
-        if (!root.trayAvailable) {
-            return
-        }
-        if (root.visible) {
-            root.hide()
-        } else {
-            root.show()
-            root.raise()
-            root.requestActivate()
-        }
     }
 }

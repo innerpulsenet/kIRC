@@ -72,6 +72,14 @@ What it covers:
   `ensureChatVisible()` guard re-opens the chat page whenever a connect-state
   transition to "connected" finds the stack on the connection form (the tray's
   connect path can establish a session without the UI pushing ChatPage).
+* Header identity + menu consolidation (p9): the window title carries the
+  buffer as it is typed — `#kirc — kIRC` for a channel, no `#` for a query,
+  `Server` for the console; the header shows the nick exactly once (the
+  identity line `nick @ server`, with the status tag immediately beside it and
+  no nick repeated inside the tag); and the single `[menu]` control holds
+  exactly Search, Settings, Theme, Help, —, Disconnect, Exit — no
+  `[join]`/`[settings]`/`[disconnect]`/`[theme]` controls are left in the
+  header.
 * Glass surfacing (`tst_glass.qml`): the ThemeEngine defaults (on / 60 / all
   sub-effects), a usable derived colour set on every built-in theme, the
   intensity clamp at both ends (0/5000 → 1/100, and `clampGlassIntensity`),
