@@ -30,10 +30,10 @@ cp "$here"/IrcBridge.qml "$here"/MessageListModel.qml "$tmp/org/kde/kirc/"
 # (build/cxxqt/qml_modules/org/kde/kirc/qmldir): the cxx-qt Rust types plus
 # every QML file in rust/qml/, so main.qml can use ConnectPage/ChatPage as
 # types rather than only via file URLs.
-printf 'module org.kde.kirc\nsingleton ThemeEngine 1.0 ThemeEngine.qml\nIrcBridge 1.0 IrcBridge.qml\nMessageListModel 1.0 MessageListModel.qml\nChatPage 1.0 ChatPage.qml\nConnectPage 1.0 ConnectPage.qml\nMessageDelegate 1.0 MessageDelegate.qml\n' \
+printf 'module org.kde.kirc\nsingleton ThemeEngine 1.0 ThemeEngine.qml\nIrcBridge 1.0 IrcBridge.qml\nMessageListModel 1.0 MessageListModel.qml\nChatPage 1.0 ChatPage.qml\nConnectPage 1.0 ConnectPage.qml\nMessageDelegate 1.0 MessageDelegate.qml\nGlassSurface 1.0 GlassSurface.qml\n' \
     > "$tmp/org/kde/kirc/qmldir"
 
-cp "$here"/tst_smoke.qml "$here"/tst_cmds.qml "$here"/tst_scroll.qml "$tmp/"
+cp "$here"/tst_smoke.qml "$here"/tst_cmds.qml "$here"/tst_scroll.qml "$here"/tst_glass.qml "$tmp/"
 
 # QT_FORCE_STDERR_LOGGING: without it Qt logs to the journal, not the terminal.
 run_qml() {
@@ -51,6 +51,13 @@ run_qml() {
 # log stays pinned while following (including a row whose delegate height
 # resolves after insertion), that appends never yank a scrolled-up user,
 # and that the pill / a manual return / a buffer switch recover following.
+# Stage 4: glass surfacing (p8) — the master toggle (glass off leaves the
+# host geometry and colours byte-identical), the intensity clamp, the
+# sub-toggles gating their layer, the per-theme derived colour set, and the
+# settings round-trip through the config object.
+# Stage 5 (C++, no QML runtime needed): the KircConfig half of the glass
+# settings contract — defaults, clamping, the save()/load() round trip
+# through a real kirc.conf and the NOTIFY signals (glass-config-test.sh).
 #
 # Stage 0 (python, no QML runtime needed): the theme token-completeness check —
 # every built-in theme file and the Theme.js mirror must define EXACTLY the
@@ -62,4 +69,6 @@ python3 "$here/check-theme-tokens.py" || status=1
 run_qml "$tmp/tst_smoke.qml" || status=1
 run_qml "$tmp/tst_cmds.qml" || status=1
 run_qml "$tmp/tst_scroll.qml" || status=1
+run_qml "$tmp/tst_glass.qml" || status=1
+"$here/glass-config-test.sh" || status=1
 exit "$status"

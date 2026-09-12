@@ -58,9 +58,16 @@ Kirigami.Page {
     padding: 0
 
     // Page surface: the theme's log colour (empty token = the desktop
-    // background, so `breeze` still follows the user's scheme).
+    // background, so `breeze` still follows the user's scheme). The glass
+    // sheet (p8) tints it with the palette-resolved colour either way.
     background: Rectangle {
         color: page.bgLogC()
+
+        GlassSurface {
+            anchors.fill: parent
+            radius: 0
+            tint: ThemeEngine.glassFillFor(page.bgLogC())
+        }
     }
 
     // ---------------------------------------------------------------------- //
@@ -85,14 +92,16 @@ Kirigami.Page {
         ["connection", "autojoin", "channel", "password", "server", "pass", "history", "lines", "scrollback", "reconnect", "retry", "authentication", "identify", "part", "quit", "reason", "leave", "ctcp", "version", "client", "reply", "privacy"],
         ["appearance", "theme", "font", "size", "timestamps", "colour", "color", "palette",
          "retro", "bbs", "ansi", "dial-up", "c64", "commodore", "vt", "dec", "ega", "dos",
-         "synthwave", "neon", "outrun", "phosphor", "amber"],
+         "synthwave", "neon", "outrun", "phosphor", "amber",
+         "glass", "frost", "blur", "sheen", "reflection", "shine", "gloss", "edge", "depth",
+         "translucent", "polish"],
         ["notifications", "notification", "highlight", "direct message", "tray", "minimize"],
         ["about", "version", "kirc", "license", "kde", "passwords"]
     ]
     readonly property var sectionRowLabels: [
         ["Nickname", "NickServ account", "NickServ password", "SASL user", "SASL mechanism"],
         ["Server password", "Identify", "CTCP version", "Autojoin", "History", "Reconnect", "Retry limit", "Auth failures", "Part reason"],
-        ["Theme", "Font family", "Font size", "Timestamps"],
+        ["Theme", "Font family", "Font size", "Timestamps", "Glass", "Glass intensity", "Glass frost", "Glass sheen", "Glass edges"],
         ["Highlights", "Direct messages", "System tray"],
         ["Version", "Passwords"]
     ]
@@ -560,6 +569,13 @@ Kirigami.Page {
         if (page.hasPref("showTimestamps")) {
             c.showTimestamps = timestampsSwitch.checked
         }
+        if (page.hasPref("glassEffects")) {
+            c.glassEffects = ThemeEngine.glassEffects
+            c.glassIntensity = ThemeEngine.glassIntensity
+            c.glassBlur = ThemeEngine.glassBlur
+            c.glassSheen = ThemeEngine.glassSheen
+            c.glassEdges = ThemeEngine.glassEdges
+        }
         c.save()
     }
 
@@ -594,6 +610,33 @@ Kirigami.Page {
         case 2: return qsTr("EXTERNAL")
         }
         return qsTr("Auto")
+    }
+
+    // --- glass surfacing sync ----------------------------------------------
+    // ThemeEngine is the live source of truth (every surface binds to it), so
+    // the controls follow it in both directions: a change made anywhere —
+    // this pane, main.qml restoring kirc.conf, a future menu entry — lands on
+    // the controls, and a control change lands on the engine.
+    Connections {
+        target: ThemeEngine
+
+        function onGlassEffectsChanged() {
+            glassSwitch.checked = ThemeEngine.glassEffects
+        }
+        function onGlassIntensityChanged() {
+            if (Math.round(glassSlider.value) !== ThemeEngine.glassIntensity) {
+                glassSlider.value = ThemeEngine.glassIntensity
+            }
+        }
+        function onGlassBlurChanged() {
+            glassBlurSwitch.checked = ThemeEngine.glassBlur
+        }
+        function onGlassSheenChanged() {
+            glassSheenSwitch.checked = ThemeEngine.glassSheen
+        }
+        function onGlassEdgesChanged() {
+            glassEdgesSwitch.checked = ThemeEngine.glassEdges
+        }
     }
 
     // --- autojoin list model (comma-separated string <-> add/remove list) --
@@ -662,6 +705,21 @@ Kirigami.Page {
             }
             if (page.hasPref("showTimestamps")) {
                 timestampsSwitch.checked = c.showTimestamps
+            }
+            // Glass surfacing: the persisted [UI] Glass* prefs are pushed into
+            // ThemeEngine (the singleton every GlassSurface binds to) and
+            // mirrored by the controls. Live, no restart.
+            if (page.hasPref("glassEffects")) {
+                ThemeEngine.glassEffects = c.glassEffects
+                ThemeEngine.glassIntensity = c.glassIntensity
+                ThemeEngine.glassBlur = c.glassBlur
+                ThemeEngine.glassSheen = c.glassSheen
+                ThemeEngine.glassEdges = c.glassEdges
+                glassSwitch.checked = ThemeEngine.glassEffects
+                glassSlider.value = ThemeEngine.glassIntensity
+                glassBlurSwitch.checked = ThemeEngine.glassBlur
+                glassSheenSwitch.checked = ThemeEngine.glassSheen
+                glassEdgesSwitch.checked = ThemeEngine.glassEdges
             }
             if (c.nickname !== undefined && c.nickname.length > 0) {
                 nickField.text = c.nickname
@@ -1575,6 +1633,187 @@ Kirigami.Page {
                                     text: qsTr("Show message timestamps")
                                     checked: true
                                     onToggled: page.persist()
+                                }
+                            }
+                            TermRule {}
+                        }
+
+                        // ---- glass surfacing --------------------------------- //
+                        // Frost/sheen/edges over the console panes. In-app
+                        // only: the sheet blurs kIRC's own static underlays —
+                        // the window itself never blurs what is behind it.
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            visible: page.rowVisible(qsTr("Glass")) && page.hasPref("glassEffects")
+                            spacing: 0
+
+                            TermRow {
+                                label: qsTr("Glass")
+                                TermToggle {
+                                    id: glassSwitch
+                                    text: qsTr("Frosted glass effects")
+                                    onToggled: {
+                                        ThemeEngine.glassEffects = checked
+                                        page.persist()
+                                    }
+                                }
+                            }
+
+                            Text {
+                                Layout.fillWidth: true
+                                Layout.leftMargin: 10
+                                Layout.rightMargin: 10
+                                Layout.bottomMargin: 5
+                                text: qsTr("frost, reflection sheen and lit edges over the console panes — in-app only, off for the plain terminal look")
+                                color: page.fgDim()
+                                font.family: page.mono
+                                font.pointSize: page.ptSmall
+                                elide: Text.ElideRight
+                            }
+
+                            TermRule {}
+                        }
+
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            visible: page.rowVisible(qsTr("Glass intensity")) && page.hasPref("glassEffects")
+                            spacing: 0
+
+                            TermRow {
+                                label: qsTr("Glass intensity")
+
+                                Controls.Slider {
+                                    id: glassSlider
+                                    Layout.fillWidth: true
+                                    from: 1
+                                    to: 100
+                                    stepSize: 1
+                                    enabled: ThemeEngine.glassEffects
+                                    value: ThemeEngine.glassIntensity
+                                    // onValueChanged (not onMoved): covers a
+                                    // drag, the wheel, the arrow keys and
+                                    // increase()/decrease() alike, and the
+                                    // guard keeps the engine->slider sync
+                                    // from re-persisting the same value.
+                                    onValueChanged: {
+                                        if (ThemeEngine.glassIntensity !== Math.round(value)) {
+                                            ThemeEngine.glassIntensity = Math.round(value)
+                                            page.persist()
+                                        }
+                                    }
+
+                                    background: Rectangle {
+                                        x: glassSlider.leftPadding
+                                        y: glassSlider.topPadding + glassSlider.availableHeight / 2 - height / 2
+                                        implicitWidth: 120
+                                        implicitHeight: 4
+                                        width: glassSlider.availableWidth
+                                        height: 2
+                                        radius: 0
+                                        color: page.ruleC()
+
+                                        Rectangle {
+                                            width: glassSlider.visualPosition * parent.width
+                                            height: parent.height
+                                            radius: 0
+                                            color: page.fgAccent()
+                                        }
+                                    }
+
+                                    handle: Rectangle {
+                                        x: glassSlider.leftPadding + glassSlider.visualPosition * (glassSlider.availableWidth - width)
+                                        y: glassSlider.topPadding + glassSlider.availableHeight / 2 - height / 2
+                                        implicitWidth: 9
+                                        implicitHeight: 14
+                                        radius: 0
+                                        color: glassSlider.pressed ? page.fgAccent() : page.bgInputC()
+                                        border.width: 1
+                                        border.color: page.fgAccent()
+                                    }
+                                }
+
+                                Text {
+                                    text: ThemeEngine.glassIntensity
+                                    color: page.fgDim()
+                                    font.family: page.mono
+                                    font.pointSize: page.ptSmall
+                                    Layout.alignment: Qt.AlignVCenter
+                                }
+                            }
+
+                            Text {
+                                Layout.fillWidth: true
+                                Layout.leftMargin: 10
+                                Layout.rightMargin: 10
+                                Layout.bottomMargin: 5
+                                text: qsTr("how strongly the frost, sheen and edges show (1–100)")
+                                color: page.fgDim()
+                                font.family: page.mono
+                                font.pointSize: page.ptSmall
+                                elide: Text.ElideRight
+                            }
+
+                            TermRule {}
+                        }
+
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            visible: page.rowVisible(qsTr("Glass frost")) && page.hasPref("glassEffects")
+                            spacing: 0
+
+                            TermRow {
+                                label: qsTr("Glass frost")
+                                TermToggle {
+                                    id: glassBlurSwitch
+                                    text: qsTr("Frost (blurred underlay)")
+                                    checked: true
+                                    enabled: ThemeEngine.glassEffects
+                                    onToggled: {
+                                        ThemeEngine.glassBlur = checked
+                                        page.persist()
+                                    }
+                                }
+                            }
+                            TermRule {}
+                        }
+
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            visible: page.rowVisible(qsTr("Glass sheen")) && page.hasPref("glassEffects")
+                            spacing: 0
+
+                            TermRow {
+                                label: qsTr("Glass sheen")
+                                TermToggle {
+                                    id: glassSheenSwitch
+                                    text: qsTr("Reflection sheen")
+                                    checked: true
+                                    enabled: ThemeEngine.glassEffects
+                                    onToggled: {
+                                        ThemeEngine.glassSheen = checked
+                                        page.persist()
+                                    }
+                                }
+                            }
+                            TermRule {}
+                        }
+
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            visible: page.rowVisible(qsTr("Glass edges")) && page.hasPref("glassEffects")
+                            spacing: 0
+
+                            TermRow {
+                                label: qsTr("Glass edges")
+                                TermToggle {
+                                    id: glassEdgesSwitch
+                                    text: qsTr("Lit edges + depth")
+                                    checked: true
+                                    enabled: ThemeEngine.glassEffects
+                                    onToggled: {
+                                        ThemeEngine.glassEdges = checked
+                                        page.persist()
+                                    }
                                 }
                             }
                             TermRule {}

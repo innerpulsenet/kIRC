@@ -30,6 +30,12 @@ constexpr auto kWalletKeyServer = "server-password";
 constexpr int kThemeSchemaVersion = 4;
 constexpr int kThemeSchemaVersionLegacy = 1;
 
+// Glass surfacing intensity range ([UI] GlassIntensity).  Clamped here and on
+// load; ThemeEngine clamps the QML side of the same value.  (The default 60
+// lives with the other defaults in the header's member initialisers.)
+constexpr int kGlassIntensityMin = 1;
+constexpr int kGlassIntensityMax = 100;
+
 // Built-in theme ids that shipped before the terminal reskin (schema < 3):
 // everything that used to be a bubble or glass theme.  A stored id from this
 // list is indistinguishable from "never chose" (it is either the old default
@@ -531,6 +537,85 @@ void KircConfig::setRespondToCtcpVersion(bool respondToCtcpVersion)
     Q_EMIT respondToCtcpVersionChanged();
 }
 
+bool KircConfig::glassEffects() const
+{
+    return m_glassEffects;
+}
+
+void KircConfig::setGlassEffects(bool glassEffects)
+{
+    if (m_glassEffects == glassEffects) {
+        return;
+    }
+    m_glassEffects = glassEffects;
+    Q_EMIT glassEffectsChanged();
+}
+
+int KircConfig::glassIntensity() const
+{
+    return m_glassIntensity;
+}
+
+void KircConfig::setGlassIntensity(int glassIntensity)
+{
+    // Clamp instead of reject: a slider at the end of its range or a
+    // hand-edited config should land on the nearest valid value (the QML
+    // ThemeEngine clamps the same way).
+    if (glassIntensity < kGlassIntensityMin) {
+        glassIntensity = kGlassIntensityMin;
+    }
+    if (glassIntensity > kGlassIntensityMax) {
+        glassIntensity = kGlassIntensityMax;
+    }
+    if (m_glassIntensity == glassIntensity) {
+        return;
+    }
+    m_glassIntensity = glassIntensity;
+    Q_EMIT glassIntensityChanged();
+}
+
+bool KircConfig::glassBlur() const
+{
+    return m_glassBlur;
+}
+
+void KircConfig::setGlassBlur(bool glassBlur)
+{
+    if (m_glassBlur == glassBlur) {
+        return;
+    }
+    m_glassBlur = glassBlur;
+    Q_EMIT glassBlurChanged();
+}
+
+bool KircConfig::glassSheen() const
+{
+    return m_glassSheen;
+}
+
+void KircConfig::setGlassSheen(bool glassSheen)
+{
+    if (m_glassSheen == glassSheen) {
+        return;
+    }
+    m_glassSheen = glassSheen;
+    Q_EMIT glassSheenChanged();
+}
+
+bool KircConfig::glassEdges() const
+{
+    return m_glassEdges;
+}
+
+void KircConfig::setGlassEdges(bool glassEdges)
+{
+    if (m_glassEdges == glassEdges) {
+        return;
+    }
+    m_glassEdges = glassEdges;
+    Q_EMIT glassEdgesChanged();
+}
+
 void KircConfig::load()
 {
     KConfig config(configFilePath(), KConfig::SimpleConfig);
@@ -572,6 +657,20 @@ void KircConfig::load()
     m_defaultPartReason = ui.readEntry(QStringLiteral("DefaultPartReason"), m_defaultPartReason);
     m_respondToCtcpVersion =
         ui.readEntry(QStringLiteral("RespondToCtcpVersion"), m_respondToCtcpVersion);
+    // Glass surfacing ([UI] Glass* keys).  Intensity is clamped on read as
+    // well as in its setter, so a hand-edited kirc.conf cannot land an
+    // out-of-range value in the UI.
+    m_glassEffects = ui.readEntry(QStringLiteral("GlassEffects"), m_glassEffects);
+    m_glassIntensity = ui.readEntry(QStringLiteral("GlassIntensity"), m_glassIntensity);
+    if (m_glassIntensity < kGlassIntensityMin) {
+        m_glassIntensity = kGlassIntensityMin;
+    }
+    if (m_glassIntensity > kGlassIntensityMax) {
+        m_glassIntensity = kGlassIntensityMax;
+    }
+    m_glassBlur = ui.readEntry(QStringLiteral("GlassBlur"), m_glassBlur);
+    m_glassSheen = ui.readEntry(QStringLiteral("GlassSheen"), m_glassSheen);
+    m_glassEdges = ui.readEntry(QStringLiteral("GlassEdges"), m_glassEdges);
 
     // ---- one-time theme-schema migration (< 4 -> 4; policy in the header) --
     // A config file that predates the key is version 1 by definition; a fresh
@@ -662,6 +761,11 @@ void KircConfig::load()
     Q_EMIT defaultPartReasonChanged();
     Q_EMIT serverPasswordChanged();
     Q_EMIT respondToCtcpVersionChanged();
+    Q_EMIT glassEffectsChanged();
+    Q_EMIT glassIntensityChanged();
+    Q_EMIT glassBlurChanged();
+    Q_EMIT glassSheenChanged();
+    Q_EMIT glassEdgesChanged();
 }
 
 void KircConfig::save()
@@ -702,6 +806,11 @@ void KircConfig::save()
     ui.writeEntry(QStringLiteral("HistoryLimit"), m_historyLimit);
     ui.writeEntry(QStringLiteral("DefaultPartReason"), m_defaultPartReason);
     ui.writeEntry(QStringLiteral("RespondToCtcpVersion"), m_respondToCtcpVersion);
+    ui.writeEntry(QStringLiteral("GlassEffects"), m_glassEffects);
+    ui.writeEntry(QStringLiteral("GlassIntensity"), m_glassIntensity);
+    ui.writeEntry(QStringLiteral("GlassBlur"), m_glassBlur);
+    ui.writeEntry(QStringLiteral("GlassSheen"), m_glassSheen);
+    ui.writeEntry(QStringLiteral("GlassEdges"), m_glassEdges);
 
     KConfigGroup services = config.group(QString::fromLatin1(kServicesGroup));
     services.writeEntry(QStringLiteral("IdentifyOnConnect"), m_identifyOnConnect);

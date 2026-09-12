@@ -55,6 +55,7 @@ Kirigami.ApplicationWindow {
                 ThemeEngine.applyBuiltinTheme(root.appConfig.themeId)
             }
             ThemeEngine.fontDelta = root.appConfig.fontDelta
+            root.syncGlassFromConfig()
         }
     }
     // qmllint enable missing-property
@@ -175,6 +176,39 @@ Kirigami.ApplicationWindow {
             root.saslMechanism = root.appConfig.saslMechanism
         }
     }
+
+    // ---------------------------------------------------------------------- //
+    // Glass surfacing (cpp/kircconfig.cpp [UI] Glass* keys).
+    //
+    // The persisted prefs drive the ThemeEngine state every GlassSurface binds
+    // to; the settings pane writes both sides live, this sync covers startup
+    // and any change that arrives through the config object. A config without
+    // the keys (an older file, or a harness double) leaves the ThemeEngine
+    // defaults — glass on at 60 — untouched.
+    // ---------------------------------------------------------------------- //
+    function syncGlassFromConfig()
+    {
+        if (root.appConfig === null || root.appConfig.glassEffects === undefined) {
+            return
+        }
+        ThemeEngine.glassEffects = root.appConfig.glassEffects
+        ThemeEngine.glassIntensity = root.appConfig.glassIntensity
+        ThemeEngine.glassBlur = root.appConfig.glassBlur
+        ThemeEngine.glassSheen = root.appConfig.glassSheen
+        ThemeEngine.glassEdges = root.appConfig.glassEdges
+    }
+
+    // qmllint disable unqualified
+    Connections {
+        target: root.appConfig
+        enabled: root.appConfig !== null
+        function onGlassEffectsChanged() { root.syncGlassFromConfig() }
+        function onGlassIntensityChanged() { root.syncGlassFromConfig() }
+        function onGlassBlurChanged() { root.syncGlassFromConfig() }
+        function onGlassSheenChanged() { root.syncGlassFromConfig() }
+        function onGlassEdgesChanged() { root.syncGlassFromConfig() }
+    }
+    // qmllint enable unqualified
 
     Timer {
         id: reconnectTimer
@@ -475,6 +509,15 @@ Kirigami.ApplicationWindow {
         background: Rectangle {
             color: root.bgPanel
 
+            // Glass sheet (p8): a frosted pane over the header surface. The
+            // console rule below is declared after it, so the box-drawing-ish
+            // bottom rule keeps painting on top of the glass.
+            GlassSurface {
+                anchors.fill: parent
+                radius: 0
+                tint: ThemeEngine.glassFillFor(parent.color)
+            }
+
             Rectangle {
                 anchors.left: parent.left
                 anchors.right: parent.right
@@ -492,7 +535,17 @@ Kirigami.ApplicationWindow {
 
             HeaderButton {
                 text: "[" + qsTr("back") + "]"
+                // [back] leaves the settings pane (back to the chat), or the
+                // chat page when the session is down (back to the connection
+                // form). While a session is LIVE it is not offered: popping to
+                // the form would strand the session behind a screen that
+                // cannot reach it, and Disconnect is the control that actually
+                // ends a session. (Connectivity outranks convenience here —
+                // the guard below re-opens the chat page if one ever lands on
+                // the form mid-session.)
                 visible: root.pageStack.depth > 1
+                         && (root.currentPageIsSettings()
+                             || root.bridge.connection_state !== 2)
                 onClicked: root.pageStack.pop()
 
                 Controls.ToolTip.visible: hovered
@@ -873,7 +926,9 @@ Kirigami.ApplicationWindow {
                 root.lastDropWasAuthFailure = false
                 reconnectTimer.stop()
                 root.saveProfile()
-                root.openChat()
+                // A live session must not be stranded on the connection form
+                // (the tray can connect without the UI ever pushing ChatPage).
+                root.ensureChatVisible()
             } else if (state === 0) {
                 if (!root.userDisconnect && root.wantReconnect() && root.lastHost.length > 0) {
                     // Never retry an authentication failure unless the user
@@ -939,6 +994,20 @@ Kirigami.ApplicationWindow {
             "hostWindow": root,
             "currentChannel": root.chatChannel
         })
+    }
+
+    /// A live session must always be reachable from the current page — the
+    /// chat page, or the settings pane (which pops back to it). Called on every
+    /// transition to "connected", because a session can become live without
+    /// the UI ever pushing ChatPage (the tray's connect path), and because a
+    /// pop must never be able to strand one on the connection form.
+    function ensureChatVisible()
+    {
+        if (root.pageStack.depth > 1) {
+            // Chat or settings: both can reach the session.
+            return
+        }
+        root.openChat()
     }
 
     function tryReconnect()

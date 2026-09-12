@@ -66,6 +66,26 @@ What it covers:
   `dos`, `outrun`); the picker filters down to the matching theme row.
 
 * `disconnect_server()` / `state_changed(0)` falls back to the connection form.
+* Navigation: `[back]` is hidden while a session is live (it is redundant with
+  Disconnect and must not offer a route out of a live session), stays offered
+  on the settings pane (where it pops back to the live chat), and the
+  `ensureChatVisible()` guard re-opens the chat page whenever a connect-state
+  transition to "connected" finds the stack on the connection form (the tray's
+  connect path can establish a session without the UI pushing ChatPage).
+* Glass surfacing (`tst_glass.qml`): the ThemeEngine defaults (on / 60 / all
+  sub-effects), a usable derived colour set on every built-in theme, the
+  intensity clamp at both ends (0/5000 → 1/100, and `clampGlassIntensity`),
+  intensity scaling the fill/blur/sheen, every main area carrying a
+  `GlassSurface` with its host's theme colour, the master toggle off leaving
+  host geometry and colours byte-identical (and every sheet rendering
+  nothing), the sub-toggles gating their layer (frost/sheen/edges), and the
+  settings round trip: control → ThemeEngine → config object, back into the
+  controls (seeded off/25/off, then toggled on, slider moved to 65). It also
+  proves the log's ListView and a real delegate are never *inside* a sheet.
+* The KircConfig half (`glass-config-test.sh` → `tst_config_glass.cpp`,
+  stage "glass-config"): defaults, clamping at both ends, the NOTIFY signals
+  the QML sync binds to, a real save()/load() round trip through kirc.conf,
+  and a hand-edited out-of-range value clamping on load.
 * Follow-the-tail autoscroll (`tst_scroll.qml`): position-based assertions
   that the log stays pinned at the end while following — no cumulative
   drift across K live appends, including a tall wrapped row whose delegate
@@ -96,9 +116,11 @@ Caveats:
 ## Command harness
 
 `qml-tests/run.sh` runs a token-completeness stage (`check-theme-tokens.py`,
-no QML runtime needed) and then three QML stages: the UI smoke flow
-(`tst_smoke.qml`), the slash-command contract (`tst_cmds.qml`) and the
-follow-the-tail autoscroll contract (`tst_scroll.qml`). The command stage
+no QML runtime needed) and then five more stages: the UI smoke flow
+(`tst_smoke.qml`), the slash-command contract (`tst_cmds.qml`), the
+follow-the-tail autoscroll contract (`tst_scroll.qml`), the glass surfacing
+contract (`tst_glass.qml`) and the C++ glass-config contract
+(`glass-config-test.sh`, no QML runtime needed). The command stage
 loads the real
 `ChatPage.qml` against the recording `IrcBridge` double (`calls` / `callTrace()`,
 cleared per case) and drives `runSlash()` with the lines a user types, asserting
@@ -160,7 +182,11 @@ delegate checks run on has 12 rows (the theme-schema-4 addition: a NOTICE, a
 `/me` action and a query row). `perf.sh` greps the delegate
 for `itemAtIndex` call sites and instruments the throwaway copy with a counter
 when any are found, so the same harness reports the pre-fix scan count (about
-3.5 full view scans per delegate, i.e. O(n²)) and the current 0. It also checks
+3.5 full view scans per delegate, i.e. O(n²)) and the current 0. It also greps
+the glass constraint (p8): `MessageDelegate.qml` must contain **zero**
+`MultiEffect`/`ShaderEffect` nodes and `GlassSurface.qml` must contain **zero**
+`ListView`/`itemAtIndex` references, so a blur can never capture the scrolling
+view — the gate fails the run if either drifts. It also checks
 the model-computed `isEvent`/`isError`/`showDay`/`dayLabel` roles reach the
 delegate — including a failing `473 ...` row rendered warn-coloured with a `!`
 marker next to a dim MOTD row — that no delegate exposes the removed grouping

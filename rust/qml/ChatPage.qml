@@ -442,6 +442,13 @@ Kirigami.Page {
             Layout.fillHeight: true
             color: page.bgPanel
 
+            // Glass sheet (p8) — behind the buffer rows, never over them.
+            GlassSurface {
+                anchors.fill: parent
+                radius: 0
+                tint: ThemeEngine.glassFillFor(parent.color)
+            }
+
             ColumnLayout {
                 anchors.fill: parent
                 spacing: 0
@@ -944,10 +951,19 @@ Kirigami.Page {
                 Layout.fillHeight: true
 
                 // Flat log surface (the `bgLog` token); the delegate paints
-                // the text rows on top of it.
+                // the text rows on top of it. The glass sheet (p8) sits
+                // between the surface colour and the rows — frosted behind
+                // the text, never on the scrolling list itself.
                 Rectangle {
+                    id: logSurface
                     anchors.fill: parent
                     color: page.bgLog
+
+                    GlassSurface {
+                        anchors.fill: parent
+                        radius: 0
+                        tint: ThemeEngine.glassFillFor(logSurface.color)
+                    }
                 }
 
                 ListView {
@@ -1133,6 +1149,16 @@ Kirigami.Page {
                         Behavior on color {
                             ColorAnimation { duration: ThemeEngine.motionDuration }
                         }
+
+                        // Glass sheet (p8): the strong tint keeps this small
+                        // floating surface readable over the log. Inset by the
+                        // border width so the accent hairline stays visible.
+                        GlassSurface {
+                            anchors.fill: parent
+                            anchors.margins: 1
+                            radius: 0
+                            tint: ThemeEngine.glassFillFor(page.bgPanel, true)
+                        }
                     }
 
                     contentItem: Controls.Label {
@@ -1161,9 +1187,18 @@ Kirigami.Page {
             // prefix and a plain `[send]` control — no rounded pill, no round
             // send button.
             Rectangle {
+                id: composerBar
                 Layout.fillWidth: true
                 implicitHeight: inputColumn.implicitHeight + Kirigami.Units.smallSpacing * 3
                 color: page.bgLog
+
+                // Glass sheet (p8) — behind the composer row; the rule and
+                // the input frame are declared after it and stay on top.
+                GlassSurface {
+                    anchors.fill: parent
+                    radius: 0
+                    tint: ThemeEngine.glassFillFor(composerBar.color)
+                }
 
                 Rectangle {
                     anchors.top: parent.top
@@ -1335,6 +1370,13 @@ Kirigami.Page {
             Layout.minimumWidth: Kirigami.Units.gridUnit * 8
             Layout.fillHeight: true
             color: page.bgPanel
+
+            // Glass sheet (p8) — behind the nick rows.
+            GlassSurface {
+                anchors.fill: parent
+                radius: 0
+                tint: ThemeEngine.glassFillFor(parent.color)
+            }
 
             ColumnLayout {
                 anchors.fill: parent
@@ -1510,52 +1552,68 @@ Kirigami.Page {
         }
         onAccepted: page.submitJoinDialog()
 
-        contentItem: ColumnLayout {
-            spacing: Kirigami.Units.smallSpacing
+        // Glass sheet (p8) behind the dialog's own rows: the stock dialog
+        // background stays the base, the frosted pane sits between it and the
+        // text. Off, this is the plain dialog again.
+        contentItem: Item {
+            implicitWidth: joinDialogContent.implicitWidth
+            implicitHeight: joinDialogContent.implicitHeight
 
-            Controls.Label {
-                Layout.fillWidth: true
-                text: qsTr("Channel name (a bare name becomes #name):")
-                color: Kirigami.Theme.textColor
-                wrapMode: Text.WordWrap
+            GlassSurface {
+                anchors.fill: parent
+                radius: 0
+                tint: ThemeEngine.glassFillFor(page.bgPanel, true)
             }
 
-            Controls.TextField {
-                id: joinNameField
-                Layout.fillWidth: true
-                Layout.minimumWidth: Kirigami.Units.gridUnit * 14
-                placeholderText: qsTr("#channel")
-                onTextChanged: joinDialog.standardButton(Controls.Dialog.Ok).enabled = text.trim().length > 0
-                onAccepted: {
-                    if (text.trim().length > 0) {
-                        joinDialog.accept()
+            ColumnLayout {
+                id: joinDialogContent
+                anchors.fill: parent
+                spacing: Kirigami.Units.smallSpacing
+
+                Controls.Label {
+                    Layout.fillWidth: true
+                    text: qsTr("Channel name (a bare name becomes #name):")
+                    color: Kirigami.Theme.textColor
+                    wrapMode: Text.WordWrap
+                }
+
+                Controls.TextField {
+                    id: joinNameField
+                    Layout.fillWidth: true
+                    Layout.minimumWidth: Kirigami.Units.gridUnit * 14
+                    placeholderText: qsTr("#channel")
+                    onTextChanged: joinDialog.standardButton(Controls.Dialog.Ok).enabled = text.trim().length > 0
+                    onAccepted: {
+                        if (text.trim().length > 0) {
+                            joinDialog.accept()
+                        }
                     }
                 }
-            }
 
-            Controls.Label {
-                Layout.fillWidth: true
-                text: qsTr("Channel key (only for locked channels):")
-                color: Kirigami.Theme.textColor
-                wrapMode: Text.WordWrap
-            }
+                Controls.Label {
+                    Layout.fillWidth: true
+                    text: qsTr("Channel key (only for locked channels):")
+                    color: Kirigami.Theme.textColor
+                    wrapMode: Text.WordWrap
+                }
 
-            Controls.TextField {
-                id: joinKeyField
-                Layout.fillWidth: true
-                placeholderText: qsTr("Optional")
-                echoMode: Controls.TextField.Password
-                onAccepted: {
-                    if (joinNameField.text.trim().length > 0) {
-                        joinDialog.accept()
+                Controls.TextField {
+                    id: joinKeyField
+                    Layout.fillWidth: true
+                    placeholderText: qsTr("Optional")
+                    echoMode: Controls.TextField.Password
+                    onAccepted: {
+                        if (joinNameField.text.trim().length > 0) {
+                            joinDialog.accept()
+                        }
                     }
                 }
-            }
 
-            Controls.CheckBox {
-                id: joinAutojoinBox
-                Layout.fillWidth: true
-                text: qsTr("Join on connect")
+                Controls.CheckBox {
+                    id: joinAutojoinBox
+                    Layout.fillWidth: true
+                    text: qsTr("Join on connect")
+                }
             }
         }
     }

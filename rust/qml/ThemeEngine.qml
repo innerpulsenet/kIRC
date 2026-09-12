@@ -171,6 +171,162 @@ QtObject {
     readonly property real shadowOpacity: theme.surfaces.shadowOpacity
     readonly property real headerHeight: theme.surfaces.headerHeight
 
+    // --- glass surfacing (in-app frosted glass over the console) ------------
+    // The sheet state + the colours every GlassSurface derives from. All of it
+    // is computed from the ACTIVE theme (its panel/log/input surfaces + accent)
+    // so all ten themes gain glass with no theme-schema bump and no per-theme
+    // tokens. Nothing here is persisted: main.qml syncs these five properties
+    // from KircConfig's [UI] Glass* keys, the settings pane writes them.
+    //
+    // With `glassEffects` false, GlassSurface renders nothing at all, so the
+    // whole UI is pixel-identical to the pre-glass build.
+    //
+    // Frosting is IN-APP only: it blurs the app's own static underlays. kIRC
+    // does not — and this phase deliberately does not — blur whatever sits
+    // behind the window.
+    property bool glassEffects: true
+    property bool glassBlur: true
+    property bool glassSheen: true
+    property bool glassEdges: true
+
+    /// 1..100, clamped on assignment (KircConfig clamps on load/save too, so a
+    /// hand-edited kirc.conf cannot push the derived values out of range).
+    property int glassIntensity: 60
+    onGlassIntensityChanged: {
+        var c = engine.clampGlassIntensity(engine.glassIntensity)
+        if (c !== engine.glassIntensity) {
+            engine.glassIntensity = c
+        }
+    }
+
+    function clampGlassIntensity(v)
+    {
+        var n = Number(v)
+        if (isNaN(n)) {
+            return 60
+        }
+        return Math.max(1, Math.min(100, Math.round(n)))
+    }
+
+    /// Intensity as 0..1 — every derived alpha/radius below scales with it.
+    readonly property real glassAmount: engine.glassIntensity / 100.0
+
+    // RGB components of a theme colour token (string) or a QColor; null when
+    // unusable. Internal helper for the mixes below.
+    function rgbOf(c)
+    {
+        if (c === undefined || c === null || c === "") {
+            return null
+        }
+        if (typeof c === "string") {
+            return parseHexColor(c)
+        }
+        if (c.r === undefined) {
+            return null
+        }
+        return {"r": c.r, "g": c.g, "b": c.b}
+    }
+
+    /// Linear mix: t = 0 -> a, t = 1 -> b. Either side may be a theme colour
+    /// string or a QColor; an unusable side falls back to the other.
+    function mixRgb(a, b, t)
+    {
+        var ca = rgbOf(a)
+        var cb = rgbOf(b)
+        if (ca === null) {
+            ca = cb === null ? {"r": 0, "g": 0, "b": 0} : cb
+        }
+        if (cb === null) {
+            cb = ca
+        }
+        return Qt.rgba(ca.r + (cb.r - ca.r) * t,
+                       ca.g + (cb.g - ca.g) * t,
+                       ca.b + (cb.b - ca.b) * t, 1.0)
+    }
+
+    function lightenRgb(c, amount)
+    {
+        return mixRgb(c, Qt.rgba(1, 1, 1, 1), amount)
+    }
+
+    function darkenRgb(c, amount)
+    {
+        return mixRgb(c, Qt.rgba(0, 0, 0, 1), amount)
+    }
+
+    /// The colour the glass tints derive from: the active theme's panel
+    /// colour, then its log, then its input surface. Themes that leave every
+    /// surface token empty (breeze follows the desktop palette) fall back to a
+    /// neutral black; their call sites pass their resolved palette colour to
+    /// glassFillFor() instead, so glass follows the scheme there too.
+    readonly property color glassBase: {
+        var candidates = [theme.terminal.bgPanel, theme.terminal.bgLog,
+                          theme.terminal.bgInput, theme.surfaces.surface]
+        for (var i = 0; i < candidates.length; ++i) {
+            var rgb = rgbOf(candidates[i])
+            if (rgb !== null) {
+                return Qt.rgba(rgb.r, rgb.g, rgb.b, 1.0)
+            }
+        }
+        return Qt.rgba(0, 0, 0, 1.0)
+    }
+
+    /// The theme accent the lit edges and the sheen are tinted with.
+    readonly property color glassAccent: {
+        var a = rgbOf(theme.terminal.fgAccent)
+        if (a === null) {
+            a = rgbOf(theme.surfaces.accent)
+        }
+        if (a === null) {
+            return Qt.rgba(1, 1, 1, 1)
+        }
+        return Qt.rgba(a.r, a.g, a.b, 1.0)
+    }
+
+    /// True when the theme's base surface reads dark; drives the grain colour
+    /// (light grain on dark glass, dark grain on light glass).
+    readonly property bool glassBaseIsDark: luminanceOf(engine.glassBase) < 0.5
+
+    /// Translucent tint for one area: pass the colour that area would have
+    /// WITHOUT glass (a resolved panel/log/input colour — see the call sites).
+    /// `strong` is the less translucent variant for small floating surfaces
+    /// (the "[ new messages ]" pill, the join dialog) where legibility wants
+    /// more body behind the text.
+    function glassFillFor(base, strong)
+    {
+        var rgb = rgbOf(base)
+        if (rgb === null) {
+            rgb = rgbOf(engine.glassBase)
+        }
+        if (rgb === null) {
+            rgb = {"r": 0, "g": 0, "b": 0}
+        }
+        var a = strong ? (0.55 + 0.40 * engine.glassAmount)
+                       : (0.30 + 0.45 * engine.glassAmount)
+        return Qt.rgba(rgb.r, rgb.g, rgb.b, a)
+    }
+
+    // The glass colour set, derived from the active theme + intensity. The
+    // frozen names (p8 operator notes): glassFill, glassFillStrong,
+    // glassEdgeLight, glassEdgeDark, glassSheenTint, glassGrain, glassShadow.
+    readonly property color glassFill: engine.glassFillFor(engine.glassBase, false)
+    readonly property color glassFillStrong: engine.glassFillFor(engine.glassBase, true)
+    readonly property color glassEdgeLight: engine.withAlpha(
+        engine.lightenRgb(engine.glassAccent, 0.62), 0.22 + 0.30 * engine.glassAmount)
+    readonly property color glassEdgeDark: Qt.rgba(0, 0, 0, 0.28 + 0.34 * engine.glassAmount)
+    readonly property color glassSheenTint: engine.withAlpha(
+        engine.lightenRgb(engine.glassAccent, 0.72), 0.05 + 0.10 * engine.glassAmount)
+    readonly property color glassGrain: engine.withAlpha(
+        engine.glassBaseIsDark ? Qt.rgba(1, 1, 1, 1) : Qt.rgba(0, 0, 0, 1),
+        0.012 + 0.033 * engine.glassAmount)
+    readonly property color glassShadow: Qt.rgba(0, 0, 0, 0.20 + 0.32 * engine.glassAmount)
+
+    // Derived geometry for the sheet (used by GlassSurface).
+    readonly property real glassFrostOpacity: 0.45 + 0.55 * engine.glassAmount
+    readonly property real glassBlurAmount: 0.55 + 0.45 * engine.glassAmount
+    readonly property int glassBlurMax: Math.round(8 + 40 * engine.glassAmount)
+    readonly property real glassSheenOpacity: 0.35 + 0.65 * engine.glassAmount
+
     // Ids the app can offer in a theme picker (built-ins + anything C++ adds).
     property var availableThemeIds: ThemeLib.BUILTIN_IDS.slice()
     property string configError: ""

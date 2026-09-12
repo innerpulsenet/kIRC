@@ -92,6 +92,11 @@ class KircConfig : public QObject
     Q_PROPERTY(QString serverPassword READ serverPassword WRITE setServerPassword NOTIFY serverPasswordChanged)
     Q_PROPERTY(QString sessionServerPassword READ sessionServerPassword WRITE setSessionServerPassword NOTIFY sessionServerPasswordChanged)
     Q_PROPERTY(bool respondToCtcpVersion READ respondToCtcpVersion WRITE setRespondToCtcpVersion NOTIFY respondToCtcpVersionChanged)
+    Q_PROPERTY(bool glassEffects READ glassEffects WRITE setGlassEffects NOTIFY glassEffectsChanged)
+    Q_PROPERTY(int glassIntensity READ glassIntensity WRITE setGlassIntensity NOTIFY glassIntensityChanged)
+    Q_PROPERTY(bool glassBlur READ glassBlur WRITE setGlassBlur NOTIFY glassBlurChanged)
+    Q_PROPERTY(bool glassSheen READ glassSheen WRITE setGlassSheen NOTIFY glassSheenChanged)
+    Q_PROPERTY(bool glassEdges READ glassEdges WRITE setGlassEdges NOTIFY glassEdgesChanged)
 
 public:
     explicit KircConfig(QObject *parent = nullptr);
@@ -210,6 +215,37 @@ public:
     bool respondToCtcpVersion() const;
     void setRespondToCtcpVersion(bool respondToCtcpVersion);
 
+    // ---- glass surfacing (in-app frosted glass over the console) ----------
+    // Five [UI] keys.  These are DISPLAY preferences only: the glass colours
+    // and geometry are derived at runtime in ThemeEngine from the active theme
+    // (rust/qml/ThemeEngine.qml), so no theme token or theme schema changes for
+    // them.  Defaults: on, intensity 60, frost/sheen/edges on.
+    //
+    // Frosting is in-app only — it blurs kIRC's own static underlays.  No
+    // compositor/desktop blur is involved or promised.
+
+    /// Master toggle for the frosted-glass surfacing.  Off renders the plain
+    /// console, pixel-identical to the pre-glass build.
+    bool glassEffects() const;
+    void setGlassEffects(bool glassEffects);
+
+    /// Strength of the glass effects, 1..100.  Clamped in the setter and on
+    /// load, so a hand-edited kirc.conf cannot push it out of range.
+    int glassIntensity() const;
+    void setGlassIntensity(int glassIntensity);
+
+    /// Frost (blur of the static underlay) on/off.
+    bool glassBlur() const;
+    void setGlassBlur(bool glassBlur);
+
+    /// Reflection sheen on/off.
+    bool glassSheen() const;
+    void setGlassSheen(bool glassSheen);
+
+    /// Lit edges + depth on/off.
+    bool glassEdges() const;
+    void setGlassEdges(bool glassEdges);
+
     /// Re-read every value from disk.  Called once at startup, before the QML
     /// engine is created, so the form is prefilled on first paint.
     void load();
@@ -247,6 +283,11 @@ Q_SIGNALS:
     void serverPasswordChanged();
     void sessionServerPasswordChanged();
     void respondToCtcpVersionChanged();
+    void glassEffectsChanged();
+    void glassIntensityChanged();
+    void glassBlurChanged();
+    void glassSheenChanged();
+    void glassEdgesChanged();
 
 private:
     // Defaults mirror the initial values in ConnectPage.qml so a first run
@@ -280,4 +321,11 @@ private:
     QString m_sessionServerPassword;
     // Answer CTCP VERSION requests by default: the classic IRC behaviour.
     bool m_respondToCtcpVersion = true;
+    // Glass surfacing ([UI] Glass* keys; see the accessor block above for the
+    // policy and rust/qml/ThemeEngine.qml for the derived colours).
+    bool m_glassEffects = true;
+    int m_glassIntensity = 60;
+    bool m_glassBlur = true;
+    bool m_glassSheen = true;
+    bool m_glassEdges = true;
 };

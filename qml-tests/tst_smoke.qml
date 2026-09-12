@@ -662,11 +662,57 @@ Item {
                 break
             }
             case 11: {
+                // ---- navigation (p8 follow-up) --------------------------
+                // While a session is live, [back] must not offer a route out
+                // of it: it is redundant with Disconnect, which disconnects.
+                var backBtn = harness.findBackButton()
+                harness.ok("the header carries the [back] control", backBtn !== null,
+                           backBtn === null ? "null" : ("visible=" + backBtn.visible))
+                harness.ok("[back] is hidden while the session is live",
+                           backBtn !== null && backBtn.visible === false,
+                           backBtn === null ? "null" : ("visible=" + backBtn.visible))
+                // On the settings pane it is genuinely useful ("back to
+                // chat"), so it stays there.
+                if (harness.win) { harness.win.openSettings() }
+                break
+            }
+            case 12: {
+                if (!harness.win) { break }
+                harness.ok("settings pushed on top of a live session",
+                           harness.win.pageStack.depth === 3
+                           && harness.win.currentPageIsSettings() === true,
+                           "depth=" + harness.win.pageStack.depth)
+                var backSettings = harness.findBackButton()
+                harness.ok("[back] is offered on the settings pane", backSettings !== null
+                           && backSettings.visible === true,
+                           backSettings === null ? "null" : ("visible=" + backSettings.visible))
+                // It pops back to the live chat.
+                harness.win.pageStack.pop()
+                harness.ok("[back] from settings returns to the live session",
+                           harness.win.pageStack.depth === 2
+                           && harness.win.currentPageIsSettings() === false,
+                           "depth=" + harness.win.pageStack.depth)
+                // The guard: even a pop to the connection form while the
+                // session is live cannot strand it — the next connect-state
+                // signal lands back on the chat page.  (This is also the tray
+                // path's protection: it can connect without the UI pushing.)
+                harness.win.pageStack.pop()
+                harness.ok("a pop lands on the connection form", harness.win.pageStack.depth === 1,
+                           "depth=" + harness.win.pageStack.depth)
+                harness.win.bridge.connection_state = 2
+                harness.win.bridge.state_changed(2)
+                harness.ok("a live session is never stranded on the connection form",
+                           harness.win.pageStack.depth === 2
+                           && harness.win.currentPageIsSettings() === false,
+                           "depth=" + harness.win.pageStack.depth)
+                break
+            }
+            case 13: {
                 // disconnect must fall back to the connection form
                 if (harness.win) { harness.win.bridge.disconnect_server() }
                 break
             }
-            case 12: {
+            case 14: {
                 harness.ok("disconnect returned to the connection form", harness.win !== null && harness.win.pageStack.depth === 1,
                            "depth=" + (harness.win ? harness.win.pageStack.depth : -1))
                 console.error(harness.failures === 0 ? "SMOKE-RESULT: ALL PASS" : ("SMOKE-RESULT: " + harness.failures + " FAILURES"))
@@ -713,6 +759,48 @@ Item {
         }
         if (root.contentItem !== undefined && root.contentItem !== null) {
             var c = harness.findTextContaining(root.contentItem, fragment, depth + 1)
+            if (c !== null) { return c }
+        }
+        return null
+    }
+
+    /// The header's [back] ToolButton: an inline component whose text is the
+    /// bracketed translation, reachable through the window's header item (and,
+    /// as a fallback, its contentItem).
+    function findBackButton() {
+        var pred = function (o) { return o.text === "[back]" && o.pressed !== undefined }
+        var roots = []
+        if (harness.win.header !== undefined && harness.win.header !== null) {
+            roots.push(harness.win.header)
+        }
+        if (harness.win.contentItem !== undefined && harness.win.contentItem !== null) {
+            roots.push(harness.win.contentItem)
+        }
+        for (var i = 0; i < roots.length; ++i) {
+            var f = harness.findByPredicate(roots[i], pred, 0)
+            if (f !== null) { return f }
+        }
+        return null
+    }
+
+    /// Depth-first search for an item matching `pred` (used for controls whose
+    /// identity is not a single text, e.g. the header's [back] ToolButton).
+    function findByPredicate(root, pred, depth) {
+        if (root === null || root === undefined || depth > 18) { return null }
+        var hit = false
+        try {
+            hit = pred(root) === true
+        } catch (e) {
+            hit = false
+        }
+        if (hit) { return root }
+        var kids = root.children || []
+        for (var i = 0; i < kids.length; ++i) {
+            var f = harness.findByPredicate(kids[i], pred, depth + 1)
+            if (f !== null) { return f }
+        }
+        if (root.contentItem !== undefined && root.contentItem !== null) {
+            var c = harness.findByPredicate(root.contentItem, pred, depth + 1)
             if (c !== null) { return c }
         }
         return null
