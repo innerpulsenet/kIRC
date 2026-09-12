@@ -9,16 +9,26 @@
 #   * CMakeLists.txt FetchContent's cxx-qt-cmake at *configure* time.
 #     We ship it as Source1 and point FETCHCONTENT_SOURCE_DIR_CXXQT at the
 #     unpacked directory, so no network access is needed.
+#   * cxx-qt-cmake's own CMake then FetchContent's *corrosion* at configure
+#     time.  It is shipped as Source3 and pointed at with
+#     FETCHCONTENT_SOURCE_DIR_CORROSION for the same reason: left to itself it
+#     git-clones from GitHub, which needs git and the network (in CI it failed
+#     with "could not find git for clone of corrosion-populate").
 #   * Cargo would otherwise hit crates.io.  We ship a full `cargo vendor` tree
 #     as Source2 and wire CARGO_HOME to an offline source-replacement config.
 #
 # See packaging/README.md for how to (re)generate Source2 and the source
-# tarball.  With both in place `rpmbuild -ba` works with the network unplugged.
+# tarball.  With all three in place `rpmbuild -ba` works with the network
+# unplugged.
 
 # `cargo vendor` output tree, shipped as Source2.
 %global vendor_tarball %{name}-vendor-%{version}.tar.gz
 # Unpacked name of Source1 (cxx-qt-cmake GitHub archive).
 %global cxxqt_dir cxx-qt-cmake-0.10.0
+
+# Unpacked name of Source3 (corrosion GitHub archive, tag v0.5.2 — the archive
+# directory drops the leading "v").  Matches the GIT_TAG cxx-qt-cmake pins.
+%global corrosion_dir corrosion-0.5.2
 
 Name:           kirc
 Version:        0.1.0
@@ -36,6 +46,10 @@ Source0:        %{name}-%{version}.tar.gz
 Source1:        cxx-qt-cmake-0.10.0.tar.gz
 # `cd rust && cargo vendor` output, packaged with a top-level vendor/ dir.
 Source2:        %{vendor_tarball}
+
+# https://github.com/corrosion-rs/corrosion/archive/refs/tags/v0.5.2.tar.gz
+# Pinned to the GIT_TAG cxx-qt-cmake 0.10.0 requests.
+Source3:        corrosion-0.5.2.tar.gz
 
 BuildRequires:  cmake
 BuildRequires:  gcc-c++
@@ -77,7 +91,7 @@ Features include multiple server connections, channel and query views,
 nickname and topic handling, and desktop notifications for highlights.
 
 %prep
-%setup -q -a 1 -a 2
+%setup -q -a 1 -a 2 -a 3
 
 # Offline cargo: replace crates.io with the vendored tree.  Using a dedicated
 # CARGO_HOME keeps the config independent of the build cwd and avoids touching
@@ -100,7 +114,8 @@ export CARGO_NET_OFFLINE=true
 
 %cmake \
   -DCMAKE_BUILD_TYPE=Release \
-  -DFETCHCONTENT_SOURCE_DIR_CXXQT=%{_builddir}/%{name}-%{version}/%{cxxqt_dir}
+  -DFETCHCONTENT_SOURCE_DIR_CXXQT=%{_builddir}/%{name}-%{version}/%{cxxqt_dir} \
+  -DFETCHCONTENT_SOURCE_DIR_CORROSION=%{_builddir}/%{name}-%{version}/%{corrosion_dir}
 %cmake_build
 
 %install

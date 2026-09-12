@@ -33,6 +33,8 @@ env:
   # Must match CMakeLists.txt's FetchContent GIT_TAG and the spec's Source1 /
   # %global cxxqt_dir.
   CXXQT_VERSION: '0.10.0'
+  # Pinned to the GIT_TAG cxx-qt-cmake 0.10.0 requests for corrosion.
+  CORROSION_VERSION: '0.5.2'
 
 jobs:
   engine-tests:
@@ -133,6 +135,14 @@ jobs:
           # Source1 — cxx-qt-cmake, matching CMakeLists.txt's FetchContent tag.
           curl -fsSL -o "$sources/cxx-qt-cmake-$CXXQT_VERSION.tar.gz" \
             "https://github.com/kdab/cxx-qt-cmake/archive/refs/tags/$CXXQT_VERSION.tar.gz"
+
+          # Source3 — corrosion. cxx-qt-cmake's own CMake FetchContent's it at
+          # configure time; left to itself that is a git clone from GitHub, so
+          # the build needs git and the network and fails without either
+          # ("could not find git for clone of corrosion-populate"). Shipping it
+          # keeps the build offline, the same way Source1 does for cxx-qt-cmake.
+          curl -fsSL -o "$sources/corrosion-$CORROSION_VERSION.tar.gz" \
+            "https://github.com/corrosion-rs/corrosion/archive/refs/tags/v$CORROSION_VERSION.tar.gz"
 
           cp packaging/kirc.spec "$HOME/rpmbuild/SPECS/"
           ls -la "$sources"
