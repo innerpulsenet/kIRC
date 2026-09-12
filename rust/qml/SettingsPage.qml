@@ -83,7 +83,7 @@ Kirigami.Page {
     // In the two-pane layout "About" is simply the selected section.
     property var aboutCard: null
 
-    readonly property var sectionIds: ["identity", "connection", "appearance", "notifications", "about"]
+    readonly property var sectionIds: ["identity", "connection", "appearance", "effects", "notifications", "about"]
 
     // Search keywords per section, and the row labels each section contains
     // (used by the live filter).
@@ -93,15 +93,23 @@ Kirigami.Page {
         ["appearance", "theme", "font", "size", "timestamps", "colour", "color", "palette",
          "retro", "bbs", "ansi", "dial-up", "c64", "commodore", "vt", "dec", "ega", "dos",
          "synthwave", "neon", "outrun", "phosphor", "amber",
-         "glass", "frost", "blur", "sheen", "reflection", "shine", "gloss", "edge", "depth",
-         "translucent", "polish"],
+         "crt", "scanlines", "paper", "teletype", "gruvbox"],
+        ["effects", "effect", "glass", "frost", "blur", "sheen", "reflection", "shine", "gloss",
+         "edge", "depth", "translucent", "polish", "specular",
+         "crt", "scanline", "scanlines", "interlace", "vignette", "corner",
+         "falloff", "grain", "noise", "film", "flicker", "hum", "humbar", "hum bar", "roll",
+         "tube", "monitor", "screen", "filter", "retro"],
         ["notifications", "notification", "highlight", "direct message", "tray", "minimize"],
         ["about", "version", "kirc", "license", "kde", "passwords"]
     ]
     readonly property var sectionRowLabels: [
         ["Nickname", "NickServ account", "NickServ password", "SASL user", "SASL mechanism"],
         ["Server password", "Identify", "CTCP version", "Autojoin", "History", "Reconnect", "Retry limit", "Auth failures", "Part reason"],
-        ["Theme", "Font family", "Font size", "Timestamps", "Glass", "Glass intensity", "Glass frost", "Glass sheen", "Glass edges"],
+        ["Theme", "Font family", "Font size", "Timestamps"],
+        ["Glass", "Glass intensity", "Glass frost", "Glass sheen", "Glass edges",
+         "Reflection", "Reflection intensity",
+         "Scanlines", "Scanline intensity", "Vignette", "Vignette intensity", "Grain", "Grain intensity",
+         "Flicker", "Flicker intensity", "Hum bar", "Hum bar intensity"],
         ["Highlights", "Direct messages", "System tray"],
         ["Version", "Passwords"]
     ]
@@ -112,8 +120,9 @@ Kirigami.Page {
         case 0: return qsTr("Identity")
         case 1: return qsTr("Connection")
         case 2: return qsTr("Appearance")
-        case 3: return qsTr("Notifications")
-        case 4: return qsTr("About")
+        case 3: return qsTr("Effects")
+        case 4: return qsTr("Notifications")
+        case 5: return qsTr("About")
         }
         return ""
     }
@@ -196,7 +205,13 @@ Kirigami.Page {
         "vt": "dec vt100 vt220 terminal phosphor",
         "ega": "ega dos ibm pc bios vga 16-colour 16-color",
         "synthwave": "neon outrun synth eighties 80s retro",
-        "ai-slop": "ai slop vibe purple violet magenta neon gradient omarchy quattro"
+        "ai-slop": "ai slop vibe purple violet magenta neon gradient omarchy quattro",
+        // p10 additions.  Each new id must carry keywords here: the settings
+        // search only finds a theme by its id, its display name or this list,
+        // and the smoke test asserts every built-in has one.
+        "crt": "crt scanlines scanline tube aged ntsc colour color phosphor retro filter",
+        "paper": "paper teletype light ink print white ribbon",
+        "gruvbox": "gruvbox warm retro brown orange cream aqua"
     }
 
     /// True when a theme id (or its display name / keywords) matches the
@@ -268,7 +283,69 @@ Kirigami.Page {
     // main.qml (openAbout) selects the About section.
     function showAbout()
     {
-        page.selectSection(4)
+        page.selectSection(page.sectionIds.indexOf("about"))
+    }
+
+    // main.qml (openEffectsSettings, from the [effects] popup) selects the
+    // Effects section.  Resolved by id so the section list stays the single
+    // authority on its own order.
+    function showEffects()
+    {
+        page.selectSection(page.sectionIds.indexOf("effects"))
+    }
+
+    // --- CRT effect prefs (p10) --------------------------------------------
+    // The KircConfig object is the source of truth for these (there is no
+    // ThemeEngine property for them: they are global display prefs, not theme
+    // tokens).  The controls below read it through these helpers and write it
+    // back through persist(), so a change made here — or in the [effects]
+    // popup, which writes the same keys — is live in the window and survives a
+    // restart.  A config double without the keys (an older harness) simply
+    // shows the all-off defaults.
+    function prefBool(name, fallback)
+    {
+        var c = page.cfg()
+        if (c === null || c === undefined || c[name] === undefined) {
+            return fallback === true
+        }
+        return c[name] === true
+    }
+
+    function prefInt(name, fallback)
+    {
+        var c = page.cfg()
+        if (c === null || c === undefined || c[name] === undefined) {
+            return fallback
+        }
+        var n = parseInt(c[name], 10)
+        return isNaN(n) ? fallback : n
+    }
+
+    /// Flip one effect's switch in the config and persist.  main.qml mirrors
+    /// the NOTIFY signal into the overlay, so the window updates live.
+    function setEffectPref(name, on)
+    {
+        var c = page.cfg()
+        if (c === null || c === undefined || c[name] === undefined) {
+            return
+        }
+        c[name] = on === true
+        page.persist()
+    }
+
+    /// Set one effect's intensity (1..100; KircConfig clamps) and persist.
+    function setEffectAmount(name, value)
+    {
+        var c = page.cfg()
+        if (c === null || c === undefined || c[name] === undefined) {
+            return
+        }
+        var n = Math.round(Number(value))
+        if (isNaN(n) || c[name] === n) {
+            return
+        }
+        c[name] = n
+        page.persist()
     }
 
     // ---------------------------------------------------------------------- //
@@ -511,6 +588,47 @@ Kirigami.Page {
         }
     }
 
+    /// Flat square slider on a box-drawing rule with an accent fill: the
+    /// terminal take on Controls.Slider.  Same shape as the glass intensity
+    /// control, factored out for the five effect intensities.
+    component TermSlider: Controls.Slider {
+        id: termSlider
+
+        Layout.fillWidth: true
+        from: 1
+        to: 100
+        stepSize: 1
+
+        background: Rectangle {
+            x: termSlider.leftPadding
+            y: termSlider.topPadding + termSlider.availableHeight / 2 - height / 2
+            implicitWidth: 120
+            implicitHeight: 4
+            width: termSlider.availableWidth
+            height: 2
+            radius: 0
+            color: page.ruleC()
+
+            Rectangle {
+                width: termSlider.visualPosition * parent.width
+                height: parent.height
+                radius: 0
+                color: termSlider.enabled ? page.fgAccent() : page.fgDim()
+            }
+        }
+
+        handle: Rectangle {
+            x: termSlider.leftPadding + termSlider.visualPosition * (termSlider.availableWidth - width)
+            y: termSlider.topPadding + termSlider.availableHeight / 2 - height / 2
+            implicitWidth: 9
+            implicitHeight: 14
+            radius: 0
+            color: termSlider.pressed ? page.fgAccent() : page.bgInputC()
+            border.width: 1
+            border.color: termSlider.enabled ? page.fgAccent() : page.fgDim()
+        }
+    }
+
     // ---------------------------------------------------------------------- //
     // Configuration plumbing (unchanged contract)
     // ---------------------------------------------------------------------- //
@@ -637,6 +755,57 @@ Kirigami.Page {
         }
         function onGlassEdgesChanged() {
             glassEdgesSwitch.checked = ThemeEngine.glassEdges
+        }
+    }
+
+    // --- CRT effects: follow the config in both directions -----------------
+    // Unlike glass these live in KircConfig itself (global prefs, no theme
+    // token), so the pane binds to the config object.  The handlers keep the
+    // controls honest when the value changes elsewhere — the [effects] popup,
+    // or main.qml restoring kirc.conf at startup.
+    Connections {
+        target: page.cfg()
+        enabled: page.cfg() !== null && page.cfg().scanlines !== undefined
+
+        function onScanlinesChanged() {
+            scanlineSwitch.checked = page.prefBool("scanlines")
+        }
+        function onScanlineAmountChanged() {
+            if (Math.round(scanlineSlider.value) !== page.prefInt("scanlineAmount", 35)) {
+                scanlineSlider.value = page.prefInt("scanlineAmount", 35)
+            }
+        }
+        function onVignetteChanged() {
+            vignetteSwitch.checked = page.prefBool("vignette")
+        }
+        function onVignetteAmountChanged() {
+            if (Math.round(vignetteSlider.value) !== page.prefInt("vignetteAmount", 30)) {
+                vignetteSlider.value = page.prefInt("vignetteAmount", 30)
+            }
+        }
+        function onGrainChanged() {
+            grainSwitch.checked = page.prefBool("grain")
+        }
+        function onGrainAmountChanged() {
+            if (Math.round(grainSlider.value) !== page.prefInt("grainAmount", 10)) {
+                grainSlider.value = page.prefInt("grainAmount", 10)
+            }
+        }
+        function onFlickerChanged() {
+            flickerSwitch.checked = page.prefBool("flicker")
+        }
+        function onFlickerAmountChanged() {
+            if (Math.round(flickerSlider.value) !== page.prefInt("flickerAmount", 4)) {
+                flickerSlider.value = page.prefInt("flickerAmount", 4)
+            }
+        }
+        function onHumBarChanged() {
+            humSwitch.checked = page.prefBool("humBar")
+        }
+        function onHumBarAmountChanged() {
+            if (Math.round(humSlider.value) !== page.prefInt("humBarAmount", 8)) {
+                humSlider.value = page.prefInt("humBarAmount", 8)
+            }
         }
     }
 
@@ -1638,11 +1807,67 @@ Kirigami.Page {
                             }
                             TermRule {}
                         }
+                    }
 
-                        // ---- glass surfacing --------------------------------- //
-                        // Frost/sheen/edges over the console panes. In-app
-                        // only: the sheet blurs kIRC's own static underlays —
-                        // the window itself never blurs what is behind it.
+                    // ========================================================== //
+                    // Effects (p10) — ONE section for BOTH effect families
+                    //
+                    //   * GLASS: the frosted sheet's master switch, its
+                    //     intensity and its four layers (frost, sheen, edges,
+                    //     reflection).  The first three are the p8 prefs and
+                    //     stay single-sourced in ThemeEngine; reflection is the
+                    //     p10 chrome gloss in KircConfig.
+                    //   * CRT: scanlines, vignette, grain, flicker, hum bar —
+                    //     global [UI] keys in cpp/kircconfig.cpp.
+                    //
+                    // None of it is a theme token: switching theme cannot
+                    // enable or disable any of it.  Every effect is OFF by
+                    // default (the glass master is the one the app has always
+                    // had on) because the CRT layers sit over the message text.
+                    // main.qml mirrors the config into the overlay, so a toggle
+                    // here is live — and the [effects] header popup writes the
+                    // same keys, which is why the controls follow the config
+                    // object rather than a local copy.
+                    //
+                    // This section replaced the standalone Glass pane (p10):
+                    // one surface, one search target for "glass", "frost",
+                    // "scanlines", "reflection" and the rest.
+                    // ========================================================== //
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        visible: page.sectionIndex === 3
+                        spacing: 0
+
+                        SectionHeader { title: page.sectionName(3) }
+
+                        Text {
+                            Layout.fillWidth: true
+                            Layout.leftMargin: 10
+                            Layout.rightMargin: 10
+                            Layout.topMargin: 4
+                            Layout.bottomMargin: 4
+                            text: qsTr("Two families: the in-app glass sheet (frost, sheen, edges, reflection) and the CRT tube (scanlines, vignette, grain, flicker, hum bar). All global display settings — the theme cannot change them.")
+                            color: page.fgDim()
+                            font.family: page.mono
+                            font.pointSize: page.ptSmall
+                            wrapMode: Text.WordWrap
+                        }
+
+                        TermRule { Layout.topMargin: 6 }
+
+                        // ---- glass family ----------------------------------- //
+                        Text {
+                            Layout.fillWidth: true
+                            Layout.leftMargin: 10
+                            Layout.rightMargin: 10
+                            Layout.topMargin: 4
+                            Layout.bottomMargin: 2
+                            text: "-- glass --"
+                            color: page.fgAccent()
+                            font.family: page.mono
+                            font.pointSize: page.ptSmall
+                        }
+
                         ColumnLayout {
                             Layout.fillWidth: true
                             visible: page.rowVisible(qsTr("Glass")) && page.hasPref("glassEffects")
@@ -1685,6 +1910,7 @@ Kirigami.Page {
 
                                 Controls.Slider {
                                     id: glassSlider
+                                    objectName: "glassSlider"
                                     Layout.fillWidth: true
                                     from: 1
                                     to: 100
@@ -1767,7 +1993,6 @@ Kirigami.Page {
                                 TermToggle {
                                     id: glassBlurSwitch
                                     text: qsTr("Frost (blurred underlay)")
-                                    checked: true
                                     enabled: ThemeEngine.glassEffects
                                     onToggled: {
                                         ThemeEngine.glassBlur = checked
@@ -1775,6 +2000,19 @@ Kirigami.Page {
                                     }
                                 }
                             }
+
+                            Text {
+                                Layout.fillWidth: true
+                                Layout.leftMargin: 10
+                                Layout.rightMargin: 10
+                                Layout.bottomMargin: 5
+                                text: qsTr("the frosted blur itself; the source is a static underlay, never the log")
+                                color: page.fgDim()
+                                font.family: page.mono
+                                font.pointSize: page.ptSmall
+                                elide: Text.ElideRight
+                            }
+
                             TermRule {}
                         }
 
@@ -1788,7 +2026,6 @@ Kirigami.Page {
                                 TermToggle {
                                     id: glassSheenSwitch
                                     text: qsTr("Reflection sheen")
-                                    checked: true
                                     enabled: ThemeEngine.glassEffects
                                     onToggled: {
                                         ThemeEngine.glassSheen = checked
@@ -1796,6 +2033,19 @@ Kirigami.Page {
                                     }
                                 }
                             }
+
+                            Text {
+                                Layout.fillWidth: true
+                                Layout.leftMargin: 10
+                                Layout.rightMargin: 10
+                                Layout.bottomMargin: 5
+                                text: qsTr("the diagonal reflection sweep across each pane")
+                                color: page.fgDim()
+                                font.family: page.mono
+                                font.pointSize: page.ptSmall
+                                elide: Text.ElideRight
+                            }
+
                             TermRule {}
                         }
 
@@ -1808,8 +2058,7 @@ Kirigami.Page {
                                 label: qsTr("Glass edges")
                                 TermToggle {
                                     id: glassEdgesSwitch
-                                    text: qsTr("Lit edges + depth")
-                                    checked: true
+                                    text: qsTr("Lit edges and depth")
                                     enabled: ThemeEngine.glassEffects
                                     onToggled: {
                                         ThemeEngine.glassEdges = checked
@@ -1817,6 +2066,457 @@ Kirigami.Page {
                                     }
                                 }
                             }
+
+                            Text {
+                                Layout.fillWidth: true
+                                Layout.leftMargin: 10
+                                Layout.rightMargin: 10
+                                Layout.bottomMargin: 5
+                                text: qsTr("the lit top edge, the shading and the pane's depth")
+                                color: page.fgDim()
+                                font.family: page.mono
+                                font.pointSize: page.ptSmall
+                                elide: Text.ElideRight
+                            }
+
+                            TermRule {}
+                        }
+
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            visible: page.rowVisible(qsTr("Reflection")) && page.hasPref("reflection")
+                            spacing: 0
+
+                            TermRow {
+                                label: qsTr("Reflection")
+                                TermToggle {
+                                    id: reflectionSwitch
+                                    text: qsTr("Specular chrome gloss")
+                                    checked: page.prefBool("reflection")
+                                    onToggled: page.setEffectPref("reflection", checked)
+                                }
+                            }
+
+                            Text {
+                                Layout.fillWidth: true
+                                Layout.leftMargin: 10
+                                Layout.rightMargin: 10
+                                Layout.bottomMargin: 5
+                                text: qsTr("a gloss along the window's own top edge and header band — static chrome only, never a mirror of the message log")
+                                color: page.fgDim()
+                                font.family: page.mono
+                                font.pointSize: page.ptSmall
+                                elide: Text.ElideRight
+                            }
+
+                            TermRule {}
+                        }
+
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            visible: page.rowVisible(qsTr("Reflection intensity")) && page.hasPref("reflection")
+                            spacing: 0
+
+                            TermRow {
+                                label: qsTr("Reflection intensity")
+
+                                TermSlider {
+                                    id: reflectionSlider
+                                    objectName: "reflectionSlider"
+                                    enabled: page.prefBool("reflection")
+                                    value: page.prefInt("reflectionAmount", 25)
+                                    onValueChanged: page.setEffectAmount("reflectionAmount", value)
+                                }
+
+                                Text {
+                                    text: page.prefInt("reflectionAmount", 25)
+                                    color: page.fgDim()
+                                    font.family: page.mono
+                                    font.pointSize: page.ptSmall
+                                    Layout.alignment: Qt.AlignVCenter
+                                }
+                            }
+
+                            Text {
+                                Layout.fillWidth: true
+                                Layout.leftMargin: 10
+                                Layout.rightMargin: 10
+                                Layout.bottomMargin: 5
+                                text: qsTr("how bright the gloss and the top edge are (1–100)")
+                                color: page.fgDim()
+                                font.family: page.mono
+                                font.pointSize: page.ptSmall
+                                elide: Text.ElideRight
+                            }
+
+                            TermRule {}
+                        }
+
+                        // ---- CRT family ------------------------------------- //
+                        Text {
+                            Layout.fillWidth: true
+                            Layout.leftMargin: 10
+                            Layout.rightMargin: 10
+                            Layout.topMargin: 4
+                            Layout.bottomMargin: 2
+                            text: "-- crt --"
+                            color: page.fgAccent()
+                            font.family: page.mono
+                            font.pointSize: page.ptSmall
+                        }
+
+                        // ---- scanlines ------------------------------------- //
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            visible: page.rowVisible(qsTr("Scanlines")) && page.hasPref("scanlines")
+                            spacing: 0
+
+                            TermRow {
+                                label: qsTr("Scanlines")
+                                TermToggle {
+                                    id: scanlineSwitch
+                                    text: qsTr("Horizontal scanlines")
+                                    checked: page.prefBool("scanlines")
+                                    onToggled: page.setEffectPref("scanlines", checked)
+                                }
+                            }
+
+                            Text {
+                                Layout.fillWidth: true
+                                Layout.leftMargin: 10
+                                Layout.rightMargin: 10
+                                Layout.bottomMargin: 5
+                                text: qsTr("a dark line every third row, drawn above every layer")
+                                color: page.fgDim()
+                                font.family: page.mono
+                                font.pointSize: page.ptSmall
+                                elide: Text.ElideRight
+                            }
+
+                            TermRule {}
+                        }
+
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            visible: page.rowVisible(qsTr("Scanline intensity")) && page.hasPref("scanlines")
+                            spacing: 0
+
+                            TermRow {
+                                label: qsTr("Scanline intensity")
+
+                                TermSlider {
+                                    id: scanlineSlider
+                                    objectName: "scanlineSlider"
+                                    enabled: page.prefBool("scanlines")
+                                    value: page.prefInt("scanlineAmount", 35)
+                                    onValueChanged: page.setEffectAmount("scanlineAmount", value)
+                                }
+
+                                Text {
+                                    text: page.prefInt("scanlineAmount", 35)
+                                    color: page.fgDim()
+                                    font.family: page.mono
+                                    font.pointSize: page.ptSmall
+                                    Layout.alignment: Qt.AlignVCenter
+                                }
+                            }
+
+                            Text {
+                                Layout.fillWidth: true
+                                Layout.leftMargin: 10
+                                Layout.rightMargin: 10
+                                Layout.bottomMargin: 5
+                                text: qsTr("how dark the lines are (1–100); ~35 reads as a tube, much above that starts to eat the text")
+                                color: page.fgDim()
+                                font.family: page.mono
+                                font.pointSize: page.ptSmall
+                                elide: Text.ElideRight
+                            }
+
+                            TermRule {}
+                        }
+
+                        // ---- vignette -------------------------------------- //
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            visible: page.rowVisible(qsTr("Vignette")) && page.hasPref("vignette")
+                            spacing: 0
+
+                            TermRow {
+                                label: qsTr("Vignette")
+                                TermToggle {
+                                    id: vignetteSwitch
+                                    text: qsTr("Corner falloff")
+                                    checked: page.prefBool("vignette")
+                                    onToggled: page.setEffectPref("vignette", checked)
+                                }
+                            }
+
+                            Text {
+                                Layout.fillWidth: true
+                                Layout.leftMargin: 10
+                                Layout.rightMargin: 10
+                                Layout.bottomMargin: 5
+                                text: qsTr("the darkened tube corners of a real monitor")
+                                color: page.fgDim()
+                                font.family: page.mono
+                                font.pointSize: page.ptSmall
+                                elide: Text.ElideRight
+                            }
+
+                            TermRule {}
+                        }
+
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            visible: page.rowVisible(qsTr("Vignette intensity")) && page.hasPref("vignette")
+                            spacing: 0
+
+                            TermRow {
+                                label: qsTr("Vignette intensity")
+
+                                TermSlider {
+                                    id: vignetteSlider
+                                    objectName: "vignetteSlider"
+                                    enabled: page.prefBool("vignette")
+                                    value: page.prefInt("vignetteAmount", 30)
+                                    onValueChanged: page.setEffectAmount("vignetteAmount", value)
+                                }
+
+                                Text {
+                                    text: page.prefInt("vignetteAmount", 30)
+                                    color: page.fgDim()
+                                    font.family: page.mono
+                                    font.pointSize: page.ptSmall
+                                    Layout.alignment: Qt.AlignVCenter
+                                }
+                            }
+
+                            Text {
+                                Layout.fillWidth: true
+                                Layout.leftMargin: 10
+                                Layout.rightMargin: 10
+                                Layout.bottomMargin: 5
+                                text: qsTr("how far the corner shading reaches in (1–100)")
+                                color: page.fgDim()
+                                font.family: page.mono
+                                font.pointSize: page.ptSmall
+                                elide: Text.ElideRight
+                            }
+
+                            TermRule {}
+                        }
+
+                        // ---- grain ----------------------------------------- //
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            visible: page.rowVisible(qsTr("Grain")) && page.hasPref("grain")
+                            spacing: 0
+
+                            TermRow {
+                                label: qsTr("Grain")
+                                TermToggle {
+                                    id: grainSwitch
+                                    text: qsTr("Static grain")
+                                    checked: page.prefBool("grain")
+                                    onToggled: page.setEffectPref("grain", checked)
+                                }
+                            }
+
+                            Text {
+                                Layout.fillWidth: true
+                                Layout.leftMargin: 10
+                                Layout.rightMargin: 10
+                                Layout.bottomMargin: 5
+                                text: qsTr("a faint fixed noise wash — painted once, never animated")
+                                color: page.fgDim()
+                                font.family: page.mono
+                                font.pointSize: page.ptSmall
+                                elide: Text.ElideRight
+                            }
+
+                            TermRule {}
+                        }
+
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            visible: page.rowVisible(qsTr("Grain intensity")) && page.hasPref("grain")
+                            spacing: 0
+
+                            TermRow {
+                                label: qsTr("Grain intensity")
+
+                                TermSlider {
+                                    id: grainSlider
+                                    objectName: "grainSlider"
+                                    enabled: page.prefBool("grain")
+                                    value: page.prefInt("grainAmount", 10)
+                                    onValueChanged: page.setEffectAmount("grainAmount", value)
+                                }
+
+                                Text {
+                                    text: page.prefInt("grainAmount", 10)
+                                    color: page.fgDim()
+                                    font.family: page.mono
+                                    font.pointSize: page.ptSmall
+                                    Layout.alignment: Qt.AlignVCenter
+                                }
+                            }
+
+                            Text {
+                                Layout.fillWidth: true
+                                Layout.leftMargin: 10
+                                Layout.rightMargin: 10
+                                Layout.bottomMargin: 5
+                                text: qsTr("density of the noise wash (1–100); it should read as texture, not as dirt")
+                                color: page.fgDim()
+                                font.family: page.mono
+                                font.pointSize: page.ptSmall
+                                elide: Text.ElideRight
+                            }
+
+                            TermRule {}
+                        }
+
+                        // ---- flicker --------------------------------------- //
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            visible: page.rowVisible(qsTr("Flicker")) && page.hasPref("flicker")
+                            spacing: 0
+
+                            TermRow {
+                                label: qsTr("Flicker")
+                                TermToggle {
+                                    id: flickerSwitch
+                                    text: qsTr("Slow brightness flicker")
+                                    checked: page.prefBool("flicker")
+                                    onToggled: page.setEffectPref("flicker", checked)
+                                }
+                            }
+
+                            Text {
+                                Layout.fillWidth: true
+                                Layout.leftMargin: 10
+                                Layout.rightMargin: 10
+                                Layout.bottomMargin: 5
+                                text: qsTr("a very slow, very shallow brightness breathing — the only effect that repaints while it runs")
+                                color: page.fgDim()
+                                font.family: page.mono
+                                font.pointSize: page.ptSmall
+                                elide: Text.ElideRight
+                            }
+
+                            TermRule {}
+                        }
+
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            visible: page.rowVisible(qsTr("Flicker intensity")) && page.hasPref("flicker")
+                            spacing: 0
+
+                            TermRow {
+                                label: qsTr("Flicker intensity")
+
+                                TermSlider {
+                                    id: flickerSlider
+                                    objectName: "flickerSlider"
+                                    enabled: page.prefBool("flicker")
+                                    value: page.prefInt("flickerAmount", 4)
+                                    onValueChanged: page.setEffectAmount("flickerAmount", value)
+                                }
+
+                                Text {
+                                    text: page.prefInt("flickerAmount", 4)
+                                    color: page.fgDim()
+                                    font.family: page.mono
+                                    font.pointSize: page.ptSmall
+                                    Layout.alignment: Qt.AlignVCenter
+                                }
+                            }
+
+                            Text {
+                                Layout.fillWidth: true
+                                Layout.leftMargin: 10
+                                Layout.rightMargin: 10
+                                Layout.bottomMargin: 5
+                                text: qsTr("depth of the dip (1–100); the default is barely there on purpose")
+                                color: page.fgDim()
+                                font.family: page.mono
+                                font.pointSize: page.ptSmall
+                                elide: Text.ElideRight
+                            }
+
+                            TermRule {}
+                        }
+
+                        // ---- hum bar --------------------------------------- //
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            visible: page.rowVisible(qsTr("Hum bar")) && page.hasPref("humBar")
+                            spacing: 0
+
+                            TermRow {
+                                label: qsTr("Hum bar")
+                                TermToggle {
+                                    id: humSwitch
+                                    text: qsTr("Rolling hum bar")
+                                    checked: page.prefBool("humBar")
+                                    onToggled: page.setEffectPref("humBar", checked)
+                                }
+                            }
+
+                            Text {
+                                Layout.fillWidth: true
+                                Layout.leftMargin: 10
+                                Layout.rightMargin: 10
+                                Layout.bottomMargin: 5
+                                text: qsTr("a band of brightness drifting slowly down the window, like a failing tube")
+                                color: page.fgDim()
+                                font.family: page.mono
+                                font.pointSize: page.ptSmall
+                                elide: Text.ElideRight
+                            }
+
+                            TermRule {}
+                        }
+
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            visible: page.rowVisible(qsTr("Hum bar intensity")) && page.hasPref("humBar")
+                            spacing: 0
+
+                            TermRow {
+                                label: qsTr("Hum bar intensity")
+
+                                TermSlider {
+                                    id: humSlider
+                                    objectName: "humSlider"
+                                    enabled: page.prefBool("humBar")
+                                    value: page.prefInt("humBarAmount", 8)
+                                    onValueChanged: page.setEffectAmount("humBarAmount", value)
+                                }
+
+                                Text {
+                                    text: page.prefInt("humBarAmount", 8)
+                                    color: page.fgDim()
+                                    font.family: page.mono
+                                    font.pointSize: page.ptSmall
+                                    Layout.alignment: Qt.AlignVCenter
+                                }
+                            }
+
+                            Text {
+                                Layout.fillWidth: true
+                                Layout.leftMargin: 10
+                                Layout.rightMargin: 10
+                                Layout.bottomMargin: 5
+                                text: qsTr("how bright the band is (1–100)")
+                                color: page.fgDim()
+                                font.family: page.mono
+                                font.pointSize: page.ptSmall
+                                elide: Text.ElideRight
+                            }
+
                             TermRule {}
                         }
                     }
@@ -1826,10 +2526,10 @@ Kirigami.Page {
                     // ========================================================== //
                     ColumnLayout {
                         Layout.fillWidth: true
-                        visible: page.sectionIndex === 3
+                        visible: page.sectionIndex === 4
                         spacing: 0
 
-                        SectionHeader { title: page.sectionName(3) }
+                        SectionHeader { title: page.sectionName(4) }
 
                         ColumnLayout {
                             Layout.fillWidth: true
@@ -1887,10 +2587,10 @@ Kirigami.Page {
                     // ========================================================== //
                     ColumnLayout {
                         Layout.fillWidth: true
-                        visible: page.sectionIndex === 4
+                        visible: page.sectionIndex === 5
                         spacing: 0
 
-                        SectionHeader { title: page.sectionName(4) }
+                        SectionHeader { title: page.sectionName(5) }
 
                         Text {
                             Layout.fillWidth: true

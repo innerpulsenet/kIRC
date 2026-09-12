@@ -56,6 +56,7 @@ Kirigami.ApplicationWindow {
             }
             ThemeEngine.fontDelta = root.appConfig.fontDelta
             root.syncGlassFromConfig()
+            root.syncEffectsFromConfig()
         }
     }
     // qmllint enable missing-property
@@ -207,6 +208,163 @@ Kirigami.ApplicationWindow {
         function onGlassBlurChanged() { root.syncGlassFromConfig() }
         function onGlassSheenChanged() { root.syncGlassFromConfig() }
         function onGlassEdgesChanged() { root.syncGlassFromConfig() }
+    }
+    // qmllint enable unqualified
+
+    // ---------------------------------------------------------------------- //
+    // CRT effects (cpp/kircconfig.cpp [UI] Scanlines/… keys) — p10.
+    //
+    // These five effects are GLOBAL display prefs, like the glass keys: the
+    // KircConfig object is the single source of truth (it is what the settings
+    // pane and the [effects] popup write), and this window mirrors it into the
+    // properties the overlay binds to.  They are deliberately NOT theme tokens,
+    // so switching theme can neither enable nor disable them, and a theme file
+    // written before this phase cannot carry them.
+    //
+    // ALL OFF by default, with the subtle amounts the C++ defaults carry
+    // (35/30/10/4/8): unlike the glass sheet these sit over the message text,
+    // so a fresh install — and any kirc.conf written before these keys — is
+    // the plain console, pixel for pixel.
+    // ---------------------------------------------------------------------- //
+    property bool scanlinesOn: false
+    property int scanlineAmount: 35
+    property bool vignetteOn: false
+    property int vignetteAmount: 30
+    property bool grainOn: false
+    property int grainAmount: 10
+    property bool flickerOn: false
+    property int flickerAmount: 4
+    property bool humBarOn: false
+    property int humBarAmount: 8
+    // Glass family (p10 update): the specular chrome gloss.  The rest of the
+    // glass family (master, intensity, frost, sheen, edges) keeps living in
+    // ThemeEngine — single-sourced, not duplicated here.
+    property bool reflectionOn: false
+    property int reflectionAmount: 25
+
+    /// True while at least one effect is on.  The overlay Loader is inactive
+    /// otherwise, so all-off adds no nodes at all and cannot repaint.
+    readonly property bool effectsActive: root.scanlinesOn || root.vignetteOn
+                                          || root.grainOn || root.flickerOn
+                                          || root.humBarOn || root.reflectionOn
+
+    // qmllint disable unqualified
+    /// Pull every effect pref out of the config object.  A config that predates
+    /// the keys leaves the all-off defaults untouched.
+    function syncEffectsFromConfig()
+    {
+        if (root.appConfig === null || root.appConfig.scanlines === undefined) {
+            return
+        }
+        root.scanlinesOn = root.appConfig.scanlines
+        root.scanlineAmount = root.appConfig.scanlineAmount
+        root.vignetteOn = root.appConfig.vignette
+        root.vignetteAmount = root.appConfig.vignetteAmount
+        root.grainOn = root.appConfig.grain
+        root.grainAmount = root.appConfig.grainAmount
+        root.flickerOn = root.appConfig.flicker
+        root.flickerAmount = root.appConfig.flickerAmount
+        root.humBarOn = root.appConfig.humBar
+        root.humBarAmount = root.appConfig.humBarAmount
+        root.reflectionOn = root.appConfig.reflection
+        root.reflectionAmount = root.appConfig.reflectionAmount
+    }
+
+    /// Write the effect prefs back through the config.  The [effects] popup
+    /// toggles call this; the settings pane writes the config directly (both
+    /// paths land on the same NOTIFY signals, which sync the properties above).
+    ///
+    /// It covers BOTH families, because the popup owns both: the CRT keys live
+    /// in the properties above, and the glass family's four keys are read off
+    /// ThemeEngine (their single source of truth — the popup operates the
+    /// existing Glass* keys rather than inventing parallel ones).
+    function persistEffects()
+    {
+        if (root.appConfig === null || root.appConfig.scanlines === undefined) {
+            return
+        }
+        root.appConfig.scanlines = root.scanlinesOn
+        root.appConfig.scanlineAmount = root.scanlineAmount
+        root.appConfig.vignette = root.vignetteOn
+        root.appConfig.vignetteAmount = root.vignetteAmount
+        root.appConfig.grain = root.grainOn
+        root.appConfig.grainAmount = root.grainAmount
+        root.appConfig.flicker = root.flickerOn
+        root.appConfig.flickerAmount = root.flickerAmount
+        root.appConfig.humBar = root.humBarOn
+        root.appConfig.humBarAmount = root.humBarAmount
+        root.appConfig.reflection = root.reflectionOn
+        root.appConfig.reflectionAmount = root.reflectionAmount
+        if (root.appConfig.glassEffects !== undefined) {
+            root.appConfig.glassEffects = ThemeEngine.glassEffects
+            root.appConfig.glassIntensity = ThemeEngine.glassIntensity
+            root.appConfig.glassBlur = ThemeEngine.glassBlur
+            root.appConfig.glassSheen = ThemeEngine.glassSheen
+            root.appConfig.glassEdges = ThemeEngine.glassEdges
+        }
+        root.appConfig.save()
+    }
+
+    /// One CRT row's behaviour: flip the switch, keep the window and kirc.conf
+    /// in step.
+    function toggleEffect(name)
+    {
+        switch (name) {
+        case "scanlines": root.scanlinesOn = !root.scanlinesOn; break
+        case "vignette": root.vignetteOn = !root.vignetteOn; break
+        case "grain": root.grainOn = !root.grainOn; break
+        case "flicker": root.flickerOn = !root.flickerOn; break
+        case "humBar": root.humBarOn = !root.humBarOn; break
+        }
+        root.persistEffects()
+    }
+
+    /// One GLASS row's behaviour.  Frost/Sheen/Edges are the existing
+    /// ThemeEngine keys (no parallel KConfig keys), Reflection is the p10
+    /// chrome gloss.  Turning a layer ON while the master is off turns the
+    /// master on too, so no row is ever a dead switch.
+    function toggleGlassEffect(name)
+    {
+        var on = false
+        switch (name) {
+        case "blur":
+            ThemeEngine.glassBlur = !ThemeEngine.glassBlur
+            on = ThemeEngine.glassBlur
+            break
+        case "sheen":
+            ThemeEngine.glassSheen = !ThemeEngine.glassSheen
+            on = ThemeEngine.glassSheen
+            break
+        case "edges":
+            ThemeEngine.glassEdges = !ThemeEngine.glassEdges
+            on = ThemeEngine.glassEdges
+            break
+        case "reflection":
+            root.reflectionOn = !root.reflectionOn
+            on = root.reflectionOn
+            break
+        }
+        if (on) {
+            ThemeEngine.glassEffects = true
+        }
+        root.persistEffects()
+    }
+
+    Connections {
+        target: root.appConfig
+        enabled: root.appConfig !== null && root.appConfig.scanlines !== undefined
+        function onScanlinesChanged() { root.syncEffectsFromConfig() }
+        function onScanlineAmountChanged() { root.syncEffectsFromConfig() }
+        function onVignetteChanged() { root.syncEffectsFromConfig() }
+        function onVignetteAmountChanged() { root.syncEffectsFromConfig() }
+        function onGrainChanged() { root.syncEffectsFromConfig() }
+        function onGrainAmountChanged() { root.syncEffectsFromConfig() }
+        function onFlickerChanged() { root.syncEffectsFromConfig() }
+        function onFlickerAmountChanged() { root.syncEffectsFromConfig() }
+        function onHumBarChanged() { root.syncEffectsFromConfig() }
+        function onHumBarAmountChanged() { root.syncEffectsFromConfig() }
+        function onReflectionChanged() { root.syncEffectsFromConfig() }
+        function onReflectionAmountChanged() { root.syncEffectsFromConfig() }
     }
     // qmllint enable unqualified
 
@@ -693,11 +851,14 @@ Kirigami.ApplicationWindow {
                 }
             }
 
-            // ---- toolbar: [search] [menu] (p9) ---------------------------
+            // ---- toolbar: [search] [theme] [effects] [menu] (p10) ---------
             // Join moved to /join (Ctrl+J) with the menu's Help entry as the
-            // discoverable reference; Settings, Theme, Disconnect and Exit
-            // now live in the one [menu].  The nick no longer repeats here:
-            // the identity line above is the only place it is shown.
+            // discoverable reference; Settings, Disconnect and Exit live in the
+            // one [menu].  The nick no longer repeats here: the identity line
+            // above is the only place it is shown.  Theme and Effects got their
+            // own controls (p10) because both are one-click switches the user
+            // reaches for often; the [menu] keeps its Theme row as the
+            // discoverable duplicate.
             HeaderButton {
                 id: searchButton
                 text: "[" + qsTr("search") + "]"
@@ -710,6 +871,149 @@ Kirigami.ApplicationWindow {
 
                 Controls.ToolTip.visible: hovered
                 Controls.ToolTip.text: qsTr("Search messages (Ctrl+F)")
+            }
+
+            // ---- [theme]: the theme list, one click away ------------------
+            // The same flat terminal list the [menu] > Theme row opens; this
+            // control is where the user looks for it.  It owns `themeMenu`
+            // (a Menu declared inside a Menu is auto-added as a submenu row
+            // without the TermMenuItem chrome — hence the two-popup layout).
+            HeaderButton {
+                id: themeButton
+                text: "[" + qsTr("theme") + "]"
+                onClicked: themeMenu.popup()
+
+                Controls.ToolTip.visible: hovered
+                Controls.ToolTip.text: qsTr("Theme")
+
+                Controls.Menu {
+                    id: themeMenu
+                    title: qsTr("Theme")
+                    font.family: root.monoFamily
+                    background: Rectangle {
+                        implicitWidth: Math.round(Kirigami.Units.gridUnit * 12)
+                        color: ThemeEngine.bgPanelColor(Kirigami.Theme.alternateBackgroundColor)
+                        border.width: 1
+                        border.color: ThemeEngine.ruleColorValue(Kirigami.Theme.textColor)
+                    }
+
+                    // Built-in (compiled-in) themes. Additional themes from
+                    // ~/.config/kIRC/themes/ are appended by the C++ side, which
+                    // is expected to extend ThemeEngine.availableThemeIds and
+                    // call ThemeEngine.applyThemeJson() when one is picked.
+                    Instantiator {
+                        model: ThemeEngine.availableThemeIds
+
+                        delegate: TermMenuItem {
+                            id: themeItem
+                            required property string modelData
+
+                            text: ThemeEngine.themeDisplayName(themeItem.modelData)
+                            checkable: true
+                            checked: ThemeEngine.themeId === themeItem.modelData
+                            onTriggered: {
+                                ThemeEngine.applyBuiltinTheme(themeItem.modelData)
+                                if (root.appConfig !== null) {
+                                    root.appConfig.themeId = themeItem.modelData
+                                    root.appConfig.save()
+                                }
+                            }
+                        }
+
+                        onObjectAdded: (index, object) => themeMenu.insertItem(index, object)
+                        onObjectRemoved: (index, object) => themeMenu.removeItem(object)
+                    }
+                }
+            }
+
+            // ---- [effects]: the one effects control -----------------------
+            // ONE system, two families, both global display prefs (KircConfig
+            // [UI] keys plus the existing Glass* keys) rather than theme
+            // tokens.  The rows are grouped: glass first (Frost, Sheen, Edges,
+            // Reflection), then the CRT set, then a row that jumps to the
+            // settings pane's Effects section for the intensities.
+            //
+            // The rows operate the EXISTING glass keys (GlassBlur/Sheen/Edges
+            // via ThemeEngine), so the state stays single-sourced; turning one
+            // on while the master is off turns the master on, so no row is a
+            // dead switch.  The marks are drawn into the label instead of
+            // using `checkable` so they cannot go stale behind the menu's
+            // internal checked toggling.
+            HeaderButton {
+                id: effectsButton
+                text: "[" + qsTr("effects") + "]"
+                onClicked: effectsMenu.popup()
+
+                Controls.ToolTip.visible: hovered
+                Controls.ToolTip.text: qsTr("Effects")
+
+                Controls.Menu {
+                    id: effectsMenu
+                    title: qsTr("Effects")
+                    font.family: root.monoFamily
+                    background: Rectangle {
+                        implicitWidth: Math.round(Kirigami.Units.gridUnit * 14)
+                        color: ThemeEngine.bgPanelColor(Kirigami.Theme.alternateBackgroundColor)
+                        border.width: 1
+                        border.color: ThemeEngine.ruleColorValue(Kirigami.Theme.textColor)
+                    }
+
+                    // ---- glass family ------------------------------------
+                    TermMenuItem {
+                        text: (ThemeEngine.glassBlur ? "[*] " : "[ ] ") + qsTr("Frost")
+                        onTriggered: root.toggleGlassEffect("blur")
+                    }
+
+                    TermMenuItem {
+                        text: (ThemeEngine.glassSheen ? "[*] " : "[ ] ") + qsTr("Sheen")
+                        onTriggered: root.toggleGlassEffect("sheen")
+                    }
+
+                    TermMenuItem {
+                        text: (ThemeEngine.glassEdges ? "[*] " : "[ ] ") + qsTr("Edges")
+                        onTriggered: root.toggleGlassEffect("edges")
+                    }
+
+                    TermMenuItem {
+                        text: (root.reflectionOn ? "[*] " : "[ ] ") + qsTr("Reflection")
+                        onTriggered: root.toggleGlassEffect("reflection")
+                    }
+
+                    Controls.MenuSeparator {}
+
+                    // ---- CRT family --------------------------------------
+                    TermMenuItem {
+                        text: (root.scanlinesOn ? "[*] " : "[ ] ") + qsTr("Scanlines")
+                        onTriggered: root.toggleEffect("scanlines")
+                    }
+
+                    TermMenuItem {
+                        text: (root.vignetteOn ? "[*] " : "[ ] ") + qsTr("Vignette")
+                        onTriggered: root.toggleEffect("vignette")
+                    }
+
+                    TermMenuItem {
+                        text: (root.grainOn ? "[*] " : "[ ] ") + qsTr("Grain")
+                        onTriggered: root.toggleEffect("grain")
+                    }
+
+                    TermMenuItem {
+                        text: (root.flickerOn ? "[*] " : "[ ] ") + qsTr("Flicker")
+                        onTriggered: root.toggleEffect("flicker")
+                    }
+
+                    TermMenuItem {
+                        text: (root.humBarOn ? "[*] " : "[ ] ") + qsTr("Hum bar")
+                        onTriggered: root.toggleEffect("humBar")
+                    }
+
+                    Controls.MenuSeparator {}
+
+                    TermMenuItem {
+                        text: qsTr("Effects settings…")
+                        onTriggered: root.openEffectsSettings()
+                    }
+                }
             }
 
             // ---- the one [menu] (p9) --------------------------------------
@@ -782,53 +1086,87 @@ Kirigami.ApplicationWindow {
                         onTriggered: Qt.quit()
                     }
                 }
-
-                // Theme picker: kept as its own popup so the Theme row opens
-                // the same flat terminal list the header's old [theme] control
-                // showed.  (It is a sibling of `appMenu` on purpose: a Menu
-                // declared inside a Menu is auto-added as a submenu item
-                // there, and that generated row would not carry the
-                // TermMenuItem chrome.)
-                Controls.Menu {
-                    id: themeMenu
-                    title: qsTr("Theme")
-                    font.family: root.monoFamily
-                    background: Rectangle {
-                        implicitWidth: Math.round(Kirigami.Units.gridUnit * 12)
-                        color: ThemeEngine.bgPanelColor(Kirigami.Theme.alternateBackgroundColor)
-                        border.width: 1
-                        border.color: ThemeEngine.ruleColorValue(Kirigami.Theme.textColor)
-                    }
-
-                    // Built-in (compiled-in) themes. Additional themes from
-                    // ~/.config/kIRC/themes/ are appended by the C++ side, which
-                    // is expected to extend ThemeEngine.availableThemeIds and
-                    // call ThemeEngine.applyThemeJson() when one is picked.
-                    Instantiator {
-                        model: ThemeEngine.availableThemeIds
-
-                        delegate: TermMenuItem {
-                            id: themeItem
-                            required property string modelData
-
-                            text: ThemeEngine.themeDisplayName(themeItem.modelData)
-                            checkable: true
-                            checked: ThemeEngine.themeId === themeItem.modelData
-                            onTriggered: {
-                                ThemeEngine.applyBuiltinTheme(themeItem.modelData)
-                                if (root.appConfig !== null) {
-                                    root.appConfig.themeId = themeItem.modelData
-                                    root.appConfig.save()
-                                }
-                            }
-                        }
-
-                        onObjectAdded: (index, object) => themeMenu.insertItem(index, object)
-                        onObjectRemoved: (index, object) => themeMenu.removeItem(object)
-                    }
-                }
             }
         }
+    }
+
+    // ---------------------------------------------------------------------- //
+    // CRT effects overlay (p10) — painted ABOVE every layer this window owns
+    //
+    // The page stack, the header and every glass sheet are children of
+    // `contentItem`; this Loader is a later sibling with a high z, so log,
+    // sidebar, header and composer all sit under the same tube.
+    //
+    // It is a Loader (not a plain item) on purpose: with every effect OFF it
+    // is INACTIVE, so it instantiates nothing and the window is pixel-identical
+    // to the pre-effects build — no nodes, no per-frame work.  When an effect
+    // is switched on the item appears live, without a restart.
+    //
+    // The overlay never takes input (its root is disabled and has no handlers)
+    // and it never wraps, captures or blurs the scrolling ListView: see
+    // ScanlineOverlay.qml for the constraints and how the layers are built.
+    // ---------------------------------------------------------------------- //
+    Component {
+        id: effectsOverlayComponent
+
+        ScanlineOverlay {
+            scanlinesOn: root.scanlinesOn
+            scanlineAmount: root.scanlineAmount
+            vignetteOn: root.vignetteOn
+            vignetteAmount: root.vignetteAmount
+            grainOn: root.grainOn
+            grainAmount: root.grainAmount
+            flickerOn: root.flickerOn
+            flickerAmount: root.flickerAmount
+            humBarOn: root.humBarOn
+            humBarAmount: root.humBarAmount
+            reflectionOn: root.reflectionOn
+            reflectionAmount: root.reflectionAmount
+            // Grain, the hum bar and the reflection gloss are light on a dark
+            // field and dark on a light one, so they stay visible on `paper`
+            // without a theme token.
+            backgroundIsDark: ThemeEngine.isDark(root.bgPanel)
+            // Reflection may only gloss the window's own static chrome band
+            // (the header) — never the log.
+            chromeTopHeight: root.header !== null && root.header !== undefined
+                             ? root.header.height : 0
+            // The same accent language as the glass sheet's sheen.
+            glossColor: ThemeEngine.lightenRgb(ThemeEngine.glassAccent, 0.72)
+        }
+    }
+
+    Loader {
+        id: effectsOverlayLoader
+        objectName: "effectsOverlayLoader"
+
+        // WHY NOT `parent: root.contentItem`: ApplicationWindow keeps its header
+        // and its content area as separate children of the window's own root
+        // item, and `contentItem` spans only the area BELOW the header (verified
+        // on this stack: contentItem is 1023x673 of a 1023x700 window, with the
+        // header at y = -27 from contentItem, both children of the root item).
+        // An item inside contentItem therefore can never paint over the header —
+        // a parent's whole subtree is painted before a later sibling, whatever
+        // the child's z is.  So the overlay is parented to the window's ROOT
+        // item (contentItem.parent.parent), which IS the full window, and given
+        // the window's geometry explicitly.  If that item tree ever changes
+        // shape, the fallback parent is contentItem: the filter still covers the
+        // log, the sidebar and the composer, and only the header strip is missed.
+        parent: {
+            var ci = root.contentItem
+            if (ci === null || ci === undefined) {
+                return null
+            }
+            var wrapper = ci.parent
+            var top = (wrapper !== null && wrapper !== undefined) ? wrapper.parent : null
+            return (top !== null && top !== undefined) ? top : ci
+        }
+        x: 0
+        y: 0
+        width: root.width
+        height: root.height
+        z: 1000
+        active: root.effectsActive
+        sourceComponent: effectsOverlayComponent
     }
 
     // Global shortcuts: Search (Ctrl+F), Join channel (Ctrl+J), Settings.
@@ -1198,6 +1536,25 @@ Kirigami.ApplicationWindow {
             "hostWindow": root
         })
     }
+
+    /// Menu > Effects > "Effects settings…" (p10): open the settings pane on
+    /// its Effects section, where the intensities live.  The pane resolves the
+    /// section itself (showEffects), so this file never hardcodes an index; the
+    /// selectSection(3) fallback only serves a pane that predates showEffects.
+    // qmllint disable missing-property
+    function openEffectsSettings()
+    {
+        root.openSettings()
+        var page = root.pageStack.currentItem
+        if (page && typeof page["showEffects"] === "function") {
+            page["showEffects"]()
+            return
+        }
+        if (page && typeof page["selectSection"] === "function") {
+            page["selectSection"](3)
+        }
+    }
+    // qmllint enable missing-property
 
     /// The About content lives in the settings pane's About section.
     // qmllint disable missing-property

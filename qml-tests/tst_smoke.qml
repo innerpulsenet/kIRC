@@ -89,6 +89,22 @@ Item {
         property string nickname: "kircuser"
         // The pref under test, seeded OFF.
         property bool respondToCtcpVersion: false
+        // ---- CRT effect prefs (p10) ------------------------------------
+        // The same [UI] keys KircConfig exposes, so the pane's Effects
+        // section has a real contract to bind to (all OFF by default, like
+        // the C++ defaults).
+        property bool scanlines: false
+        property int scanlineAmount: 35
+        property bool vignette: false
+        property int vignetteAmount: 30
+        property bool grain: false
+        property int grainAmount: 10
+        property bool flicker: false
+        property int flickerAmount: 4
+        property bool humBar: false
+        property int humBarAmount: 8
+        property bool reflection: false
+        property int reflectionAmount: 25
         property bool saved: false
         function save() { settingsCfg.saved = true }
     }
@@ -251,15 +267,17 @@ Item {
             }
             harness.ok("every stored/retired theme id resolves to a schema-4 theme",
                        reachOk, reachBad.join(","))
-            // The theme list is additive — new palettes land in it (ai-slop
-            // arrived with the phase-9 tree) — so the exact total is not
-            // pinned; every built-in must simply be offered.  Name each one:
-            // a palette that silently vanished from BUILTIN_IDS would keep the
-            // count above the floor, so the floor alone proves nothing.
+            // The theme list is additive — new palettes land in it (p10 added
+            // crt/paper/gruvbox) — so the exact total is not pinned; every
+            // built-in must simply be offered.  Name each one: a palette that
+            // silently vanished from BUILTIN_IDS would keep the count above the
+            // floor, so the floor alone proves nothing.  (14 built-ins once the
+            // p10 trio lands: the 11 below plus crt, paper and gruvbox.)
             harness.ok("the theme list offers every built-in",
-                       ThemeEngine.availableThemeIds.length >= 11
+                       ThemeEngine.availableThemeIds.length >= 14
                        && ["tui", "phosphor", "amber", "ice", "breeze", "bbs", "c64", "vt",
-                           "ega", "synthwave", "ai-slop"].every(function (id) {
+                           "ega", "synthwave", "ai-slop",
+                           "crt", "paper", "gruvbox"].every(function (id) {
                                return ThemeEngine.availableThemeIds.indexOf(id) >= 0
                            }),
                        "ids=" + ThemeEngine.availableThemeIds.join(","))
@@ -664,6 +682,135 @@ Item {
                 harness.ok("clearing the search shows the whole theme list again",
                            sp.themeListVisible() === true && sp.themeRowVisible("bbs") === true
                            && sp.themeRowVisible("tui") === true)
+
+                // ---- p10: the Effects section ---------------------------
+                // Five opt-in CRT effects, each a toggle + an intensity, all
+                // OFF by default (they sit over the message text).  The pane
+                // follows the config object, which is the source of truth.
+                var fx = sp.sectionIds.indexOf("effects")
+                harness.ok("the settings pane has an Effects section",
+                           fx === 3 && sp.sectionName(fx) === "Effects",
+                           "index=" + fx + " name=" + sp.sectionName(fx))
+                var fxSearches = ["scanlines", "vignette", "grain", "flicker", "hum bar", "crt"]
+                var fxFound = []
+                for (var fxi = 0; fxi < fxSearches.length; ++fxi) {
+                    sp.setFilter(fxSearches[fxi])
+                    if (sp.sectionMatches(fx) !== true) { fxFound.push(fxSearches[fxi]) }
+                }
+                harness.ok("every effect name finds the Effects section",
+                           fxFound.length === 0, "missing=" + fxFound.join(","))
+                sp.setFilter("")
+                sp.selectSection(fx)
+
+                var sToggle = harness.findByText(sp, "Horizontal scanlines", 0)
+                var vToggle = harness.findByText(sp, "Corner falloff", 0)
+                var gToggle = harness.findByText(sp, "Static grain", 0)
+                var fToggle = harness.findByText(sp, "Slow brightness flicker", 0)
+                var hToggle = harness.findByText(sp, "Rolling hum bar", 0)
+                harness.ok("every effect has a toggle",
+                           sToggle !== null && vToggle !== null && gToggle !== null
+                           && fToggle !== null && hToggle !== null)
+                harness.ok("the toggles show the persisted defaults (all off)",
+                           sToggle !== null && sToggle.checked === false
+                           && vToggle !== null && vToggle.checked === false
+                           && gToggle !== null && gToggle.checked === false
+                           && fToggle !== null && fToggle.checked === false
+                           && hToggle !== null && hToggle.checked === false,
+                           sToggle === null ? "null" : ("scanlines=" + sToggle.checked))
+                harness.ok("each effect row carries a hint",
+                           harness.findTextContaining(sp, "before it existed", 0) !== null
+                           || harness.findTextContaining(sp, "drawn above every layer", 0) !== null,
+                           "")
+
+                var sSlider = harness.findByPredicate(sp, function (o) { return o.objectName === "scanlineSlider" }, 0)
+                var vSlider = harness.findByPredicate(sp, function (o) { return o.objectName === "vignetteSlider" }, 0)
+                var gSlider = harness.findByPredicate(sp, function (o) { return o.objectName === "grainSlider" }, 0)
+                var fSlider = harness.findByPredicate(sp, function (o) { return o.objectName === "flickerSlider" }, 0)
+                var hSlider = harness.findByPredicate(sp, function (o) { return o.objectName === "humSlider" }, 0)
+                harness.ok("every effect has an intensity slider",
+                           sSlider !== null && vSlider !== null && gSlider !== null
+                           && fSlider !== null && hSlider !== null)
+                harness.ok("the sliders read the persisted amounts (35/30/10/4/8)",
+                           sSlider !== null && sSlider.value === 35
+                           && vSlider !== null && vSlider.value === 30
+                           && gSlider !== null && gSlider.value === 10
+                           && fSlider !== null && fSlider.value === 4
+                           && hSlider !== null && hSlider.value === 8,
+                           sSlider === null ? "null" : ("scanlines=" + sSlider.value
+                                                        + " hum=" + (hSlider === null ? "null" : hSlider.value)))
+                harness.ok("a slider is disabled while its effect is off",
+                           sSlider !== null && sSlider.enabled === false)
+
+                if (sToggle !== null && sSlider !== null) {
+                    sToggle.checked = true
+                    sToggle.toggled(true)
+                    harness.ok("toggling Scanlines persists the switch",
+                               settingsCfg.scanlines === true && settingsCfg.saved === true,
+                               "scanlines=" + settingsCfg.scanlines + " saved=" + settingsCfg.saved)
+                    harness.ok("the intensity slider enables with its effect",
+                               sSlider.enabled === true)
+                    sSlider.value = 60
+                    harness.ok("moving the slider persists the amount",
+                               settingsCfg.scanlineAmount === 60,
+                               "amount=" + settingsCfg.scanlineAmount)
+                    sSlider.value = 9000
+                    harness.ok("the slider cannot leave 1..100",
+                               settingsCfg.scanlineAmount === 100,
+                               "amount=" + settingsCfg.scanlineAmount)
+                    sSlider.value = 35
+                    sToggle.checked = false
+                    sToggle.toggled(false)
+                    harness.ok("turning the switch back off persists too",
+                               settingsCfg.scanlines === false && settingsCfg.scanlineAmount === 35,
+                               "scanlines=" + settingsCfg.scanlines + " amount=" + settingsCfg.scanlineAmount)
+                }
+                harness.ok("the Effects section is only shown when selected",
+                           harness.countTextContaining(sp, "Rolling hum bar") > 0)
+
+                // ---- p10: the glass family lives here too ----------------
+                // The standalone Glass pane was folded into this section, so a
+                // search for "glass" must now land here (and no longer on
+                // Appearance, which kept only the theme/font rows).
+                harness.ok("the glass master is in the Effects section",
+                           harness.findByText(sp, "Frosted glass effects", 0) !== null
+                           && harness.findByText(sp, "Frost (blurred underlay)", 0) !== null
+                           && harness.findByText(sp, "Reflection sheen", 0) !== null
+                           && harness.findByText(sp, "Lit edges and depth", 0) !== null)
+                sp.setFilter("glass")
+                harness.ok("search 'glass' lands on Effects, not Appearance",
+                           sp.sectionMatches(fx) === true && sp.sectionMatches(2) === false,
+                           "appearance=" + sp.sectionMatches(2) + " effects=" + sp.sectionMatches(fx))
+                sp.setFilter("")
+                var reflToggle = harness.findByText(sp, "Specular chrome gloss", 0)
+                var reflSlider = harness.findByPredicate(sp, function (o) {
+                    return o.objectName === "reflectionSlider"
+                }, 0)
+                harness.ok("Reflection has a toggle and an intensity",
+                           reflToggle !== null && reflSlider !== null
+                           && reflToggle.checked === false && reflSlider.value === 25,
+                           reflToggle === null ? "null" : ("checked=" + reflToggle.checked
+                                                           + " amount=" + (reflSlider === null ? "null"
+                                                                                               : reflSlider.value)))
+                harness.ok("the Reflection hint says it is chrome-only",
+                           harness.findTextContaining(sp, "never a mirror of the message log", 0) !== null)
+                harness.ok("the reflection slider is disabled while its effect is off",
+                           reflSlider !== null && reflSlider.enabled === false)
+                if (reflToggle !== null && reflSlider !== null) {
+                    reflToggle.checked = true
+                    reflToggle.toggled(true)
+                    harness.ok("toggling Reflection persists the pref",
+                               settingsCfg.reflection === true && settingsCfg.saved === true,
+                               "reflection=" + settingsCfg.reflection)
+                    reflSlider.value = 45
+                    harness.ok("the reflection intensity persists",
+                               settingsCfg.reflectionAmount === 45,
+                               "amount=" + settingsCfg.reflectionAmount)
+                    reflSlider.value = 25
+                    reflToggle.checked = false
+                    reflToggle.toggled(false)
+                    harness.ok("Reflection off again",
+                               settingsCfg.reflection === false && settingsCfg.reflectionAmount === 25)
+                }
                 break
             }
             case 11: {
@@ -723,14 +870,148 @@ Item {
                                harness.countControls(header, "[menu]") === 1,
                                "found=" + harness.countControls(header, "[menu]"))
                     var folded = []
-                    var foldedTexts = ["[settings]", "[disconnect]", "[theme]"]
+                    var foldedTexts = ["[settings]", "[disconnect]"]
                     for (var fi = 0; fi < foldedTexts.length; ++fi) {
                         if (harness.countControls(header, foldedTexts[fi]) > 0) {
                             folded.push(foldedTexts[fi])
                         }
                     }
-                    harness.ok("[settings]/[disconnect]/[theme] folded into [menu]",
+                    harness.ok("[settings]/[disconnect] folded into [menu]",
                                folded.length === 0, folded.join(","))
+
+                    // ---- p10: [search] [theme] [effects] [menu] ------------
+                    // Both new controls are real header buttons in this order,
+                    // to the right of everything else ([back] leftmost).
+                    var btns = harness.headerButtonTexts()
+                    harness.ok("the toolbar's right side is exactly [search] [theme] [effects] [menu]",
+                               btns.length >= 4
+                               && btns.slice(btns.length - 4).join("|")
+                                  === "[search]|[theme]|[effects]|[menu]",
+                               btns.join("|"))
+                    harness.ok("[back] stays to the left of them",
+                               btns.indexOf("[back]") >= 0
+                               && btns.indexOf("[back]") < btns.indexOf("[search]"),
+                               btns.join("|"))
+                    harness.ok("each new control appears exactly once",
+                               harness.countControls(header, "[theme]") === 1
+                               && harness.countControls(header, "[effects]") === 1)
+
+                    // The [theme] control owns the same list the [menu] Theme
+                    // row opens (one popup, two entry points).
+                    var themeBtn = harness.headerButton("[theme]")
+                    var themePopup = harness.buttonMenu("[theme]", "Theme")
+                    harness.ok("the [theme] control owns the theme list",
+                               themeBtn !== null && themePopup !== null
+                               && themePopup.count === ThemeEngine.availableThemeIds.length,
+                               themePopup === null ? "null" : ("rows=" + themePopup.count))
+
+                    // The [effects] control owns the one effects popup: the
+                    // glass family first, then the CRT family, then the jump to
+                    // the settings section.  Glass is on by default (p8), the
+                    // CRT set is off — that is what the marks show.
+                    var fxBtn = harness.headerButton("[effects]")
+                    var effectsPopup = harness.buttonMenu("[effects]", "Effects")
+                    harness.ok("the [effects] control owns the effects popup",
+                               fxBtn !== null && effectsPopup !== null)
+                    var fxRows = harness.menuRowTexts(effectsPopup)
+                    harness.ok("the popup groups glass, then crt, then the settings row",
+                               fxRows.join("|") === "[*] Frost|[*] Sheen|[*] Edges|[ ] Reflection|[sep]|"
+                                             + "[ ] Scanlines|[ ] Vignette|[ ] Grain|[ ] Flicker|[ ] Hum bar|"
+                                             + "[sep]|Effects settings…",
+                               fxRows.join("|"))
+
+                    // A glass row turned ON while the master is off must switch
+                    // the master on: no dead toggle.
+                    if (effectsPopup !== null) {
+                        ThemeEngine.glassEffects = false
+                        ThemeEngine.glassSheen = false
+                        effectsPopup.itemAt(1).triggered()          // Sheen
+                        harness.ok("a glass row turned on with the master off switches the master on",
+                                   ThemeEngine.glassSheen === true && ThemeEngine.glassEffects === true,
+                                   "sheen=" + ThemeEngine.glassSheen + " master=" + ThemeEngine.glassEffects)
+
+                        // ---- the overlay is inert with every effect off -----
+                        var ovlLoader = harness.overlayLoader()
+                        harness.ok("the effects overlay is stacked above the header",
+                                   ovlLoader !== null
+                                   && ovlLoader.parent === harness.win.contentItem.parent.parent
+                                   && ovlLoader.z > harness.win.header.z,
+                                   ovlLoader === null ? "null"
+                                                      : ("parent==root? "
+                                                         + (ovlLoader.parent === harness.win.contentItem.parent.parent)
+                                                         + " z=" + ovlLoader.z
+                                                         + " headerZ=" + harness.win.header.z))
+                        harness.ok("with every effect off the overlay adds no nodes at all",
+                                   harness.win.effectsActive === false
+                                   && harness.overlayItem() === null,
+                                   "active=" + harness.win.effectsActive)
+
+                        // Flip one CRT row through the popup and inspect what
+                        // the window instantiates.
+                        effectsPopup.itemAt(5).triggered()          // Scanlines
+                        harness.ok("the row toggles the effect and its mark follows",
+                                   harness.win.scanlinesOn === true
+                                   && String(effectsPopup.itemAt(5).text).indexOf("[*] Scanlines") === 0,
+                                   String(effectsPopup.itemAt(5).text))
+                        var ovl = harness.overlayItem()
+                        harness.ok("switching an effect on instantiates the overlay", ovl !== null)
+                        if (ovl !== null) {
+                            var headerPt = harness.win.header.mapToItem(ovl, 0, 0)
+                            harness.ok("the overlay covers the whole window, header included",
+                                       ovl.width === harness.win.width
+                                       && ovl.height === harness.win.height
+                                       && headerPt.y >= 0
+                                       && headerPt.y + harness.win.header.height <= ovl.height + 0.5,
+                                       "overlay=" + ovl.width + "x" + ovl.height
+                                       + " window=" + harness.win.width + "x" + harness.win.height
+                                       + " headerAtY=" + headerPt.y + "+" + harness.win.header.height)
+                            harness.ok("the overlay carries no ListView and never scans one",
+                                       harness.findMessageView(ovl, 0) === null
+                                       && harness.countNodes(ovl, function (o) {
+                                              return typeof o.itemAtIndex === "function"
+                                          }, 0) === 0)
+                            harness.ok("the overlay captures nothing (no ShaderEffectSource/MultiEffect)",
+                                       harness.countNodes(ovl, function (o) {
+                                              return o.shaderSource !== undefined || o.blurSource !== undefined
+                                          }, 0) === 0)
+                            harness.ok("the overlay is not a per-row Repeater",
+                                       harness.countNodes(ovl, function (o) {
+                                              return typeof o.model !== "undefined" && typeof o.count === "number"
+                                          }, 0) === 0)
+                            harness.ok("the overlay takes no input", ovl.enabled === false)
+                            harness.ok("only the scanline layer is instantiated",
+                                       harness.countNodes(ovl, function (o) {
+                                              return typeof o.active !== "undefined" && o.active === true
+                                          }, 0) === 1)
+                        }
+                        effectsPopup.itemAt(5).triggered()          // Scanlines off
+                        harness.ok("switching it off removes the nodes again",
+                                   harness.win.scanlinesOn === false && harness.overlayItem() === null)
+
+                        // ---- reflection: static chrome, never the log -------
+                        effectsPopup.itemAt(3).triggered()          // Reflection
+                        harness.ok("the Reflection row turns the gloss on",
+                                   harness.win.reflectionOn === true
+                                   && String(effectsPopup.itemAt(3).text).indexOf("[*] Reflection") === 0)
+                        var reflItem = harness.overlayItem()
+                        harness.ok("the gloss instantiates its own layer", reflItem !== null)
+                        if (reflItem !== null) {
+                            harness.ok("the gloss is clipped to the chrome band, not the log",
+                                       harness.countNodes(reflItem, function (o) {
+                                              return o.objectName === "reflectionChromeBand"
+                                          }, 0) === 1
+                                       && harness.countNodes(reflItem, function (o) {
+                                              return typeof o.itemAtIndex === "function"
+                                          }, 0) === 0)
+                        }
+                        effectsPopup.itemAt(3).triggered()          // Reflection off
+                        harness.ok("turning the gloss off restores the no-node state",
+                                   harness.win.reflectionOn === false
+                                   && harness.overlayItem() === null)
+                        // Leave the glass family as it was found: on.
+                        ThemeEngine.glassEffects = true
+                        ThemeEngine.glassSheen = true
+                    }
                     // One nick, once: the identity line.  (The old header showed
                     // it in the subtitle AND again after the status tag.)
                     var nick = harness.win.bridge.nickname
@@ -800,6 +1081,122 @@ Item {
     /// The settings pane instance (null until created / on failure).
     function settingsPage() {
         return harness.settingsPageItem
+    }
+
+    /// Count of objects under `root` matching `pred` (children only — popups
+    /// live in `resources` and are deliberately out of scope here).
+    function countNodes(root, pred, depth) {
+        if (root === null || root === undefined || depth > 18) { return 0 }
+        var n = 0
+        var hit = false
+        try {
+            hit = pred(root) === true
+        } catch (e) {
+            hit = false
+        }
+        if (hit) { ++n }
+        var kids = root.children || []
+        for (var i = 0; i < kids.length; ++i) {
+            n += harness.countNodes(kids[i], pred, depth + 1)
+        }
+        return n
+    }
+
+    /// The header's bracketed text controls in tree (== declaration) order:
+    /// `[back] [search] [theme] [effects] [menu]`.
+    ///
+    /// The walk never descends into `resources` (where a control's popups
+    /// live), so the `[*]`/`[ ]` menu rows are not collected as if they were
+    /// header controls.
+    function headerButtonTexts() {
+        var out = []
+        if (harness.win === null || harness.win.header === undefined) { return out }
+        var items = harness.collectChildTextItems(harness.win.header, 0, [])
+        for (var i = 0; i < items.length; ++i) {
+            var t = items[i].text
+            if (items[i].pressed !== undefined && t !== undefined
+                    && String(t).charAt(0) === "[") {
+                out.push(String(t))
+            }
+        }
+        return out
+    }
+
+    /// Like collectTextItems, but only through `children` and `contentItem` —
+    /// never through `resources`, so a control's popup rows are not collected
+    /// as if they were header controls.
+    function collectChildTextItems(root, depth, out) {
+        if (root === null || root === undefined || depth > 18) { return out }
+        if (root.text !== undefined && out.indexOf(root) === -1) { out.push(root) }
+        var kids = root.children || []
+        for (var i = 0; i < kids.length; ++i) {
+            harness.collectChildTextItems(kids[i], depth + 1, out)
+        }
+        if (root.contentItem !== undefined && root.contentItem !== null) {
+            harness.collectChildTextItems(root.contentItem, depth + 1, out)
+        }
+        return out
+    }
+
+    /// The header button whose text is exactly `text` (a Control, not the
+    /// label that mirrors it).
+    function headerButton(text) {
+        if (harness.win === null || harness.win.header === undefined) { return null }
+        var pred = function (o) { return String(o.text) === text && o.pressed !== undefined }
+        return harness.findByPredicate(harness.win.header, pred, 0)
+    }
+
+    /// A popup a header button owns, by its title.  A Menu declared inside a
+    /// control is a Popup and therefore lives in the control's `resources`
+    /// (not `children`), which is why both pools are scanned.
+    function buttonMenu(text, title) {
+        var btn = harness.headerButton(text)
+        if (btn === null) { return null }
+        var pools = []
+        if (btn.resources !== undefined && btn.resources !== null) { pools.push(btn.resources) }
+        if (btn.children !== undefined && btn.children !== null) { pools.push(btn.children) }
+        for (var p = 0; p < pools.length; ++p) {
+            for (var i = 0; i < pools[p].length; ++i) {
+                var k = pools[p][i]
+                if (typeof k.popup === "function" && typeof k.itemAt === "function"
+                        && String(k.title) === title) {
+                    return k
+                }
+            }
+        }
+        return null
+    }
+
+    /// The effects overlay Loader main.qml stacks above the page stack.  It is
+    /// parented to the window's root item (see main.qml), so the search starts
+    /// there and falls back to contentItem.
+    function overlayLoader() {
+        if (harness.win === null || harness.win.contentItem === undefined) { return null }
+        var pred = function (o) { return o.objectName === "effectsOverlayLoader" }
+        var ci = harness.win.contentItem
+        var host = (ci !== null && ci !== undefined && ci.parent !== null
+                    && ci.parent !== undefined && ci.parent.parent !== null
+                    && ci.parent.parent !== undefined) ? ci.parent.parent : ci
+        var found = harness.findByPredicate(host, pred, 0)
+        if (found !== null) { return found }
+        return harness.findByPredicate(ci, pred, 0)
+    }
+
+    /// The instantiated overlay, or null while every effect is off.
+    function overlayItem() {
+        var l = harness.overlayLoader()
+        return (l === null || l === undefined) ? null : l.item
+    }
+
+    /// Every `text` of the rows of a menu, "[sep]" for a separator.
+    function menuRowTexts(menu) {
+        var out = []
+        if (menu === null) { return out }
+        for (var i = 0; i < menu.count; ++i) {
+            var row = menu.itemAt(i)
+            out.push(row.text === undefined ? "[sep]" : String(row.text))
+        }
+        return out
     }
 
     /// Depth-first search for a control whose `text` matches exactly and that

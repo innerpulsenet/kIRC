@@ -32,7 +32,7 @@ cp -r "$root"/rust/qml/themes "$tmp/org/kde/kirc/"
 cp "$here"/IrcBridge.qml "$here"/MessageListModel.qml "$here"/BenchCount.qml "$tmp/org/kde/kirc/"
 
 # qmldir mirroring the one cxx-qt generates for the real module.
-printf 'module org.kde.kirc\nsingleton BenchCount 1.0 BenchCount.qml\nsingleton ThemeEngine 1.0 ThemeEngine.qml\nIrcBridge 1.0 IrcBridge.qml\nMessageListModel 1.0 MessageListModel.qml\nChatPage 1.0 ChatPage.qml\nConnectPage 1.0 ConnectPage.qml\nMessageDelegate 1.0 MessageDelegate.qml\nGlassSurface 1.0 GlassSurface.qml\n' \
+printf 'module org.kde.kirc\nsingleton BenchCount 1.0 BenchCount.qml\nsingleton ThemeEngine 1.0 ThemeEngine.qml\nIrcBridge 1.0 IrcBridge.qml\nMessageListModel 1.0 MessageListModel.qml\nChatPage 1.0 ChatPage.qml\nConnectPage 1.0 ConnectPage.qml\nMessageDelegate 1.0 MessageDelegate.qml\nGlassSurface 1.0 GlassSurface.qml\nScanlineOverlay 1.0 ScanlineOverlay.qml\n' \
     > "$tmp/org/kde/kirc/qmldir"
 
 # Static evidence: how many itemAtIndex call sites the delegate has.

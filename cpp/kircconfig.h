@@ -97,6 +97,18 @@ class KircConfig : public QObject
     Q_PROPERTY(bool glassBlur READ glassBlur WRITE setGlassBlur NOTIFY glassBlurChanged)
     Q_PROPERTY(bool glassSheen READ glassSheen WRITE setGlassSheen NOTIFY glassSheenChanged)
     Q_PROPERTY(bool glassEdges READ glassEdges WRITE setGlassEdges NOTIFY glassEdgesChanged)
+    Q_PROPERTY(bool scanlines READ scanlines WRITE setScanlines NOTIFY scanlinesChanged)
+    Q_PROPERTY(int scanlineAmount READ scanlineAmount WRITE setScanlineAmount NOTIFY scanlineAmountChanged)
+    Q_PROPERTY(bool vignette READ vignette WRITE setVignette NOTIFY vignetteChanged)
+    Q_PROPERTY(int vignetteAmount READ vignetteAmount WRITE setVignetteAmount NOTIFY vignetteAmountChanged)
+    Q_PROPERTY(bool grain READ grain WRITE setGrain NOTIFY grainChanged)
+    Q_PROPERTY(int grainAmount READ grainAmount WRITE setGrainAmount NOTIFY grainAmountChanged)
+    Q_PROPERTY(bool flicker READ flicker WRITE setFlicker NOTIFY flickerChanged)
+    Q_PROPERTY(int flickerAmount READ flickerAmount WRITE setFlickerAmount NOTIFY flickerAmountChanged)
+    Q_PROPERTY(bool humBar READ humBar WRITE setHumBar NOTIFY humBarChanged)
+    Q_PROPERTY(int humBarAmount READ humBarAmount WRITE setHumBarAmount NOTIFY humBarAmountChanged)
+    Q_PROPERTY(bool reflection READ reflection WRITE setReflection NOTIFY reflectionChanged)
+    Q_PROPERTY(int reflectionAmount READ reflectionAmount WRITE setReflectionAmount NOTIFY reflectionAmountChanged)
 
 public:
     explicit KircConfig(QObject *parent = nullptr);
@@ -246,6 +258,73 @@ public:
     bool glassEdges() const;
     void setGlassEdges(bool glassEdges);
 
+    // ---- CRT effects over the whole window ([UI] keys) --------------------
+    // Five independent, opt-in effects that a ScanlineOverlay.qml painted above
+    // every layer consumes.  They are DISPLAY preferences only: no theme token
+    // and no theme-schema change is involved, so a theme switch cannot enable
+    // or disable them.
+    //
+    // ALL FIVE DEFAULT OFF, with a subtle default intensity (scanlines 35,
+    // vignette 30, grain 10, flicker 4, hum bar 8).  Unlike the glass sheet —
+    // which the app has always had on — these sit OVER the message text, so
+    // they are opt-in: a fresh install, and any config written before these
+    // keys existed, renders exactly the pre-effects console.
+    //
+    // Each intensity is 1..100, clamped in the setter AND on load, so a
+    // hand-edited kirc.conf cannot push it out of range.
+
+    /// Horizontal CRT scanlines over the window.
+    bool scanlines() const;
+    void setScanlines(bool scanlines);
+
+    /// Scanline strength, 1..100.
+    int scanlineAmount() const;
+    void setScanlineAmount(int scanlineAmount);
+
+    /// Corner falloff (tube vignette).
+    bool vignette() const;
+    void setVignette(bool vignette);
+
+    /// Vignette strength, 1..100.
+    int vignetteAmount() const;
+    void setVignetteAmount(int vignetteAmount);
+
+    /// Static film/phosphor grain wash.
+    bool grain() const;
+    void setGrain(bool grain);
+
+    /// Grain strength, 1..100.
+    int grainAmount() const;
+    void setGrainAmount(int grainAmount);
+
+    /// Slow brightness oscillation (tube flicker).
+    bool flicker() const;
+    void setFlicker(bool flicker);
+
+    /// Flicker depth, 1..100.
+    int flickerAmount() const;
+    void setFlickerAmount(int flickerAmount);
+
+    /// Rolling brightness band drifting down the window.
+    bool humBar() const;
+    void setHumBar(bool humBar);
+
+    /// Hum-bar strength, 1..100.
+    int humBarAmount() const;
+    void setHumBarAmount(int humBarAmount);
+
+    /// Reflection: the glass family's specular gloss over the chrome (the
+    /// header band and the window's top edge).  Deliberately NOT a mirrored
+    /// copy of the message log — that would need a ShaderEffectSource over the
+    /// scrolling ListView, the capture this codebase has paid for twice.  See
+    /// rust/qml/ScanlineOverlay.qml.
+    bool reflection() const;
+    void setReflection(bool reflection);
+
+    /// Reflection strength, 1..100.
+    int reflectionAmount() const;
+    void setReflectionAmount(int reflectionAmount);
+
     /// Re-read every value from disk.  Called once at startup, before the QML
     /// engine is created, so the form is prefilled on first paint.
     void load();
@@ -288,6 +367,18 @@ Q_SIGNALS:
     void glassBlurChanged();
     void glassSheenChanged();
     void glassEdgesChanged();
+    void scanlinesChanged();
+    void scanlineAmountChanged();
+    void vignetteChanged();
+    void vignetteAmountChanged();
+    void grainChanged();
+    void grainAmountChanged();
+    void flickerChanged();
+    void flickerAmountChanged();
+    void humBarChanged();
+    void humBarAmountChanged();
+    void reflectionChanged();
+    void reflectionAmountChanged();
 
 private:
     // Defaults mirror the initial values in ConnectPage.qml so a first run
@@ -328,4 +419,21 @@ private:
     bool m_glassBlur = true;
     bool m_glassSheen = true;
     bool m_glassEdges = true;
+    // CRT effects ([UI] keys; see the accessor block above).  All five are
+    // opt-in and off by default with a subtle intensity, so a config that
+    // predates the keys (and a fresh install) is the plain console.
+    bool m_scanlines = false;
+    int m_scanlineAmount = 35;
+    bool m_vignette = false;
+    int m_vignetteAmount = 30;
+    bool m_grain = false;
+    int m_grainAmount = 10;
+    bool m_flicker = false;
+    int m_flickerAmount = 4;
+    bool m_humBar = false;
+    int m_humBarAmount = 8;
+    // Reflection (glass family: the specular chrome gloss).  Off by default
+    // with the same opt-in rule as the CRT set.
+    bool m_reflection = false;
+    int m_reflectionAmount = 25;
 };

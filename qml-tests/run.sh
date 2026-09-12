@@ -30,7 +30,7 @@ cp "$here"/IrcBridge.qml "$here"/MessageListModel.qml "$tmp/org/kde/kirc/"
 # (build/cxxqt/qml_modules/org/kde/kirc/qmldir): the cxx-qt Rust types plus
 # every QML file in rust/qml/, so main.qml can use ConnectPage/ChatPage as
 # types rather than only via file URLs.
-printf 'module org.kde.kirc\nsingleton ThemeEngine 1.0 ThemeEngine.qml\nIrcBridge 1.0 IrcBridge.qml\nMessageListModel 1.0 MessageListModel.qml\nChatPage 1.0 ChatPage.qml\nConnectPage 1.0 ConnectPage.qml\nMessageDelegate 1.0 MessageDelegate.qml\nGlassSurface 1.0 GlassSurface.qml\n' \
+printf 'module org.kde.kirc\nsingleton ThemeEngine 1.0 ThemeEngine.qml\nIrcBridge 1.0 IrcBridge.qml\nMessageListModel 1.0 MessageListModel.qml\nChatPage 1.0 ChatPage.qml\nConnectPage 1.0 ConnectPage.qml\nMessageDelegate 1.0 MessageDelegate.qml\nGlassSurface 1.0 GlassSurface.qml\nScanlineOverlay 1.0 ScanlineOverlay.qml\n' \
     > "$tmp/org/kde/kirc/qmldir"
 
 cp "$here"/tst_smoke.qml "$here"/tst_cmds.qml "$here"/tst_scroll.qml "$here"/tst_glass.qml "$tmp/"

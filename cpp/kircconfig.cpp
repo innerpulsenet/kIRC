@@ -36,6 +36,25 @@ constexpr int kThemeSchemaVersionLegacy = 1;
 constexpr int kGlassIntensityMin = 1;
 constexpr int kGlassIntensityMax = 100;
 
+// CRT-effects intensity range ([UI] ScanlineAmount, VignetteAmount,
+// GrainAmount, FlickerAmount, HumBarAmount).  Same 1..100 scale and the same
+// policy as glass: clamped in the setter and again on load, so a hand-edited
+// kirc.conf cannot land an out-of-range value in the overlay.
+constexpr int kEffectsIntensityMin = 1;
+constexpr int kEffectsIntensityMax = 100;
+
+/// Clamp one CRT-effect intensity into [kEffectsIntensityMin, kEffectsIntensityMax].
+int clampEffectsIntensity(int value)
+{
+    if (value < kEffectsIntensityMin) {
+        return kEffectsIntensityMin;
+    }
+    if (value > kEffectsIntensityMax) {
+        return kEffectsIntensityMax;
+    }
+    return value;
+}
+
 // Built-in theme ids that shipped before the terminal reskin (schema < 3):
 // everything that used to be a bubble or glass theme.  A stored id from this
 // list is indistinguishable from "never chose" (it is either the old default
@@ -616,6 +635,184 @@ void KircConfig::setGlassEdges(bool glassEdges)
     Q_EMIT glassEdgesChanged();
 }
 
+// ---- CRT effects ([UI] keys) ----------------------------------------------
+
+bool KircConfig::scanlines() const
+{
+    return m_scanlines;
+}
+
+void KircConfig::setScanlines(bool scanlines)
+{
+    if (m_scanlines == scanlines) {
+        return;
+    }
+    m_scanlines = scanlines;
+    Q_EMIT scanlinesChanged();
+}
+
+int KircConfig::scanlineAmount() const
+{
+    return m_scanlineAmount;
+}
+
+void KircConfig::setScanlineAmount(int scanlineAmount)
+{
+    // Clamp (never reject) so a slider at the end of its range and a
+    // hand-edited config both land on the nearest valid value.
+    const int clamped = clampEffectsIntensity(scanlineAmount);
+    if (m_scanlineAmount == clamped) {
+        return;
+    }
+    m_scanlineAmount = clamped;
+    Q_EMIT scanlineAmountChanged();
+}
+
+bool KircConfig::vignette() const
+{
+    return m_vignette;
+}
+
+void KircConfig::setVignette(bool vignette)
+{
+    if (m_vignette == vignette) {
+        return;
+    }
+    m_vignette = vignette;
+    Q_EMIT vignetteChanged();
+}
+
+int KircConfig::vignetteAmount() const
+{
+    return m_vignetteAmount;
+}
+
+void KircConfig::setVignetteAmount(int vignetteAmount)
+{
+    const int clamped = clampEffectsIntensity(vignetteAmount);
+    if (m_vignetteAmount == clamped) {
+        return;
+    }
+    m_vignetteAmount = clamped;
+    Q_EMIT vignetteAmountChanged();
+}
+
+bool KircConfig::grain() const
+{
+    return m_grain;
+}
+
+void KircConfig::setGrain(bool grain)
+{
+    if (m_grain == grain) {
+        return;
+    }
+    m_grain = grain;
+    Q_EMIT grainChanged();
+}
+
+int KircConfig::grainAmount() const
+{
+    return m_grainAmount;
+}
+
+void KircConfig::setGrainAmount(int grainAmount)
+{
+    const int clamped = clampEffectsIntensity(grainAmount);
+    if (m_grainAmount == clamped) {
+        return;
+    }
+    m_grainAmount = clamped;
+    Q_EMIT grainAmountChanged();
+}
+
+bool KircConfig::flicker() const
+{
+    return m_flicker;
+}
+
+void KircConfig::setFlicker(bool flicker)
+{
+    if (m_flicker == flicker) {
+        return;
+    }
+    m_flicker = flicker;
+    Q_EMIT flickerChanged();
+}
+
+int KircConfig::flickerAmount() const
+{
+    return m_flickerAmount;
+}
+
+void KircConfig::setFlickerAmount(int flickerAmount)
+{
+    const int clamped = clampEffectsIntensity(flickerAmount);
+    if (m_flickerAmount == clamped) {
+        return;
+    }
+    m_flickerAmount = clamped;
+    Q_EMIT flickerAmountChanged();
+}
+
+bool KircConfig::humBar() const
+{
+    return m_humBar;
+}
+
+void KircConfig::setHumBar(bool humBar)
+{
+    if (m_humBar == humBar) {
+        return;
+    }
+    m_humBar = humBar;
+    Q_EMIT humBarChanged();
+}
+
+int KircConfig::humBarAmount() const
+{
+    return m_humBarAmount;
+}
+
+void KircConfig::setHumBarAmount(int humBarAmount)
+{
+    const int clamped = clampEffectsIntensity(humBarAmount);
+    if (m_humBarAmount == clamped) {
+        return;
+    }
+    m_humBarAmount = clamped;
+    Q_EMIT humBarAmountChanged();
+}
+
+bool KircConfig::reflection() const
+{
+    return m_reflection;
+}
+
+void KircConfig::setReflection(bool reflection)
+{
+    if (m_reflection == reflection) {
+        return;
+    }
+    m_reflection = reflection;
+    Q_EMIT reflectionChanged();
+}
+
+int KircConfig::reflectionAmount() const
+{
+    return m_reflectionAmount;
+}
+
+void KircConfig::setReflectionAmount(int reflectionAmount)
+{
+    const int clamped = clampEffectsIntensity(reflectionAmount);
+    if (m_reflectionAmount == clamped) {
+        return;
+    }
+    m_reflectionAmount = clamped;
+    Q_EMIT reflectionAmountChanged();
+}
+
 void KircConfig::load()
 {
     KConfig config(configFilePath(), KConfig::SimpleConfig);
@@ -671,6 +868,28 @@ void KircConfig::load()
     m_glassBlur = ui.readEntry(QStringLiteral("GlassBlur"), m_glassBlur);
     m_glassSheen = ui.readEntry(QStringLiteral("GlassSheen"), m_glassSheen);
     m_glassEdges = ui.readEntry(QStringLiteral("GlassEdges"), m_glassEdges);
+    // CRT effects ([UI] keys).  Each intensity is clamped on read as well as
+    // in its setter, so a hand-edited kirc.conf cannot land an out-of-range
+    // value in the overlay; a config written before the keys existed keeps the
+    // all-off defaults.
+    m_scanlines = ui.readEntry(QStringLiteral("Scanlines"), m_scanlines);
+    m_scanlineAmount = clampEffectsIntensity(
+        ui.readEntry(QStringLiteral("ScanlineAmount"), m_scanlineAmount));
+    m_vignette = ui.readEntry(QStringLiteral("Vignette"), m_vignette);
+    m_vignetteAmount = clampEffectsIntensity(
+        ui.readEntry(QStringLiteral("VignetteAmount"), m_vignetteAmount));
+    m_grain = ui.readEntry(QStringLiteral("Grain"), m_grain);
+    m_grainAmount = clampEffectsIntensity(
+        ui.readEntry(QStringLiteral("GrainAmount"), m_grainAmount));
+    m_flicker = ui.readEntry(QStringLiteral("Flicker"), m_flicker);
+    m_flickerAmount = clampEffectsIntensity(
+        ui.readEntry(QStringLiteral("FlickerAmount"), m_flickerAmount));
+    m_humBar = ui.readEntry(QStringLiteral("HumBar"), m_humBar);
+    m_humBarAmount = clampEffectsIntensity(
+        ui.readEntry(QStringLiteral("HumBarAmount"), m_humBarAmount));
+    m_reflection = ui.readEntry(QStringLiteral("Reflection"), m_reflection);
+    m_reflectionAmount = clampEffectsIntensity(
+        ui.readEntry(QStringLiteral("ReflectionAmount"), m_reflectionAmount));
 
     // ---- one-time theme-schema migration (< 4 -> 4; policy in the header) --
     // A config file that predates the key is version 1 by definition; a fresh
@@ -766,6 +985,18 @@ void KircConfig::load()
     Q_EMIT glassBlurChanged();
     Q_EMIT glassSheenChanged();
     Q_EMIT glassEdgesChanged();
+    Q_EMIT scanlinesChanged();
+    Q_EMIT scanlineAmountChanged();
+    Q_EMIT vignetteChanged();
+    Q_EMIT vignetteAmountChanged();
+    Q_EMIT grainChanged();
+    Q_EMIT grainAmountChanged();
+    Q_EMIT flickerChanged();
+    Q_EMIT flickerAmountChanged();
+    Q_EMIT humBarChanged();
+    Q_EMIT humBarAmountChanged();
+    Q_EMIT reflectionChanged();
+    Q_EMIT reflectionAmountChanged();
 }
 
 void KircConfig::save()
@@ -811,6 +1042,20 @@ void KircConfig::save()
     ui.writeEntry(QStringLiteral("GlassBlur"), m_glassBlur);
     ui.writeEntry(QStringLiteral("GlassSheen"), m_glassSheen);
     ui.writeEntry(QStringLiteral("GlassEdges"), m_glassEdges);
+    // CRT effects ([UI] keys).  Persisted with the clamped values the setters
+    // guarantee, so a round trip through kirc.conf is always in range.
+    ui.writeEntry(QStringLiteral("Scanlines"), m_scanlines);
+    ui.writeEntry(QStringLiteral("ScanlineAmount"), m_scanlineAmount);
+    ui.writeEntry(QStringLiteral("Vignette"), m_vignette);
+    ui.writeEntry(QStringLiteral("VignetteAmount"), m_vignetteAmount);
+    ui.writeEntry(QStringLiteral("Grain"), m_grain);
+    ui.writeEntry(QStringLiteral("GrainAmount"), m_grainAmount);
+    ui.writeEntry(QStringLiteral("Flicker"), m_flicker);
+    ui.writeEntry(QStringLiteral("FlickerAmount"), m_flickerAmount);
+    ui.writeEntry(QStringLiteral("HumBar"), m_humBar);
+    ui.writeEntry(QStringLiteral("HumBarAmount"), m_humBarAmount);
+    ui.writeEntry(QStringLiteral("Reflection"), m_reflection);
+    ui.writeEntry(QStringLiteral("ReflectionAmount"), m_reflectionAmount);
 
     KConfigGroup services = config.group(QString::fromLatin1(kServicesGroup));
     services.writeEntry(QStringLiteral("IdentifyOnConnect"), m_identifyOnConnect);

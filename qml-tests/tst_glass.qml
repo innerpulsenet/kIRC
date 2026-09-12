@@ -330,14 +330,15 @@ Item {
                 // ---- settings: the controls mirror the config double -----
                 var sp = harness.settings
                 if (sp === null) { harness.failures++; console.error("FAIL no settings page"); break }
-                sp.sectionIndex = 2
+                // p10: the glass controls now live in the Effects section.
+                sp.sectionIndex = sp.sectionIds.indexOf("effects")
                 // The seeded config has glass OFF and sheen OFF; put the engine
                 // in the same state (what restoring kirc.conf would do) and let
                 // the pane's sync land on the controls.
                 ThemeEngine.glassEffects = false
                 ThemeEngine.glassSheen = false
                 var toggle = harness.findByText(sp, "Frosted glass effects", 0)
-                harness.ok("the master glass toggle exists in Appearance", toggle !== null)
+                harness.ok("the master glass toggle exists in the Effects section", toggle !== null)
                 harness.ok("the toggle mirrors the persisted value (seeded off)",
                            toggle !== null && toggle.checked === false,
                            toggle === null ? "null" : ("checked=" + toggle.checked))
@@ -392,20 +393,26 @@ Item {
             }
             case 9: {
                 // ---- searchability --------------------------------------
+                // p10 moved the glass controls out of Appearance into the
+                // unified Effects section (the one surface for both the glass
+                // and the CRT families), so the section these searches must
+                // land on is now "effects".
                 var sps = harness.settings
+                var fxSection = sps.sectionIds.indexOf("effects")
                 sps.setFilter("glass")
-                harness.ok("search 'glass' finds the Appearance section",
-                           sps.sectionMatches(2) === true && sps.rowVisible("Glass") === true)
+                harness.ok("search 'glass' finds the Effects section",
+                           sps.sectionMatches(fxSection) === true && sps.rowVisible("Glass") === true)
                 sps.setFilter("frost")
                 harness.ok("search 'frost' finds the frost row",
                            sps.rowVisible("Glass frost") === true
-                           && sps.sectionMatches(2) === true)
+                           && sps.sectionMatches(fxSection) === true)
                 sps.setFilter("sheen")
                 harness.ok("search 'sheen' finds the sheen row",
                            sps.rowVisible("Glass sheen") === true)
                 sps.setFilter("reflection")
-                harness.ok("search 'reflection' (keyword) finds the section",
-                           sps.sectionMatches(2) === true)
+                harness.ok("search 'reflection' finds the reflection rows",
+                           sps.sectionMatches(fxSection) === true
+                           && sps.rowVisible("Reflection") === true)
                 sps.setFilter("")
                 harness.ok("clearing the search shows the glass rows again",
                            sps.rowVisible("Glass") === true
