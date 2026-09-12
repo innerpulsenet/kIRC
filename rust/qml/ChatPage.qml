@@ -334,45 +334,51 @@ Kirigami.Page {
     // ---------------------------------------------------------------------- //
     // Sidebar buffers
     // ---------------------------------------------------------------------- //
-    /// The sidebar renders this derived list rather than `channels` directly:
-    /// every entry already carries its label, kind and "start of section" flag,
-    /// so no delegate has to look up its neighbours — the view's `index` is not
-    /// readable through a delegate on Qt 6.11.
+    /// Network service conversations get their own named section. Keeping
+    /// NickServ/ChanServ distinct from ordinary direct messages explains why
+    /// they are separated from people, instead of producing two ambiguous
+    /// "Messages" headings around the channel list.
+    function isServiceTarget(target)
+    {
+        var folded = String(target).toLowerCase()
+        return folded === "nickserv" || folded === "chanserv"
+    }
+
+    /// The sidebar renders this grouped list rather than `channels` directly:
+    /// server, services, channels, then ordinary direct messages. Insertion
+    /// order is preserved inside each group, while every section appears at
+    /// most once regardless of when its buffers were opened.
     readonly property var buffers: {
-        var channelCount = 0
-        var queryCount = 0
-        var k
-        for (k = 0; k < page.channels.length; ++k) {
-            var t = page.channels[k]
-            if (t === "*server*") {
-                continue
-            }
-            if (page.isChannel(t)) {
-                channelCount += 1
-            } else {
-                queryCount += 1
-            }
-        }
-        var out = []
-        var previousKind = ""
+        var groups = [
+            { "kind": "server", "title": qsTr("Server"), "items": [] },
+            { "kind": "service", "title": qsTr("Services"), "items": [] },
+            { "kind": "channel", "title": qsTr("Channels"), "items": [] },
+            { "kind": "query", "title": qsTr("Messages"), "items": [] }
+        ]
         for (var i = 0; i < page.channels.length; ++i) {
             var target = page.channels[i]
-            var isServer = (target === "*server*")
-            var isChan = !isServer && page.isChannel(target)
-            var isQuery = !isServer && !isChan
-            var kind = isServer ? "server" : (isQuery ? "query" : "channel")
-            var title = isServer ? qsTr("Server") : (isQuery ? qsTr("Messages") : qsTr("Channels"))
-            out.push({
-                "target": target,
-                "isServer": isServer,
-                "isQuery": isQuery,
-                "isChan": isChan,
-                "sectionKind": kind,
-                "sectionTitle": title,
-                "sectionStart": kind !== previousKind,
-                "sectionCount": kind === "channel" ? channelCount : (kind === "query" ? queryCount : 0)
-            })
-            previousKind = kind
+            var groupIndex = target === "*server*" ? 0
+                           : page.isServiceTarget(target) ? 1
+                           : page.isChannel(target) ? 2 : 3
+            groups[groupIndex].items.push(target)
+        }
+
+        var out = []
+        for (var g = 0; g < groups.length; ++g) {
+            var group = groups[g]
+            for (var n = 0; n < group.items.length; ++n) {
+                var item = group.items[n]
+                out.push({
+                    "target": item,
+                    "isServer": group.kind === "server",
+                    "isQuery": group.kind === "query" || group.kind === "service",
+                    "isChan": group.kind === "channel",
+                    "sectionKind": group.kind,
+                    "sectionTitle": group.title,
+                    "sectionStart": n === 0,
+                    "sectionCount": group.kind === "server" ? 0 : group.items.length
+                })
+            }
         }
         return out
     }
@@ -472,7 +478,7 @@ Kirigami.Page {
                     // One delegate per buffer: the "*server*" console plus the
                     // joined channels and query windows. Section rules are part
                     // of the model, so a single flat list still renders as
-                    // "Server" / "Messages" / "Channels".
+                    // "Server" / "Services" / "Channels" / "Messages".
                     delegate: Controls.ItemDelegate {
                         id: bufferDelegate
                         required property string target

@@ -44,8 +44,8 @@ for manifest in rust/Cargo.toml rust/core/Cargo.toml; do
     sed -i -E "0,/^version = \"[^\"]*\"/s//version = \"${version}\"/" "$manifest"
 done
 
-# --- Application version reported by --version / the About box ---------------
-sed -i -E "s/(setApplicationVersion\(QStringLiteral\(\")[^\"]*(\"\)\))/\1${version}\2/" cpp/main.cpp
+# --- CMake / application version reported by the About pane -----------------
+sed -i -E "0,/^[[:space:]]*VERSION +[0-9]+\.[0-9]+\.[0-9]+/s//    VERSION ${version}/" CMakeLists.txt
 
 # --- AppStream: newest release entry carries this version -------------------
 python3 - "$metainfo" "$version" "$iso_date" <<'PY'

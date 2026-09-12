@@ -31,7 +31,7 @@
 %global corrosion_dir corrosion-0.5.2
 
 Name:           kirc
-Version:        0.1.0
+Version:        1.0.0
 Release:        1%{?dist}
 Summary:        KDE Kirigami IRCv3 client
 
@@ -154,5 +154,8 @@ appstream-util validate-relax packaging/org.kde.kirc.metainfo.xml
 %doc packaging/README.md
 
 %changelog
+* Sat Sep 12 2026 The kIRC Authors <kirc@innerpulse.net> - 1.0.0-1
+- Release 1.0.0
+
 * Fri Sep 11 2026 The kIRC Authors <kirc@innerpulse.net> - 0.1.0-1
 - Initial package

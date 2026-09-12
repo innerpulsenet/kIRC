@@ -11,7 +11,7 @@
 cmake_minimum_required(VERSION 3.24)
 
 project(kIRC
-    VERSION 0.1.0
+    VERSION 1.0.0
     DESCRIPTION "KDE Kirigami IRCv3 client"
     LANGUAGES CXX
 )
@@ -120,6 +120,8 @@ qt_add_executable(kIRC
     cpp/kirctray.cpp
     cpp/kirctray.h
 )
+
+target_compile_definitions(kIRC PRIVATE KIRC_VERSION="${PROJECT_VERSION}")
 
 target_link_libraries(kIRC PRIVATE
     kirc_qml

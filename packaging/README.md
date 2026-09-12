@@ -89,12 +89,12 @@ Koji/COPR-friendly path.
 
 ## Regenerating the source tarball (Source0)
 
-`rust/Cargo.lock` is **git-ignored**, so `git archive` alone will not include
-it — but the lockfile must be shipped so the vendored build is reproducible.
+`rust/Cargo.lock` is tracked, so `git archive` includes the lockfile required
+for a reproducible vendored build.
 Generate `Source0` from a clean checkout like this:
 
 ```sh
-ver=0.1.0
+ver=1.0.0
 # rust/Cargo.lock must exist (run `cargo generate-lockfile` in rust/ if not).
 git -C /path/to/kIRC archive --format=tar HEAD | tar -x -C /tmp
 mv /tmp/kirc-$(...) /tmp/kirc-$ver 2>/dev/null || true
@@ -135,7 +135,7 @@ regenerated), and always from the **same lockfile** you ship in `Source0`:
 ```sh
 cd rust
 cargo vendor vendor                 # writes rust/vendor/ + prints a config snippet
-tar -czf ../kirc-vendor-0.1.0.tar.gz vendor   # top-level `vendor/` directory
+tar -czf ../kirc-vendor-1.0.0.tar.gz vendor   # top-level `vendor/` directory
 ```
 
 The vendor tree is ~166 MB uncompressed / ~22 MB gzipped; it is deliberately
@@ -181,12 +181,12 @@ sudo dnf install rpm-build rpmdevtools \
   desktop-file-utils libappstream-glib
 rpmdev-setuptree
 
-cp kirc-0.1.0.tar.gz cxx-qt-cmake-0.10.0.tar.gz kirc-vendor-0.1.0.tar.gz \
+cp kirc-1.0.0.tar.gz cxx-qt-cmake-0.10.0.tar.gz kirc-vendor-1.0.0.tar.gz \
    ~/rpmbuild/SOURCES/
 cp kirc.spec ~/rpmbuild/SPECS/
 
 rpmbuild -ba ~/rpmbuild/SPECS/kirc.spec
-sudo dnf install ~/rpmbuild/RPMS/x86_64/kirc-0.1.0-1.fc44.x86_64.rpm
+sudo dnf install ~/rpmbuild/RPMS/x86_64/kirc-1.0.0-1.fc44.x86_64.rpm
 ```
 
 If you use **rustup**, make sure the build uses the *system* cargo/rustc that

@@ -2593,11 +2593,13 @@ Kirigami.Page {
                         SectionHeader { title: page.sectionName(5) }
 
                         Text {
+                            objectName: "aboutVersionText"
                             Layout.fillWidth: true
                             Layout.leftMargin: 10
                             Layout.rightMargin: 10
                             Layout.topMargin: 4
-                            text: qsTr("# kIRC 0.1.0 — IRC in a terminal coat.\n# Kirigami + Qt Quick, monospace everywhere, no bubbles.")
+                            text: qsTr("# kIRC %1 — IRC in a terminal coat.\n# Kirigami + Qt Quick, monospace everywhere, no bubbles.")
+                                  .arg(Qt.application.version)
                             color: page.fgMain()
                             font.family: page.mono
                             font.pointSize: page.ptSmall

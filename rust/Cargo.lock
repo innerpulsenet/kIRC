@@ -518,7 +518,7 @@ dependencies = [
 
 [[package]]
 name = "kirc"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "chrono",
  "cxx",
@@ -533,7 +533,7 @@ dependencies = [
 
 [[package]]
 name = "kirc-core"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "base64",
  "hmac",

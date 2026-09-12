@@ -423,6 +423,20 @@ Item {
                     harness.ok("whitespace-only host and nickname are invalid",
                                connectLoader.item.formValid === false)
                 }
+                if (chatLoader.item) {
+                    var sidebar = chatLoader.item
+                    sidebar.channels = ["*server*", "NickServ", "#pain", "arm1-bot",
+                                        "ChanServ", "#other", "mario-bot"]
+                    var targets = sidebar.buffers.map(function(row) { return row.target }).join("|")
+                    var sections = sidebar.buffers.filter(function(row) { return row.sectionStart })
+                                                  .map(function(row) { return row.sectionTitle }).join("|")
+                    harness.ok("sidebar groups each buffer kind into one section",
+                               targets === "*server*|NickServ|ChanServ|#pain|#other|arm1-bot|mario-bot",
+                               targets)
+                    harness.ok("NickServ and ChanServ are labelled as Services",
+                               sections === "Server|Services|Channels|Messages", sections)
+                    sidebar.channels = ["*server*"]
+                }
                 if (harness.win) {
                     harness.ok("initialPage is the connection form", harness.win.pageStack.depth === 1)
                     harness.ok("bridge exposed on window", harness.win.bridge !== null && harness.win.bridge.connection_state === 0)
@@ -642,6 +656,14 @@ Item {
                 var sp = harness.settingsPage()
                 harness.ok("SettingsPage instantiated standalone", sp !== null)
                 if (sp === null) { break }
+                var aboutVersion = harness.findByPredicate(sp, function (o) {
+                    return o.objectName === "aboutVersionText"
+                }, 0)
+                harness.ok("About uses the application version instead of a stale literal",
+                           aboutVersion !== null
+                           && aboutVersion.text.indexOf("# kIRC " + Qt.application.version + " —") === 0
+                           && aboutVersion.text.indexOf("kIRC 0.1.0") < 0,
+                           aboutVersion === null ? "missing" : aboutVersion.text)
                 var toggle = harness.findByText(sp, "Reply to CTCP VERSION requests", 0)
                 harness.ok("the CTCP VERSION toggle exists", toggle !== null)
                 harness.ok("the toggle shows the persisted value (off)",
