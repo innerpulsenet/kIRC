@@ -118,6 +118,22 @@ Kirigami.Page {
         return 4
     }
 
+    /// Best (strongest) rank across a whole prefix run: `@+bob` ranks
+    /// operator even when the strongest prefix is not first. Single
+    /// prefixes behave exactly like rankForPrefix.
+    function rankForPrefixes(prefixes)
+    {
+        var run = String(prefixes === undefined || prefixes === null ? "" : prefixes)
+        if (run.length === 0) {
+            return 4
+        }
+        var best = 4
+        for (var i = 0; i < run.length; ++i) {
+            best = Math.min(best, page.rankForPrefix(run.charAt(i)))
+        }
+        return best
+    }
+
     // Label of the "*server*" buffer row: the network we are actually on when
     // connected, so it never just repeats the "Server" section header.
     readonly property string serverBufferLabel: {
@@ -158,6 +174,22 @@ Kirigami.Page {
     readonly property real peoplePanelMinSpace: 560
     property string peopleFilter: ""
     property bool topicExpanded: false
+    // People panel selection: the bare nick of the highlighted row. A
+    // single click only sets this — it never opens a buffer.
+    property string selectedNick: ""
+    // Context-menu target (bare nick) and the channel it was opened from.
+    property string menuNick: ""
+    property string menuChannel: ""
+    // WHOIS dialog capture: the queried nick, the parsed reply lines
+    // ({code, label, value}) and whether more lines are still expected.
+    property string whoisNick: ""
+    property var whoisLines: []
+    property bool whoisCollecting: false
+    property bool whoisDone: false
+    // Channel properties dialog target and the topic it opened with (so
+    // Apply only sends TOPIC when the text actually changed).
+    property string propChannel: ""
+    property string propInitialTopic: ""
     // The user scrolled up and traffic arrived below: offer a way back down.
     property bool hasUnseenBelow: false
     // Follow-the-tail state: true while the log is following live traffic.
@@ -255,6 +287,14 @@ Kirigami.Page {
                 page.maybeGhost()
                 page.applyAutojoin()
             }
+            // The WHOIS dialog collects its own detail lines: command
+            // replies arrive with the "*" nick (see the bridge), so a WHOIS
+            // numeric for the queried nick is captured while the dialog
+            // waits — and the same line still renders in the buffer as
+            // before.
+            if (page.whoisCollecting && nick === "*") {
+                page.parseWhoisLine(text)
+            }
         }
 
         function onHistory_batch_received(target) {
@@ -323,6 +363,10 @@ Kirigami.Page {
             if (page.sameTarget(channel, page.currentChannel)) {
                 page.nickList = nicks.length === 0 ? [] : nicks.split(" ")
             }
+        }
+
+        function onChannel_modes_changed(channel, modes) {
+            page.applyChannelModes(channel, modes)
         }
 
         function onQuery_opened(nick) {
@@ -396,7 +440,10 @@ Kirigami.Page {
         var ranks = [[], [], [], [], []]
         for (var i = 0; i < page.nickList.length; ++i) {
             var raw = String(page.nickList[i])
-            var m = /^([@+%~&]?)(.*)$/.exec(raw)
+            // The core keeps every status prefix the server sent (`@+bob`
+            // carries two): strip the whole run, rank by the strongest
+            // prefix wherever it sits in the run.
+            var m = /^([@+%~&]*)(.*)$/.exec(raw)
             var prefix = m ? m[1] : ""
             var bare = m ? m[2] : raw
             if (bare.length === 0) {
@@ -405,7 +452,7 @@ Kirigami.Page {
             if (filter.length > 0 && bare.toLowerCase().indexOf(filter) === -1) {
                 continue
             }
-            ranks[page.rankForPrefix(prefix)].push({
+            ranks[page.rankForPrefixes(prefix)].push({
                 "nick": raw, "bare": bare, "prefix": prefix, "group": ""
             })
         }
@@ -519,6 +566,15 @@ Kirigami.Page {
                         font.family: page.monoFamily
 
                         onClicked: page.openChannel(bufferDelegate.target)
+                        // A double-click on a channel opens its properties
+                        // (topic + modes); the two single clicks still
+                        // navigate there first, which is where the dialog
+                        // acts.
+                        onDoubleClicked: {
+                            if (bufferDelegate.isChan) {
+                                page.openChannelProperties(bufferDelegate.target)
+                            }
+                        }
 
                         Controls.ToolTip.visible: hovered
                         Controls.ToolTip.text: bufferDelegate.isServer
@@ -1490,10 +1546,11 @@ Kirigami.Page {
 
                         // Rank drives the weight: operators stay at full
                         // foreground, everyone else (voiced included) is dim.
-                        readonly property bool isOp: personDelegate.prefix === "@"
-                            || personDelegate.prefix === "%"
-                            || personDelegate.prefix === "~"
-                            || personDelegate.prefix === "&"
+                        // The prefix may carry several chars (`@+bob`); rank
+                        // by the strongest wherever it sits.
+                        readonly property bool isOp: page.rankForPrefixes(personDelegate.prefix) <= 2
+                        readonly property bool selected: page.selectedNick.length > 0
+                            && page.sameTarget(personDelegate.bare, page.selectedNick)
 
                         width: peopleList.width
                         hoverEnabled: true
@@ -1506,8 +1563,10 @@ Kirigami.Page {
                         Controls.ToolTip.text: personDelegate.nick
 
                         background: Rectangle {
-                            // Flat, full-bleed hover wash — never rounded.
-                            color: personDelegate.hovered ? page.hoverFill : "transparent"
+                            // Flat, full-bleed washes — selection first, then
+                            // hover. Never rounded.
+                            color: personDelegate.selected ? page.selectionFill
+                                : (personDelegate.hovered ? page.hoverFill : "transparent")
                             Behavior on color {
                                 ColorAnimation { duration: ThemeEngine.motionDuration }
                             }
@@ -1526,12 +1585,26 @@ Kirigami.Page {
                         }
 
                         onClicked: {
-                            var nick = personDelegate.bare
-                            if (nick.length === 0) {
-                                return
+                            // A single click only selects (highlights) the
+                            // row. Opening a private chat is an explicit
+                            // context-menu action, so a stray click never
+                            // pops a query window.
+                            page.selectPerson(personDelegate.bare)
+                        }
+
+                        // Right-click opens the person menu. Left clicks pass
+                        // through to the delegate above (selection).
+                        MouseArea {
+                            anchors.fill: parent
+                            acceptedButtons: Qt.RightButton
+                            onClicked: {
+                                page.selectPerson(personDelegate.bare)
+                                page.openPersonMenu(personDelegate.bare)
                             }
-                            page.addBuffer(nick)
-                            page.openChannel(nick)
+                            onPressAndHold: {
+                                page.selectPerson(personDelegate.bare)
+                                page.openPersonMenu(personDelegate.bare)
+                            }
                         }
                     }
                 }
@@ -1625,6 +1698,309 @@ Kirigami.Page {
                     id: joinAutojoinBox
                     Layout.fillWidth: true
                     text: qsTr("Join on connect")
+                }
+            }
+        }
+    }
+
+    // Person context menu + kick/ban confirms, WHOIS dialog, channel
+    // properties. All moderation sends go through the same wire builders
+    // as the slash commands (opNick/kickNick/banNick).
+    Controls.Menu {
+        id: personMenu
+        title: page.menuNick
+
+        Controls.MenuItem {
+            text: qsTr("Private message")
+            enabled: !page.isSelfNick(page.menuNick)
+            onTriggered: page.personAction("pm", page.menuNick)
+        }
+        Controls.MenuItem {
+            text: qsTr("Whois details…")
+            onTriggered: page.personAction("whois", page.menuNick)
+        }
+        Controls.MenuSeparator {}
+        Controls.MenuItem {
+            text: qsTr("Give operator (+o)")
+            enabled: page.canManage(page.menuChannel) && !page.isSelfNick(page.menuNick)
+            onTriggered: page.personAction("+o", page.menuNick)
+        }
+        Controls.MenuItem {
+            text: qsTr("Take operator (−o)")
+            enabled: page.canManage(page.menuChannel) && !page.isSelfNick(page.menuNick)
+            onTriggered: page.personAction("-o", page.menuNick)
+        }
+        Controls.MenuItem {
+            text: qsTr("Give voice (+v)")
+            enabled: page.canManage(page.menuChannel) && !page.isSelfNick(page.menuNick)
+            onTriggered: page.personAction("+v", page.menuNick)
+        }
+        Controls.MenuItem {
+            text: qsTr("Take voice (−v)")
+            enabled: page.canManage(page.menuChannel) && !page.isSelfNick(page.menuNick)
+            onTriggered: page.personAction("-v", page.menuNick)
+        }
+        Controls.MenuSeparator {}
+        Controls.MenuItem {
+            text: qsTr("Kick…")
+            enabled: page.canManage(page.menuChannel) && !page.isSelfNick(page.menuNick)
+            onTriggered: page.personAction("kick", page.menuNick)
+        }
+        Controls.MenuItem {
+            text: qsTr("Ban…")
+            enabled: page.canManage(page.menuChannel) && !page.isSelfNick(page.menuNick)
+            onTriggered: page.personAction("ban", page.menuNick)
+        }
+    }
+
+    // Kick confirm: an explicit reason, Cancel to back out. Kicking is
+    // immediate once confirmed — there is no undo on IRC.
+    Controls.Dialog {
+        id: kickDialog
+        property string channel: ""
+        property string targetNick: ""
+        title: qsTr("Kick from ") + channel
+        modal: true
+        parent: Controls.Overlay.overlay
+        anchors.centerIn: parent
+        standardButtons: Controls.Dialog.Ok | Controls.Dialog.Cancel
+        onOpened: kickReasonField.forceActiveFocus()
+        onAccepted: page.kickNick(channel, targetNick, kickReasonField.text)
+
+        contentItem: Item {
+            implicitWidth: kickDialogContent.implicitWidth
+            implicitHeight: kickDialogContent.implicitHeight
+
+            GlassSurface {
+                anchors.fill: parent
+                radius: 0
+                tint: ThemeEngine.glassFillFor(page.bgPanel, true)
+            }
+
+            ColumnLayout {
+                id: kickDialogContent
+                anchors.fill: parent
+                spacing: Kirigami.Units.smallSpacing
+
+                Controls.Label {
+                    Layout.fillWidth: true
+                    Layout.minimumWidth: Kirigami.Units.gridUnit * 14
+                    text: qsTr("Kick %1 from %2?").arg(kickDialog.targetNick).arg(kickDialog.channel)
+                    color: Kirigami.Theme.textColor
+                    wrapMode: Text.WordWrap
+                    font.family: page.monoFamily
+                }
+
+                Controls.TextField {
+                    id: kickReasonField
+                    Layout.fillWidth: true
+                    placeholderText: qsTr("Reason (optional)")
+                    font.family: page.monoFamily
+                    onAccepted: kickDialog.accept()
+                }
+            }
+        }
+    }
+
+    // Ban confirm: the mask defaults to nick!*@* (editable) so a bare
+    // nick never becomes a malformed mode argument.
+    Controls.Dialog {
+        id: banDialog
+        property string channel: ""
+        title: qsTr("Ban from ") + channel
+        modal: true
+        parent: Controls.Overlay.overlay
+        anchors.centerIn: parent
+        standardButtons: Controls.Dialog.Ok | Controls.Dialog.Cancel
+        onOpened: {
+            banMaskField.forceActiveFocus()
+            banMaskField.selectAll()
+        }
+        onAccepted: page.banNick(channel, banMaskField.text.trim())
+
+        contentItem: Item {
+            implicitWidth: banDialogContent.implicitWidth
+            implicitHeight: banDialogContent.implicitHeight
+
+            GlassSurface {
+                anchors.fill: parent
+                radius: 0
+                tint: ThemeEngine.glassFillFor(page.bgPanel, true)
+            }
+
+            ColumnLayout {
+                id: banDialogContent
+                anchors.fill: parent
+                spacing: Kirigami.Units.smallSpacing
+
+                Controls.Label {
+                    Layout.fillWidth: true
+                    Layout.minimumWidth: Kirigami.Units.gridUnit * 14
+                    text: qsTr("Ban mask for %1 (nick!user@host, wildcards allowed):").arg(banDialog.channel)
+                    color: Kirigami.Theme.textColor
+                    wrapMode: Text.WordWrap
+                    font.family: page.monoFamily
+                }
+
+                Controls.TextField {
+                    id: banMaskField
+                    Layout.fillWidth: true
+                    font.family: page.monoFamily
+                    onAccepted: {
+                        if (text.trim().length > 0) {
+                            banDialog.accept()
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // WHOIS dialog: the captured reply lines for one nick, one labelled
+    // row per numeric. The same lines render in the current buffer — this
+    // is the detailed view, not a replacement.
+    Controls.Dialog {
+        id: whoisDialog
+        title: qsTr("Whois %1").arg(page.whoisNick)
+        modal: false
+        parent: Controls.Overlay.overlay
+        anchors.centerIn: parent
+        standardButtons: Controls.Dialog.Close
+        onClosed: page.whoisCollecting = false
+
+        contentItem: Item {
+            implicitWidth: whoisDialogContent.implicitWidth
+            implicitHeight: whoisDialogContent.implicitHeight
+
+            GlassSurface {
+                anchors.fill: parent
+                radius: 0
+                tint: ThemeEngine.glassFillFor(page.bgPanel, true)
+            }
+
+            ColumnLayout {
+                id: whoisDialogContent
+                anchors.fill: parent
+                spacing: Kirigami.Units.smallSpacing
+
+                Controls.Label {
+                    Layout.fillWidth: true
+                    Layout.minimumWidth: Kirigami.Units.gridUnit * 18
+                    text: page.whoisCollecting ? qsTr("Waiting for reply…")
+                        : (page.whoisDone ? qsTr("%1 reply lines").arg(page.whoisLines.length)
+                           : qsTr("No reply yet"))
+                    color: page.mutedTxt
+                    font.family: page.monoFamily
+                }
+
+                ListView {
+                    id: whoisList
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: Math.min(Kirigami.Units.gridUnit * 12,
+                                                    Math.max(Kirigami.Units.gridUnit * 3,
+                                                             whoisList.contentHeight))
+                    clip: true
+                    model: page.whoisLines
+                    delegate: Controls.Label {
+                        required property string label
+                        required property string value
+                        width: whoisList.width
+                        text: label + ": " + value
+                        color: Kirigami.Theme.textColor
+                        font.family: page.monoFamily
+                        wrapMode: Text.WordWrap
+                    }
+                }
+            }
+        }
+    }
+
+    // Channel properties: topic plus the common toggle modes (invite-only
+    // included). Every flag starts half-marked — leave it to keep the
+    // server's value, check to set (+), uncheck to clear (−).
+    Controls.Dialog {
+        id: chanPropsDialog
+        title: qsTr("Channel %1").arg(page.propChannel)
+        modal: true
+        parent: Controls.Overlay.overlay
+        anchors.centerIn: parent
+        standardButtons: Controls.Dialog.Ok | Controls.Dialog.Cancel
+        onAccepted: {
+            var add = ""
+            var del = ""
+            var boxes = [[propModeI, "i"], [propModeM, "m"], [propModeN, "n"], [propModeT, "t"]]
+            for (var i = 0; i < boxes.length; ++i) {
+                if (boxes[i][0].checkState === Qt.Checked) {
+                    add += boxes[i][1]
+                } else if (boxes[i][0].checkState === Qt.Unchecked) {
+                    del += boxes[i][1]
+                }
+            }
+            page.applyChannelProperties(page.propChannel, propTopicField.text,
+                                        page.propInitialTopic, add, del)
+        }
+
+        contentItem: Item {
+            implicitWidth: chanPropsDialogContent.implicitWidth
+            implicitHeight: chanPropsDialogContent.implicitHeight
+
+            GlassSurface {
+                anchors.fill: parent
+                radius: 0
+                tint: ThemeEngine.glassFillFor(page.bgPanel, true)
+            }
+
+            ColumnLayout {
+                id: chanPropsDialogContent
+                anchors.fill: parent
+                spacing: Kirigami.Units.smallSpacing
+
+                Controls.Label {
+                    Layout.fillWidth: true
+                    text: qsTr("Topic:")
+                    color: Kirigami.Theme.textColor
+                    font.family: page.monoFamily
+                }
+
+                Controls.TextField {
+                    id: propTopicField
+                    Layout.fillWidth: true
+                    Layout.minimumWidth: Kirigami.Units.gridUnit * 16
+                    placeholderText: qsTr("No topic set")
+                    font.family: page.monoFamily
+                }
+
+                Controls.Label {
+                    Layout.fillWidth: true
+                    text: qsTr("Modes (half-marked keeps the current value):")
+                    color: Kirigami.Theme.textColor
+                    wrapMode: Text.WordWrap
+                    font.family: page.monoFamily
+                }
+
+                Controls.CheckBox {
+                    id: propModeI
+                    tristate: true
+                    text: qsTr("+i invite-only")
+                    font.family: page.monoFamily
+                }
+                Controls.CheckBox {
+                    id: propModeM
+                    tristate: true
+                    text: qsTr("+m moderated")
+                    font.family: page.monoFamily
+                }
+                Controls.CheckBox {
+                    id: propModeN
+                    tristate: true
+                    text: qsTr("+n no outside messages")
+                    font.family: page.monoFamily
+                }
+                Controls.CheckBox {
+                    id: propModeT
+                    tristate: true
+                    text: qsTr("+t topic locked")
+                    font.family: page.monoFamily
                 }
             }
         }
@@ -1753,6 +2129,336 @@ Kirigami.Page {
         if (leaving) {
             page.openChannel("*server*")
         }
+    }
+
+    // ---------------------------------------------------------------------- //
+    // People panel actions, WHOIS dialog capture, channel properties
+    // ---------------------------------------------------------------------- //
+
+    /// Highlight one people-panel row (bare nick). Never opens a buffer.
+    function selectPerson(nick)
+    {
+        if (nick === undefined || nick === null) {
+            return
+        }
+        page.selectedNick = String(nick)
+    }
+
+    /// Our own entry in `channel`'s nick list: {bare, prefix} with every
+    /// status prefix the server sent, or null when we are not listed. The
+    /// session nick comes from the bridge (001 / 433 fallback), never the
+    /// connect form. Reads the bridge's list for `channel` itself, so the
+    /// gate stays right even off the visible buffer.
+    function ownEntryIn(channel)
+    {
+        if (page.bridge === null || page.bridge.nickname === undefined
+                || !page.isChannel(channel)) {
+            return null
+        }
+        var ours = String(page.bridge.nickname).toLowerCase()
+        if (ours.length === 0) {
+            return null
+        }
+        var list = ""
+        if (typeof page.bridge.nicks_for === "function") {
+            list = String(page.bridge.nicks_for(channel))
+        }
+        var entries = list.length > 0 ? list.split(" ")
+            : (page.sameTarget(channel, page.currentChannel) ? page.nickList : [])
+        for (var i = 0; i < entries.length; ++i) {
+            var m = /^([@+%~&]*)(.*)$/.exec(String(entries[i]))
+            var bare = m ? m[2] : String(entries[i])
+            if (bare.toLowerCase() === ours) {
+                return { "bare": bare, "prefix": m ? m[1] : "" }
+            }
+        }
+        return null
+    }
+
+    /// Our status rank in `channel` (0 owner/admin, 1 operator, 2 halfop,
+    /// 3 voiced, 4 none, 99 unknown) — the gate for moderation actions.
+    function ownRankIn(channel)
+    {
+        var entry = page.ownEntryIn(channel)
+        if (entry === null) {
+            return 99
+        }
+        return page.rankForPrefixes(entry.prefix)
+    }
+
+    /// True when we may grant/revoke privileges or kick/ban in `channel`:
+    /// operator or above (owner/admin count).
+    function canManage(channel)
+    {
+        return page.ownRankIn(channel) <= 1
+    }
+
+    function isSelfNick(nick)
+    {
+        return page.bridge !== null && page.bridge.nickname !== undefined
+            && page.sameTarget(nick, page.bridge.nickname)
+    }
+
+    /// Open the person context menu for `nick` (bare) in the current
+    /// channel.
+    function openPersonMenu(nick)
+    {
+        if (nick === undefined || nick === null || String(nick).length === 0) {
+            return
+        }
+        if (!page.isChannel(page.currentChannel)) {
+            return
+        }
+        page.menuNick = String(nick)
+        page.menuChannel = page.currentChannel
+        personMenu.popup()
+    }
+
+    /// Run one person-menu action. Kick/ban open their confirm dialogs;
+    /// everything else sends immediately. Returns true when handled.
+    function personAction(action, nick)
+    {
+        var channel = page.menuChannel.length > 0 ? page.menuChannel : page.currentChannel
+        if (nick === undefined || nick === null || String(nick).length === 0) {
+            return false
+        }
+        nick = String(nick)
+        if (!page.isChannel(channel)) {
+            return false
+        }
+        if (action === "pm") {
+            if (page.isSelfNick(nick)) {
+                return false
+            }
+            page.addBuffer(nick)
+            page.openChannel(nick)
+            return true
+        }
+        if (action === "whois") {
+            page.openWhois(nick)
+            return true
+        }
+        if (action === "kick") {
+            if (!page.canManage(channel) || page.isSelfNick(nick)) {
+                return false
+            }
+            kickDialog.channel = channel
+            kickDialog.targetNick = nick
+            kickReasonField.text = ""
+            kickDialog.open()
+            return true
+        }
+        if (action === "ban") {
+            if (!page.canManage(channel) || page.isSelfNick(nick)) {
+                return false
+            }
+            banDialog.channel = channel
+            banMaskField.text = page.banMask(nick)
+            banDialog.open()
+            return true
+        }
+        // Privilege changes: operator/owner gated, never on self.
+        if (action === "+o" || action === "-o" || action === "+v" || action === "-v") {
+            if (!page.canManage(channel) || page.isSelfNick(nick)) {
+                return false
+            }
+            page.opNick(channel, action, nick)
+            return true
+        }
+        return false
+    }
+
+    /// Send one privilege change (`+o`/`-o`/`+v`/`-v`) for `nick`.
+    function opNick(channel, mode, nick)
+    {
+        page.sendRawLine("MODE " + channel + " " + mode + " " + nick)
+    }
+
+    /// Kick `nick` from `channel`, with an optional reason.
+    function kickNick(channel, nick, reason)
+    {
+        var line = "KICK " + channel + " " + nick
+        if (reason !== undefined && reason !== null && String(reason).trim().length > 0) {
+            line += " :" + String(reason).trim()
+        }
+        page.sendRawLine(line)
+    }
+
+    /// Ban `mask` from `channel`.
+    function banNick(channel, mask)
+    {
+        page.sendRawLine("MODE " + channel + " +b " + mask)
+    }
+
+    /// Open the WHOIS dialog for `nick` and ask the server. The reply
+    /// lines are captured by parseWhoisLine as they arrive (and still
+    /// render in the current buffer, as /whois always has).
+    function openWhois(nick)
+    {
+        if (nick === undefined || nick === null || String(nick).length === 0) {
+            return
+        }
+        page.whoisNick = String(nick)
+        page.whoisLines = []
+        page.whoisCollecting = true
+        page.whoisDone = false
+        page.sendRawLine("WHOIS " + page.whoisNick)
+        whoisDialog.open()
+    }
+
+    /// Human label for a WHOIS-family numeric.
+    function whoisLabel(code)
+    {
+        switch (code) {
+        case "301": return qsTr("Away")
+        case "307": return qsTr("Registered")
+        case "311": return qsTr("User")
+        case "312": return qsTr("Server")
+        case "313": return qsTr("Operator")
+        case "317": return qsTr("Idle")
+        case "318": return qsTr("End of WHOIS")
+        case "319": return qsTr("Channels")
+        case "330": return qsTr("Account")
+        case "335": return qsTr("Bot")
+        case "338": return qsTr("Host")
+        case "378": return qsTr("Connecting from")
+        case "379": return qsTr("Modes")
+        case "401": return qsTr("No such nick")
+        case "671": return qsTr("Secure connection")
+        default: return code
+        }
+    }
+
+    /// Fold one command-reply line into the WHOIS dialog when it answers
+    /// the pending query. Returns true when the line was captured. 318
+    /// (end) and 401 (no such nick) close the capture.
+    function parseWhoisLine(text)
+    {
+        var m = /^(\d{3})\s+(\S+)(?:\s+(.*))?$/.exec(String(text))
+        if (m === null) {
+            return false
+        }
+        var code = m[1]
+        if ("301 307 311 312 313 317 318 319 330 335 338 378 379 401 671".split(" ").indexOf(code) === -1) {
+            return false
+        }
+        if (!page.sameTarget(m[2], page.whoisNick)) {
+            return false
+        }
+        var lines = page.whoisLines.slice()
+        lines.push({ "code": code, "label": page.whoisLabel(code), "value": m[3] || "" })
+        page.whoisLines = lines
+        if (code === "318" || code === "401") {
+            page.whoisCollecting = false
+            page.whoisDone = true
+        }
+        return true
+    }
+
+    /// Open the channel properties dialog (topic + modes). Every flag
+    /// starts half-marked (leave unchanged); a MODE query goes out first
+    /// and the reply fills the boxes the user has not touched yet (see
+    /// applyChannelModes).
+    function openChannelProperties(channel)
+    {
+        if (!page.isChannel(channel)) {
+            return
+        }
+        page.propChannel = channel
+        var topic = (page.bridge !== null && typeof page.bridge.topic_for === "function")
+            ? page.bridge.topic_for(channel) : ""
+        page.propInitialTopic = topic
+        propTopicField.text = topic
+        // Every flag starts half-marked (leave unchanged): checked sets
+        // it, unchecked clears it.
+        propModeI.checkState = Qt.PartiallyChecked
+        propModeM.checkState = Qt.PartiallyChecked
+        propModeN.checkState = Qt.PartiallyChecked
+        propModeT.checkState = Qt.PartiallyChecked
+        if (page.connected) {
+            page.sendRawLine("MODE " + channel)
+        }
+        chanPropsDialog.open()
+    }
+
+    /// Fold server-confirmed flags into the properties dialog. Only boxes
+    /// the user has not touched (still half-marked) move, so a late reply
+    /// can never overwrite a pending edit — and a reply for any other
+    /// channel is ignored, so a stale answer can never repaint the wrong
+    /// dialog. Returns true when anything moved.
+    function applyChannelModes(channel, modes)
+    {
+        if (!page.sameTarget(channel, page.propChannel) || !chanPropsDialog.visible) {
+            return false
+        }
+        var flags = String(modes === undefined || modes === null ? "" : modes)
+        var boxes = [[propModeI, "i"], [propModeM, "m"], [propModeN, "n"], [propModeT, "t"]]
+        var moved = false
+        for (var i = 0; i < boxes.length; ++i) {
+            if (boxes[i][0].checkState === Qt.PartiallyChecked) {
+                boxes[i][0].checkState = flags.indexOf(boxes[i][1]) >= 0 ? Qt.Checked : Qt.Unchecked
+                moved = true
+            }
+        }
+        return moved
+    }
+
+    /// checkState of one properties flag box (`i`/`m`/`n`/`t`, else -1) —
+    /// the headless tests read dialog state through this.
+    function propModeState(letter)
+    {
+        var box = letter === "i" ? propModeI : letter === "m" ? propModeM
+            : letter === "n" ? propModeN : letter === "t" ? propModeT : null
+        return box === null ? -1 : box.checkState
+    }
+
+    /// Set one properties flag box — the headless tests simulate a user
+    /// touching a box through this.
+    function setPropMode(letter, state)
+    {
+        var box = letter === "i" ? propModeI : letter === "m" ? propModeM
+            : letter === "n" ? propModeN : letter === "t" ? propModeT : null
+        if (box === null) {
+            return false
+        }
+        box.checkState = state
+        return true
+    }
+
+    /// Apply channel properties: TOPIC only when the text changed (empty
+    /// clears), MODE for the flags the user set or unset. `addModes` /
+    /// `removeModes` are strings of mode letters. Returns true when
+    /// anything was sent.
+    function applyChannelProperties(channel, topic, initialTopic, addModes, removeModes)
+    {
+        if (!page.isChannel(channel)) {
+            return false
+        }
+        var sent = false
+        var next = (topic === undefined || topic === null) ? "" : String(topic)
+        var prev = (initialTopic === undefined || initialTopic === null) ? "" : String(initialTopic)
+        if (next !== prev) {
+            if (next.length > 0) {
+                page.sendRawLine("TOPIC " + channel + " :" + next)
+            } else {
+                page.sendRawLine("TOPIC " + channel + " :")
+            }
+            sent = true
+        }
+        var add = (addModes === undefined || addModes === null) ? "" : String(addModes)
+        var del = (removeModes === undefined || removeModes === null) ? "" : String(removeModes)
+        if (add.length > 0 || del.length > 0) {
+            var change = ""
+            if (add.length > 0) {
+                change += "+" + add
+            }
+            if (del.length > 0) {
+                change += "-" + del
+            }
+            page.sendRawLine("MODE " + channel + " " + change)
+            sent = true
+        }
+        return sent
     }
 
     function refreshHistory()

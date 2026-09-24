@@ -1,7 +1,7 @@
 //! Connection configuration, the client command / server event vocabulary, and
 //! the async session state machine that drives an IRCv3 connection.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::error::Error;
 use std::io;
 use std::sync::Arc;
@@ -203,6 +203,25 @@ pub enum IrcEvent {
     },
     /// A MODE change (channel or user).
     Mode { target: String, modes: String },
+    /// Server-confirmed channel flag state (`RPL_CHANNELMODEIS` / 324, kept
+    /// current by incremental `MODE`).
+    ///
+    /// `modes` is the canonical letter set without `+`/`-` or arguments
+    /// (`"imnt"`, `""` when no flag is set). Only what the server
+    /// confirmed: the properties dialog reads this instead of guessing.
+    ChannelModes { channel: String, modes: String },
+    /// One membership-status change from a channel `MODE` (`+o alice`).
+    ///
+    /// The bridge applies this to the live nick list; the engine already
+    /// folded it into any pending NAMES snapshot. `prefix` is the status
+    /// prefix from the negotiated `PREFIX=` mapping (`@`, `+`, …), never
+    /// the mode letter, so the bridge needs no ISUPPORT knowledge.
+    MemberMode {
+        channel: String,
+        nick: String,
+        add: bool,
+        prefix: char,
+    },
     /// Someone changed nick (including self).
     NickRename {
         old: String,
@@ -430,6 +449,21 @@ struct Session {
     batches: HashMap<String, BatchBuffer>,
     /// Accumulated RPL_NAMREPLY (353) nicks, flushed on RPL_ENDOFNAMES (366).
     names_acc: HashMap<String, Vec<String>>,
+    /// Server-advertised channel-status mapping as (mode, prefix) pairs,
+    /// from RPL_ISUPPORT (005) `PREFIX=(modes)prefixes`. Defaults to the
+    /// Ergo/Libera-style set; used to interpret MODE changes against a
+    /// pending NAMES snapshot (see `split_mode_changes`).
+    prefix_modes: Vec<(char, char)>,
+    /// Server-advertised parameter policy for channel modes, from
+    /// RPL_ISUPPORT (005) `CHANMODES=a,b,c,d`. Defaults to the
+    /// Ergo/Libera-style set; used with `prefix_modes` to split MODE
+    /// changes against a pending NAMES snapshot.
+    chanmode_args: ChanModeArgs,
+    /// Server-confirmed channel flag sets (`i`/`m`/`n`/`t`, also list/key
+    /// letters), keyed by ASCII-lowercased channel. Established by
+    /// `RPL_CHANNELMODEIS` (324) and kept current by incremental channel
+    /// `MODE`; read out as [`IrcEvent::ChannelModes`].
+    channel_modes: HashMap<String, BTreeSet<char>>,
     ping_counter: u64,
     outstanding_ping: Option<String>,
     missed_pongs: u32,
@@ -556,6 +590,13 @@ impl Session {
                 // extended-join: JOIN <channel> <account> :<realname>
                 let account = message.params.get(1).filter(|a| a.as_str() != "*").cloned();
                 let is_self = nick.eq_ignore_ascii_case(&self.config.nickname);
+                if !is_self && !channel.is_empty() {
+                    // A membership change that lands while a NAMES snapshot
+                    // for this channel is still accumulating must fold into
+                    // the snapshot, or the 366 flush overwrites it and the
+                    // user list goes stale.
+                    names_acc_add(&mut self.names_acc, &channel, &nick, &self.prefix_modes);
+                }
                 self.emit(IrcEvent::Join {
                     channel,
                     nick,
@@ -567,6 +608,19 @@ impl Session {
             "PART" => {
                 let channel = message.params.first().cloned().unwrap_or_default();
                 let nick = source_name(&message);
+                if !channel.is_empty() {
+                    if nick.eq_ignore_ascii_case(&self.config.nickname) {
+                        self.names_acc.remove(&channel.to_ascii_lowercase());
+                        self.channel_modes.remove(&channel.to_ascii_lowercase());
+                    } else {
+                        names_acc_remove(
+                            &mut self.names_acc,
+                            &channel,
+                            &nick,
+                            &self.prefix_modes,
+                        );
+                    }
+                }
                 self.emit(IrcEvent::Part { channel, nick }).await;
             }
             "TOPIC" => {
@@ -577,6 +631,9 @@ impl Session {
             "QUIT" => {
                 let nick = source_name(&message);
                 let reason = message.params.first().cloned().unwrap_or_default();
+                if !nick.is_empty() {
+                    names_acc_remove_nick(&mut self.names_acc, &nick, &self.prefix_modes);
+                }
                 self.emit(IrcEvent::Quit { nick, reason }).await;
             }
             "KICK" => {
@@ -589,6 +646,12 @@ impl Session {
                 let reason = message.params.get(2).cloned().unwrap_or_default();
                 let kicker = source_name(&message);
                 let is_self = nick.eq_ignore_ascii_case(&self.config.nickname);
+                if is_self {
+                    self.names_acc.remove(&channel.to_ascii_lowercase());
+                    self.channel_modes.remove(&channel.to_ascii_lowercase());
+                } else {
+                    names_acc_remove(&mut self.names_acc, &channel, &nick, &self.prefix_modes);
+                }
                 self.emit(IrcEvent::Kick {
                     channel,
                     nick,
@@ -604,6 +667,58 @@ impl Session {
                     return Ok(());
                 }
                 let modes = message.params.get(1..).unwrap_or_default().join(" ");
+                if is_channel(&target) {
+                    // Fold status changes (+o/-o/+v/…) into a pending NAMES
+                    // snapshot the same way JOIN/PART do, so the 366 flush
+                    // carries the fresh prefixes — and report each one as a
+                    // MemberMode so the bridge can move the live nick list
+                    // too. Plain flags (i/m/n/t/…) update the tracked
+                    // server-confirmed set behind ChannelModes.
+                    let parts: Vec<String> =
+                        modes.split_whitespace().map(str::to_string).collect();
+                    if let Some((change, args)) = parts.split_first() {
+                        let changes = split_mode_changes(
+                            &self.prefix_modes,
+                            &self.chanmode_args,
+                            change,
+                            args,
+                        );
+                        let mut flags_changed = false;
+                        for (add, mode, arg) in changes {
+                            if let Some(prefix) = mode_prefix(&self.prefix_modes, mode) {
+                                if let Some(nick) = arg {
+                                    names_acc_apply_mode(
+                                        &mut self.names_acc,
+                                        &target,
+                                        add,
+                                        mode,
+                                        &nick,
+                                        &self.prefix_modes,
+                                    );
+                                    self.emit(IrcEvent::MemberMode {
+                                        channel: target.clone(),
+                                        nick,
+                                        add,
+                                        prefix,
+                                    })
+                                    .await;
+                                }
+                                continue;
+                            }
+                            if apply_flag_change(&mut self.channel_modes, &target, add, mode) {
+                                flags_changed = true;
+                            }
+                        }
+                        if flags_changed {
+                            let modes = canonical_modes(&self.channel_modes, &target);
+                            self.emit(IrcEvent::ChannelModes {
+                                channel: target.clone(),
+                                modes,
+                            })
+                            .await;
+                        }
+                    }
+                }
                 self.emit(IrcEvent::Mode { target, modes }).await;
             }
             "NICK" => {
@@ -611,6 +726,11 @@ impl Session {
                 let new_nick = message.params.first().cloned().unwrap_or_default();
                 if new_nick.is_empty() {
                     return Ok(());
+                }
+                // A rename is not a quit — even inside a pending NAMES
+                // snapshot: keep the member, preserving their prefixes.
+                if !old.is_empty() {
+                    names_acc_rename(&mut self.names_acc, &old, &new_nick, &self.prefix_modes);
                 }
                 let ours = self.config.nickname.clone();
                 if old.eq_ignore_ascii_case(&ours) {
@@ -676,7 +796,23 @@ impl Session {
                 info!("registered with {server_name}");
                 self.emit(IrcEvent::Registered { server_name }).await;
             }
-            2..=5 => {
+            2..=4 => {
+                self.emit(IrcEvent::Info {
+                    text: numeric_summary(message),
+                })
+                .await;
+            }
+            5 => {
+                // RPL_ISUPPORT: learn the server's PREFIX mapping (mode
+                // letters to status prefixes) and CHANMODES parameter policy
+                // before any NAMES/MODE that needs them. The line still
+                // reaches the console as before.
+                if let Some(mapping) = parse_isupport_prefix(&message.params) {
+                    self.prefix_modes = mapping;
+                }
+                if let Some(chanmodes) = parse_isupport_chanmodes(&message.params) {
+                    self.chanmode_args = chanmodes;
+                }
                 self.emit(IrcEvent::Info {
                     text: numeric_summary(message),
                 })
@@ -774,9 +910,37 @@ impl Session {
                 // LIST / LISTSTART / LISTEND.
                 self.command_reply(message).await;
             }
-            324 | 329 | 346..=349 | 367 | 368 => {
-                // Channel mode reply, creation time, invite/except/ban
-                // listings — the output of /mode.
+            324 => {
+                // RPL_CHANNELMODEIS: <client> <channel> <modeline> [args…].
+                // Server-confirmed flag state: replace the tracked set and
+                // tell the UI (the properties dialog reads ChannelModes),
+                // then keep the command-reply line the /mode output always
+                // produced.
+                let channel = channel_from_numeric(message);
+                if !channel.is_empty() {
+                    if let Some(modeline) = message.params.get(2) {
+                        let set: BTreeSet<char> = modeline
+                            .chars()
+                            .filter(|c| *c != '+' && *c != '-')
+                            .collect();
+                        if set.is_empty() {
+                            self.channel_modes.remove(&channel.to_ascii_lowercase());
+                        } else {
+                            self.channel_modes.insert(channel.to_ascii_lowercase(), set);
+                        }
+                        let modes = canonical_modes(&self.channel_modes, &channel);
+                        self.emit(IrcEvent::ChannelModes {
+                            channel: channel.clone(),
+                            modes,
+                        })
+                        .await;
+                    }
+                }
+                self.command_reply(message).await;
+            }
+            329 | 346..=349 | 367 | 368 => {
+                // Channel creation time, invite/except/ban listings — the
+                // output of /mode.
                 self.command_reply(message).await;
             }
             341 => {
@@ -1493,6 +1657,312 @@ fn parse_invite(params: &[String], ours: &str) -> Option<(String, String, bool)>
     Some((invitee, channel, is_for_us))
 }
 
+/// Default channel-status mapping as (mode, prefix) pairs: `q` → `~`
+/// (owner), `a` → `&` (admin), `o` → `@` (operator), `h` → `%` (halfop),
+/// `v` → `+` (voice). This is what Ergo and Libera advertise; a server with
+/// a different `PREFIX=` in RPL_ISUPPORT (005) overrides it per connection
+/// (see [`parse_isupport_prefix`]).
+pub fn default_prefix_modes() -> Vec<(char, char)> {
+    vec![('q', '~'), ('a', '&'), ('o', '@'), ('h', '%'), ('v', '+')]
+}
+
+/// Parse the `PREFIX=(modes)prefixes` token out of RPL_ISUPPORT (005)
+/// params into (mode, prefix) pairs. `None` when the token is absent or
+/// malformed (the caller keeps its current mapping).
+///
+/// Accepts the token with or without a leading `:` (some daemons attach the
+/// trailing-parameter colon to the last ISUPPORT token).
+pub fn parse_isupport_prefix(params: &[String]) -> Option<Vec<(char, char)>> {
+    let token = params
+        .iter()
+        .find(|p| p.trim_start_matches(':').starts_with("PREFIX="))?;
+    let token = token.trim_start_matches(':');
+    let inner = token.strip_prefix("PREFIX=(")?;
+    let (modes, prefixes) = inner.split_once(')')?;
+    if modes.is_empty() || modes.len() != prefixes.len() {
+        return None;
+    }
+    let mapping: Vec<(char, char)> = modes.chars().zip(prefixes.chars()).collect();
+    if mapping.is_empty() {
+        return None;
+    }
+    Some(mapping)
+}
+
+/// Which channel modes take a parameter, from RPL_ISUPPORT (005)
+/// `CHANMODES=a,b,c,d`: list modes (a, e.g. `b`) and "always take one" modes
+/// (b, e.g. `k`) take a parameter in both directions; "set-only" modes (c,
+/// e.g. `l`) take one only while being set (`+`); plain toggles (d, e.g.
+/// `i m n t`) never do. Status modes (the PREFIX set) always take a nick and
+/// are handled separately.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChanModeArgs {
+    /// Modes that always take a parameter (`CHANMODES` groups a+b).
+    pub always: Vec<char>,
+    /// Modes that take one only while being set (`CHANMODES` group c).
+    pub on_set: Vec<char>,
+}
+
+/// The Ergo/Libera-style default: `b e I` (ban/except/invite lists) always
+/// take a mask, `k l` (key/limit) take one only while being set.
+pub fn default_chanmode_args() -> ChanModeArgs {
+    ChanModeArgs {
+        always: vec!['b', 'e', 'I'],
+        on_set: vec!['k', 'l'],
+    }
+}
+
+/// Parse the `CHANMODES=a,b,c,d` token out of RPL_ISUPPORT (005) params.
+/// `None` when the token is absent or malformed (the caller keeps its
+/// current mapping).
+pub fn parse_isupport_chanmodes(params: &[String]) -> Option<ChanModeArgs> {
+    let token = params
+        .iter()
+        .find(|p| p.trim_start_matches(':').starts_with("CHANMODES="))?;
+    let token = token.trim_start_matches(':');
+    let inner = token.strip_prefix("CHANMODES=")?;
+    let mut groups = inner.split(',');
+    let a = groups.next().unwrap_or("");
+    let b = groups.next().unwrap_or("");
+    let c = groups.next().unwrap_or("");
+    // A fourth group (d, the plain toggles) carries no parameters and needs
+    // no storage; a fifth group is malformed.
+    let _d = groups.next();
+    if groups.next().is_some() {
+        return None;
+    }
+    let mut always: Vec<char> = a.chars().chain(b.chars()).collect();
+    always.sort_unstable();
+    always.dedup();
+    let mut on_set: Vec<char> = c.chars().collect();
+    on_set.sort_unstable();
+    on_set.dedup();
+    if always.is_empty() && on_set.is_empty() {
+        return None;
+    }
+    Some(ChanModeArgs { always, on_set })
+}
+
+/// The prefix char a status mode maps to, if any.
+pub fn mode_prefix(prefix_modes: &[(char, char)], mode: char) -> Option<char> {
+    prefix_modes
+        .iter()
+        .find(|(m, _)| *m == mode)
+        .map(|(_, p)| *p)
+}
+
+/// Split a channel MODE change (`+ov-v`, `+m`, …) plus its parameter list
+/// into `(add, mode, arg)` triples.
+///
+/// Argument consumption is PREFIX/CHANMODES-aware: status modes (the
+/// server's PREFIX set) always take a nick; `ChanModeArgs.always` modes take
+/// one in both directions; `ChanModeArgs.on_set` modes take one only while
+/// being set (`+`). Anything else (`i`/`m`/`n`/`t`/…) takes none. Keeping
+/// consumption exact matters: skipping a mask would misalign every nick
+/// after it.
+pub fn split_mode_changes(
+    prefix_modes: &[(char, char)],
+    chanmode_args: &ChanModeArgs,
+    change: &str,
+    args: &[String],
+) -> Vec<(bool, char, Option<String>)> {
+    let mut out = Vec::new();
+    let mut adding = true;
+    let mut arg_index = 0usize;
+    for mode in change.chars() {
+        match mode {
+            '+' => {
+                adding = true;
+            }
+            '-' => {
+                adding = false;
+            }
+            _ => {
+                let takes_arg = if prefix_modes.iter().any(|(m, _)| *m == mode)
+                    || chanmode_args.always.contains(&mode)
+                {
+                    true
+                } else if chanmode_args.on_set.contains(&mode) {
+                    adding
+                } else {
+                    false
+                };
+                let arg = if takes_arg {
+                    let arg = args.get(arg_index).cloned();
+                    arg_index += 1;
+                    arg
+                } else {
+                    None
+                };
+                out.push((adding, mode, arg));
+            }
+        }
+    }
+    out
+}
+
+/// Split a nick-list entry into its status prefixes and its bare nick, using
+/// the server's prefix set. `@+bob` → (`@+`, `bob`); `bob` → (``, `bob`).
+fn split_entry_prefixes<'a>(entry: &'a str, prefix_modes: &[(char, char)]) -> (&'a str, &'a str) {
+    let prefixes: Vec<char> = prefix_modes.iter().map(|(_, p)| *p).collect();
+    let cut = entry
+        .char_indices()
+        .find(|(_, c)| !prefixes.contains(c))
+        .map(|(i, _)| i)
+        .unwrap_or(entry.len());
+    entry.split_at(cut)
+}
+
+/// True when `entry` names `nick` (prefixes ignored, ASCII
+/// case-insensitive).
+fn entry_matches(entry: &str, nick: &str, prefix_modes: &[(char, char)]) -> bool {
+    let (_, bare) = split_entry_prefixes(entry, prefix_modes);
+    bare.eq_ignore_ascii_case(nick)
+}
+
+/// Order index of a status prefix for display, strongest first, using the
+/// server's own PREFIX order (its first mode is the strongest). A prefix the
+/// server never advertised sorts last.
+fn prefix_order(prefix_modes: &[(char, char)], prefix: char) -> usize {
+    prefix_modes
+        .iter()
+        .position(|(_, p)| *p == prefix)
+        .unwrap_or(usize::MAX)
+}
+
+/// Recombine prefix chars (strongest first) with a bare nick.
+fn join_prefixes(prefix_modes: &[(char, char)], prefixes: &[char], bare: &str) -> String {
+    let mut sorted = prefixes.to_vec();
+    sorted.sort_by_key(|p| prefix_order(prefix_modes, *p));
+    sorted.dedup();
+    format!("{}{}", sorted.iter().collect::<String>(), bare)
+}
+
+/// Fold a JOIN into a pending NAMES snapshot (deduped by bare nick).
+fn names_acc_add(
+    acc: &mut HashMap<String, Vec<String>>,
+    channel: &str,
+    nick: &str,
+    prefix_modes: &[(char, char)],
+) {
+    let entry = acc.entry(channel.to_ascii_lowercase()).or_default();
+    if !entry
+        .iter()
+        .any(|n| split_entry_prefixes(n, prefix_modes).1.eq_ignore_ascii_case(nick))
+    {
+        entry.push(nick.to_string());
+    }
+}
+
+/// Fold a PART/KICK out of a pending NAMES snapshot. No entry (or no
+/// member) is a silent no-op.
+fn names_acc_remove(
+    acc: &mut HashMap<String, Vec<String>>,
+    channel: &str,
+    nick: &str,
+    prefix_modes: &[(char, char)],
+) {
+    if let Some(list) = acc.get_mut(&channel.to_ascii_lowercase()) {
+        list.retain(|n| !entry_matches(n, nick, prefix_modes));
+    }
+}
+
+/// Fold a QUIT out of every pending NAMES snapshot.
+fn names_acc_remove_nick(
+    acc: &mut HashMap<String, Vec<String>>,
+    nick: &str,
+    prefix_modes: &[(char, char)],
+) {
+    for list in acc.values_mut() {
+        list.retain(|n| !entry_matches(n, nick, prefix_modes));
+    }
+}
+
+/// Fold a NICK rename into every pending NAMES snapshot, preserving the
+/// member's status prefixes.
+fn names_acc_rename(
+    acc: &mut HashMap<String, Vec<String>>,
+    old: &str,
+    new: &str,
+    prefix_modes: &[(char, char)],
+) {
+    for list in acc.values_mut() {
+        for entry in list.iter_mut() {
+            if entry_matches(entry, old, prefix_modes) {
+                let (prefixes, _) = split_entry_prefixes(entry, prefix_modes);
+                *entry = format!("{prefixes}{new}");
+            }
+        }
+    }
+}
+
+/// Fold one status MODE change into a pending NAMES snapshot: `+o alice`
+/// adds `@`, `-v bob` drops `+`. A nick that is not in the snapshot is a
+/// silent no-op (it will arrive via 353/JOIN like any other member).
+fn names_acc_apply_mode(
+    acc: &mut HashMap<String, Vec<String>>,
+    channel: &str,
+    add: bool,
+    mode: char,
+    nick: &str,
+    prefix_modes: &[(char, char)],
+) {
+    let Some(prefix) = mode_prefix(prefix_modes, mode) else {
+        return;
+    };
+    let Some(list) = acc.get_mut(&channel.to_ascii_lowercase()) else {
+        return;
+    };
+    for entry in list.iter_mut() {
+        if entry_matches(entry, nick, prefix_modes) {
+            let (prefixes, bare) = split_entry_prefixes(entry, prefix_modes);
+            let mut kept: Vec<char> = prefixes.chars().collect();
+            if add {
+                if !kept.contains(&prefix) {
+                    kept.push(prefix);
+                }
+            } else {
+                kept.retain(|p| *p != prefix);
+            }
+            *entry = join_prefixes(prefix_modes, &kept, bare);
+        }
+    }
+}
+
+/// Track one non-status channel flag (`i`/`m`/`n`/`t`, also list/key
+/// letters) in the per-channel set. Keys are ASCII-lowercased channels.
+/// Returns true when the set changed (so the caller knows whether a
+/// `ChannelModes` event is due); an emptied set is dropped.
+fn apply_flag_change(
+    modes: &mut HashMap<String, BTreeSet<char>>,
+    channel: &str,
+    add: bool,
+    mode: char,
+) -> bool {
+    let key = channel.to_ascii_lowercase();
+    if add {
+        modes.entry(key).or_default().insert(mode)
+    } else {
+        let removed = modes
+            .get_mut(&key)
+            .map(|set| set.remove(&mode))
+            .unwrap_or(false);
+        if modes.get(&key).is_some_and(|set| set.is_empty()) {
+            modes.remove(&key);
+        }
+        removed
+    }
+}
+
+/// Canonical flag letters for `channel` (`"imnt"`, `""` when unset or
+/// unknown) — what `ChannelModes` carries to the UI.
+fn canonical_modes(modes: &HashMap<String, BTreeSet<char>>, channel: &str) -> String {
+    modes
+        .get(&channel.to_ascii_lowercase())
+        .map(|set| set.iter().collect())
+        .unwrap_or_default()
+}
+
 /// Events for an incoming NICK rename. A rename is never a Quit — not even
 /// for other users — and our own rename additionally reports NickChanged.
 fn nick_rename_events(old: &str, new: &str, ours: &str) -> Vec<IrcEvent> {
@@ -1983,6 +2453,9 @@ pub async fn run_session(
         registered: false,
         batches: HashMap::new(),
         names_acc: HashMap::new(),
+        prefix_modes: default_prefix_modes(),
+        chanmode_args: default_chanmode_args(),
+        channel_modes: HashMap::new(),
         ping_counter: 0,
         outstanding_ping: None,
         missed_pongs: 0,
@@ -2425,6 +2898,163 @@ mod tests {
         assert_eq!(numeric_summary(&spaced), "372  - indented");
     }
 
+    fn isupport_params(tokens: &[&str]) -> Vec<String> {
+        tokens.iter().map(|t| t.to_string()).collect()
+    }
+
+    #[test]
+    fn isupport_prefix_parses_ergo_style_token() {
+        let params = isupport_params(&[
+            "kircuser",
+            "PREFIX=(qaohv)~&@%+",
+            "CHANTYPES=#",
+            ":are supported by this server",
+        ]);
+        assert_eq!(
+            parse_isupport_prefix(&params),
+            Some(vec![
+                ('q', '~'),
+                ('a', '&'),
+                ('o', '@'),
+                ('h', '%'),
+                ('v', '+')
+            ])
+        );
+        // Some daemons attach the trailing colon to the last token.
+        let params = isupport_params(&["kircuser", ":PREFIX=(ov)@+"]);
+        assert_eq!(
+            parse_isupport_prefix(&params),
+            Some(vec![('o', '@'), ('v', '+')])
+        );
+        // No PREFIX token: keep the current mapping.
+        assert_eq!(
+            parse_isupport_prefix(&isupport_params(&["kircuser", "NICKLEN=32"])),
+            None
+        );
+        // Modes/prefixes length mismatch is malformed.
+        assert_eq!(
+            parse_isupport_prefix(&isupport_params(&["kircuser", "PREFIX=(ov)@"])),
+            None
+        );
+    }
+
+    #[test]
+    fn isupport_chanmodes_parses_standard_token() {
+        // Classic four-group shape (a=list, b=always-param, c=set-param,
+        // d=plain toggles): b/k always take one, l only while setting.
+        let params = isupport_params(&["kircuser", "CHANMODES=b,k,l,imnt"]);
+        assert_eq!(
+            parse_isupport_chanmodes(&params),
+            Some(ChanModeArgs {
+                always: vec!['b', 'k'],
+                on_set: vec!['l'],
+            })
+        );
+        assert_eq!(
+            parse_isupport_chanmodes(&isupport_params(&["kircuser", "NICKLEN=32"])),
+            None
+        );
+        // Five groups is malformed.
+        assert_eq!(
+            parse_isupport_chanmodes(&isupport_params(&["kircuser", "CHANMODES=a,b,c,d,e"])),
+            None
+        );
+    }
+
+    #[test]
+    fn mode_prefix_maps_status_letters() {
+        let defaults = default_prefix_modes();
+        assert_eq!(mode_prefix(&defaults, 'o'), Some('@'));
+        assert_eq!(mode_prefix(&defaults, 'v'), Some('+'));
+        assert_eq!(mode_prefix(&defaults, 'q'), Some('~'));
+        assert_eq!(mode_prefix(&defaults, 'm'), None);
+        let minimal = vec![('o', '@'), ('v', '+')];
+        assert_eq!(mode_prefix(&minimal, 'o'), Some('@'));
+        assert_eq!(mode_prefix(&minimal, 'q'), None);
+    }
+
+    fn mode_args(values: &[&str]) -> Vec<String> {
+        values.iter().map(|v| v.to_string()).collect()
+    }
+
+    #[test]
+    fn split_mode_changes_consumes_args_chanmodes_aware() {
+        let prefixes = default_prefix_modes();
+        let chanmodes = default_chanmode_args();
+        // Status modes each take a nick.
+        assert_eq!(
+            split_mode_changes(&prefixes, &chanmodes, "+ov", &mode_args(&["a", "b"])),
+            vec![
+                (true, 'o', Some("a".to_string())),
+                (true, 'v', Some("b".to_string())),
+            ]
+        );
+        // Mixed add/remove keeps each nick aligned.
+        assert_eq!(
+            split_mode_changes(&prefixes, &chanmodes, "+o-v", &mode_args(&["a", "b"])),
+            vec![
+                (true, 'o', Some("a".to_string())),
+                (false, 'v', Some("b".to_string())),
+            ]
+        );
+        // A ban mask must not eat the nick that follows it.
+        assert_eq!(
+            split_mode_changes(
+                &prefixes,
+                &chanmodes,
+                "+b+o",
+                &mode_args(&["*!*@evil", "alice"])
+            ),
+            vec![
+                (true, 'b', Some("*!*@evil".to_string())),
+                (true, 'o', Some("alice".to_string())),
+            ]
+        );
+        // Plain toggles take nothing; key/limit only while setting.
+        assert_eq!(
+            split_mode_changes(&prefixes, &chanmodes, "+m", &[]),
+            vec![(true, 'm', None)]
+        );
+        assert_eq!(
+            split_mode_changes(&prefixes, &chanmodes, "+k", &mode_args(&["secret"])),
+            vec![(true, 'k', Some("secret".to_string()))]
+        );
+        assert_eq!(
+            split_mode_changes(&prefixes, &chanmodes, "-k", &mode_args(&["secret"])),
+            vec![(false, 'k', None)]
+        );
+        assert_eq!(
+            split_mode_changes(&prefixes, &chanmodes, "-l", &[]),
+            vec![(false, 'l', None)]
+        );
+        // A mode the server never advertised as a status or list mode takes
+        // no argument.
+        let minimal = vec![('o', '@'), ('v', '+')];
+        assert_eq!(
+            split_mode_changes(&minimal, &chanmodes, "+q", &mode_args(&["alice"])),
+            vec![(true, 'q', None)]
+        );
+    }
+
+    #[test]
+    fn flag_changes_track_case_folded_sets() {
+        let mut modes: HashMap<String, BTreeSet<char>> = HashMap::new();
+        assert!(apply_flag_change(&mut modes, "#chan", true, 'm'));
+        assert!(apply_flag_change(&mut modes, "#CHAN", true, 't'));
+        // Re-adding a set flag is a no-op (no ChannelModes due).
+        assert!(!apply_flag_change(&mut modes, "#chan", true, 'm'));
+        assert_eq!(canonical_modes(&modes, "#chan"), "mt");
+        // Removing what was never set is a no-op too.
+        assert!(!apply_flag_change(&mut modes, "#chan", false, 'i'));
+        assert!(apply_flag_change(&mut modes, "#chan", false, 'm'));
+        assert_eq!(canonical_modes(&modes, "#chan"), "t");
+        // The last flag out drops the channel entry.
+        assert!(apply_flag_change(&mut modes, "#chan", false, 't'));
+        assert_eq!(canonical_modes(&modes, "#chan"), "");
+        assert!(!modes.contains_key("#chan"));
+        assert_eq!(canonical_modes(&modes, "#never"), "");
+    }
+
     #[test]
     fn transport_is_object_safe_enough_to_split() {
         fn assert_async<T: AsyncRead + AsyncWrite + Unpin>() {}
@@ -2585,6 +3215,9 @@ mod tests {
             registered: false,
             batches: HashMap::new(),
             names_acc: HashMap::new(),
+            prefix_modes: default_prefix_modes(),
+            chanmode_args: default_chanmode_args(),
+            channel_modes: HashMap::new(),
             ping_counter: 0,
             outstanding_ping: None,
             missed_pongs: 0,

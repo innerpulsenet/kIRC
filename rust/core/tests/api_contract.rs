@@ -199,6 +199,16 @@ fn irc_event_variants() {
             target: "#c".into(),
             modes: "+o n".into(),
         },
+        IrcEvent::ChannelModes {
+            channel: "#c".into(),
+            modes: "mnt".into(),
+        },
+        IrcEvent::MemberMode {
+            channel: "#c".into(),
+            nick: "n".into(),
+            add: true,
+            prefix: '@',
+        },
         IrcEvent::HistoryBatch {
             target: "#c".into(),
             messages: vec![HistoryMsg {
@@ -215,7 +225,7 @@ fn irc_event_variants() {
             text: "311 n u h * :Real Name".into(),
         },
     ];
-    assert_eq!(events.len(), 21);
+    assert_eq!(events.len(), 23);
 }
 
 #[test]

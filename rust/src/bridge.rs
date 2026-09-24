@@ -138,6 +138,13 @@ fn topic_store() -> &'static Mutex<BTreeMap<String, String>> {
     TOPICS.get_or_init(|| Mutex::new(BTreeMap::new()))
 }
 
+/// Server-confirmed channel flag letters (`"imnt"`, `""` when unset),
+/// keyed like every other per-channel map.
+pub static MODES: OnceLock<Mutex<BTreeMap<String, String>>> = OnceLock::new();
+fn mode_store() -> &'static Mutex<BTreeMap<String, String>> {
+    MODES.get_or_init(|| Mutex::new(BTreeMap::new()))
+}
+
 fn bare_nick(nick: &str) -> &str {
     nick.trim_start_matches(|c: char| matches!(c, '@' | '+' | '%' | '~' | '&'))
 }
@@ -165,8 +172,9 @@ fn visible_target() -> &'static Mutex<String> {
     VISIBLE_TARGET.get_or_init(|| Mutex::new(String::new()))
 }
 
-/// Drop every buffered transcript, nick list and topic, and forget which
-/// buffer is visible, so the next server never inherits the old one's state.
+/// Drop every buffered transcript, nick list, topic and channel-flag set,
+/// and forget which buffer is visible, so the next server never inherits
+/// the old one's state.
 fn clear_all_stores() {
     store().lock().unwrap_or_else(|e| e.into_inner()).clear();
     nick_store()
@@ -174,6 +182,10 @@ fn clear_all_stores() {
         .unwrap_or_else(|e| e.into_inner())
         .clear();
     topic_store()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clear();
+    mode_store()
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .clear();
@@ -544,6 +556,11 @@ pub mod qobject {
         #[qsignal]
         fn names_updated(self: Pin<&mut Self>, channel: QString, nicks: QString);
 
+        /// Server-confirmed flag state for `channel` changed. `modes` is
+        /// the canonical letter set (`"imnt"`, `""` when no flag is set).
+        #[qsignal]
+        fn channel_modes_changed(self: Pin<&mut Self>, channel: QString, modes: QString);
+
         /// A query buffer should exist for `nick`.
         #[qsignal]
         fn query_opened(self: Pin<&mut Self>, nick: QString);
@@ -632,6 +649,10 @@ pub mod qobject {
         /// Current topic for `channel`.
         #[qinvokable]
         fn topic_for(self: &Self, channel: QString) -> QString;
+
+        /// Server-confirmed flag letters for `channel` (`""` when unknown).
+        #[qinvokable]
+        fn modes_for(self: &Self, channel: QString) -> QString;
 
         /// Ask the server for scrollback for `target`.
         #[qinvokable]
@@ -1000,6 +1021,14 @@ fn drop_nick_store(channel: &str) {
     guard.remove(&key);
 }
 
+/// Forget the server-confirmed flags for `channel` (we left it; a rejoin
+/// brings a fresh 324).
+fn drop_mode_store(channel: &str) {
+    let mut guard = mode_store().lock().unwrap_or_else(|e| e.into_inner());
+    let key = canon_map_key(&guard, channel);
+    guard.remove(&key);
+}
+
 fn emit_names(obj: Pin<&mut qobject::IrcBridge>, channel: &str) {
     let (key, joined) = {
         let guard = nick_store().lock().unwrap_or_else(|e| e.into_inner());
@@ -1011,6 +1040,69 @@ fn emit_names(obj: Pin<&mut qobject::IrcBridge>, channel: &str) {
         (key, joined)
     };
     obj.names_updated(qs(&key), qs(&joined));
+}
+
+/// Split a nick-list entry into its status-prefix run and its bare nick
+/// (`@+bob` → (`@+`, `bob`)).
+fn split_prefix_run(entry: &str) -> (&str, &str) {
+    let cut = entry
+        .char_indices()
+        .find(|(_, c)| !matches!(c, '@' | '+' | '%' | '~' | '&'))
+        .map(|(i, _)| i)
+        .unwrap_or(entry.len());
+    entry.split_at(cut)
+}
+
+/// Conventional prefix strength, strongest first. A prefix the server
+/// never uses in practice sorts last; ranking (not display order) is what
+/// the people panel keys on.
+fn prefix_strength(prefix: char) -> usize {
+    const ORDER: [char; 5] = ['~', '&', '@', '%', '+'];
+    ORDER
+        .iter()
+        .position(|o| *o == prefix)
+        .unwrap_or(usize::MAX)
+}
+
+/// Apply one membership-status change to a live nick list. An unknown
+/// member is a silent no-op (NAMES/JOIN owns the roster, not MODE).
+/// Returns true when the list changed.
+fn apply_prefix_to_list(list: &mut Vec<String>, nick: &str, add: bool, prefix: char) -> bool {
+    let Some(entry) = list
+        .iter_mut()
+        .find(|e| bare_nick(e).eq_ignore_ascii_case(nick))
+    else {
+        return false;
+    };
+    let (prefixes, bare) = split_prefix_run(entry);
+    if add {
+        if prefixes.contains(prefix) {
+            return false;
+        }
+        let mut kept: Vec<char> = prefixes.chars().collect();
+        kept.push(prefix);
+        kept.sort_by_key(|c| prefix_strength(*c));
+        *entry = format!("{}{}", kept.iter().collect::<String>(), bare);
+        true
+    } else {
+        if !prefixes.contains(prefix) {
+            return false;
+        }
+        let kept: String = prefixes.chars().filter(|c| *c != prefix).collect();
+        *entry = format!("{kept}{bare}");
+        true
+    }
+}
+
+/// Apply one membership-status change to the stored nick list for
+/// `channel`. Returns true when the list changed.
+fn apply_member_prefix(channel: &str, nick: &str, add: bool, prefix: char) -> bool {
+    let mut guard = nick_store().lock().unwrap_or_else(|e| e.into_inner());
+    let key = canon_map_key(&guard, channel);
+    match guard.get_mut(&key) {
+        Some(list) => apply_prefix_to_list(list, nick, add, prefix),
+        None => false,
+    }
 }
 
 /// Apply one `IrcEvent` to `IrcBridge`.  Always called on the Qt thread.
@@ -1218,6 +1310,7 @@ fn handle_event(mut obj: Pin<&mut qobject::IrcBridge>, event: IrcEvent) {
             push_channel_line(obj.as_mut(), &channel, &line);
             if is_self {
                 drop_nick_store(&channel);
+                drop_mode_store(&channel);
                 obj.as_mut().channel_parted(qs(&channel));
             } else {
                 remove_nick(&channel, &nick);
@@ -1240,6 +1333,7 @@ fn handle_event(mut obj: Pin<&mut qobject::IrcBridge>, event: IrcEvent) {
             push_channel_line(obj.as_mut(), &channel, &line);
             if is_self {
                 drop_nick_store(&channel);
+                drop_mode_store(&channel);
                 obj.as_mut().channel_parted(qs(&channel));
             } else {
                 remove_nick(&channel, &nick);
@@ -1253,6 +1347,26 @@ fn handle_event(mut obj: Pin<&mut qobject::IrcBridge>, event: IrcEvent) {
                 push_channel_line(obj.as_mut(), &target, &line);
             } else {
                 info_to_store(obj.as_mut(), &line);
+            }
+        }
+
+        IrcEvent::ChannelModes { channel, modes } => {
+            {
+                let mut guard = mode_store().lock().unwrap_or_else(|e| e.into_inner());
+                let key = canon_map_key(&guard, &channel);
+                guard.insert(key, modes.clone());
+            }
+            obj.as_mut().channel_modes_changed(qs(&channel), qs(&modes));
+        }
+
+        IrcEvent::MemberMode {
+            channel,
+            nick,
+            add,
+            prefix,
+        } => {
+            if apply_member_prefix(&channel, &nick, add, prefix) {
+                emit_names(obj.as_mut(), &channel);
             }
         }
 
@@ -1707,6 +1821,16 @@ impl qobject::IrcBridge {
         qs(&topic)
     }
 
+    pub fn modes_for(self: &Self, channel: QString) -> QString {
+        let channel_s = rs(&channel);
+        let modes = {
+            let guard = mode_store().lock().unwrap_or_else(|e| e.into_inner());
+            let key = canon_map_key(&guard, &channel_s);
+            guard.get(&key).cloned().unwrap_or_default()
+        };
+        qs(&modes)
+    }
+
     /// Ask the server for scrollback.
     pub fn request_history(mut self: Pin<&mut Self>, target: QString, limit: i32) {
         let target_s = rs(&target);
@@ -2107,6 +2231,30 @@ mod tests {
         assert!(!nick_is_event("bob"));
         assert!(!nick_is_event("*bob"));
         assert!(!nick_is_event(""));
+    }
+
+    #[test]
+    fn member_prefix_changes_move_the_live_list() {
+        let mut list = vec!["@me".to_string(), "+bob".to_string(), "carol".to_string()];
+        // Granting a stronger status inserts it before the weaker one.
+        assert!(apply_prefix_to_list(&mut list, "bob", true, '@'));
+        assert_eq!(list[1], "@+bob");
+        // Re-granting is a no-op.
+        assert!(!apply_prefix_to_list(&mut list, "bob", true, '@'));
+        // Revoking drops just that prefix.
+        assert!(apply_prefix_to_list(&mut list, "bob", false, '+'));
+        assert_eq!(list[1], "@bob");
+        assert!(apply_prefix_to_list(&mut list, "bob", false, '@'));
+        assert_eq!(list[1], "bob");
+        // Revoking what is not there is a no-op.
+        assert!(!apply_prefix_to_list(&mut list, "bob", false, '@'));
+        // Matching ignores case and prefixes.
+        assert!(apply_prefix_to_list(&mut list, "ME", false, '@'));
+        assert_eq!(list[0], "me");
+        // Unknown members are never added by MODE.
+        assert!(!apply_prefix_to_list(&mut list, "mallory", true, '@'));
+        assert!(!apply_prefix_to_list(&mut list, "mallory", false, '@'));
+        assert_eq!(list.len(), 3);
     }
 
     fn row_text(nick: &str, text: &str) -> StoreMsg {

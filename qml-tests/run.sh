@@ -9,7 +9,7 @@
 # Env:    QML_BIN (default /usr/lib64/qt6/bin/qml)
 #         QPA     (default offscreen; use "xcb" to watch the UI run)
 #         KIRC_QML_TEST_STAGE (default all) — run a single stage:
-#           tokens | smoke | cmds | scroll | glass | config
+#           tokens | smoke | cmds | people | scroll | glass | config
 #         CI uses this to report the failing stage in its step list.
 #
 # Exit code: 0 = every check passed.
@@ -36,7 +36,7 @@ cp "$here"/IrcBridge.qml "$here"/MessageListModel.qml "$tmp/org/kde/kirc/"
 printf 'module org.kde.kirc\nsingleton ThemeEngine 1.0 ThemeEngine.qml\nIrcBridge 1.0 IrcBridge.qml\nMessageListModel 1.0 MessageListModel.qml\nChatPage 1.0 ChatPage.qml\nConnectPage 1.0 ConnectPage.qml\nMessageDelegate 1.0 MessageDelegate.qml\nGlassSurface 1.0 GlassSurface.qml\nScanlineOverlay 1.0 ScanlineOverlay.qml\n' \
     > "$tmp/org/kde/kirc/qmldir"
 
-cp "$here"/tst_smoke.qml "$here"/tst_cmds.qml "$here"/tst_scroll.qml "$here"/tst_glass.qml "$tmp/"
+cp "$here"/tst_smoke.qml "$here"/tst_cmds.qml "$here"/tst_scroll.qml "$here"/tst_glass.qml "$here"/tst_people.qml "$tmp/"
 
 # QT_FORCE_STDERR_LOGGING: without it Qt logs to the journal, not the terminal.
 run_qml() {
@@ -74,6 +74,7 @@ case "$stage" in
   tokens) python3 "$here/check-theme-tokens.py" || exit 1 ;;
   smoke)  run_qml "$tmp/tst_smoke.qml" || exit 1 ;;
   cmds)   run_qml "$tmp/tst_cmds.qml" || exit 1 ;;
+  people) run_qml "$tmp/tst_people.qml" || exit 1 ;;
   scroll) run_qml "$tmp/tst_scroll.qml" || exit 1 ;;
   glass)  run_qml "$tmp/tst_glass.qml" || exit 1 ;;
   config) "$here/glass-config-test.sh" || exit 1 ;;
@@ -81,6 +82,7 @@ case "$stage" in
     python3 "$here/check-theme-tokens.py" || status=1
     run_qml "$tmp/tst_smoke.qml" || status=1
     run_qml "$tmp/tst_cmds.qml" || status=1
+    run_qml "$tmp/tst_people.qml" || status=1
     run_qml "$tmp/tst_scroll.qml" || status=1
     run_qml "$tmp/tst_glass.qml" || status=1
     "$here/glass-config-test.sh" || status=1

@@ -20,6 +20,11 @@ QtObject {
     property string nickname: ""
     property string connected_server: ""
     property var unreadByTarget: ({})
+    // Last names/modes per channel (lowercased key), fed by the signals the
+    // real bridge emits — so nicks_for/modes_for answer what the UI last
+    // heard, exactly like the cxx-qt stores.
+    property var nicksByChannel: ({})
+    property var modesByChannel: ({})
 
     // ---- call recording (asserted by tst_cmds.qml) ------------------------
     // Every invokable appends { "fn": name, "args": [...] } here so a test can
@@ -57,7 +62,23 @@ QtObject {
     signal join_failed(string channel, string reason)
     signal topic_changed(string channel, string topic)
     signal names_updated(string channel, string nicks)
+    signal channel_modes_changed(string channel, string modes)
     signal query_opened(string nick)
+
+    // The double remembers what it announced (like the cxx-qt stores do),
+    // so nicks_for/modes_for answer the last emitted value.
+    onNames_updated: {
+        var namesKey = String(channel).toLowerCase()
+        var namesNext = Object.assign({}, bridge.nicksByChannel)
+        namesNext[namesKey] = nicks
+        bridge.nicksByChannel = namesNext
+    }
+    onChannel_modes_changed: {
+        var modesKey = String(channel).toLowerCase()
+        var modesNext = Object.assign({}, bridge.modesByChannel)
+        modesNext[modesKey] = modes
+        bridge.modesByChannel = modesNext
+    }
 
     function mark_read() {
         bridge.record("mark_read", [])
@@ -152,7 +173,14 @@ QtObject {
         bridge.channel_parted(channel)
     }
     function nicks_for(channel) {
+        var hit = bridge.nicksByChannel[String(channel).toLowerCase()]
+        if (hit !== undefined) {
+            return hit
+        }
         return channel.charAt(0) === "#" ? "alice bob" : ""
+    }
+    function modes_for(channel) {
+        return bridge.modesByChannel[String(channel).toLowerCase()] || ""
     }
     function topic_for(channel) {
         return channel.charAt(0) === "#" ? "kIRC development" : ""

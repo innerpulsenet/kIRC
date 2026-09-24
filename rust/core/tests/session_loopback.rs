@@ -2157,3 +2157,348 @@ async fn notice_and_action_carry_their_arrival_flags() {
     ctx.send(ClientCommand::Quit).await.ok();
     let _ = tokio::time::timeout(Duration::from_secs(5), handle).await;
 }
+
+/// JOIN/PART/QUIT/NICK/KICK/MODE interleaved with a NAMES burst must fold
+/// into the pending snapshot: the 366 flush carries the membership as it
+/// stands *after* every interleaved change, with status prefixes intact.
+/// A ban mask (+b) must not eat the nick that follows it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn names_folds_interleaved_membership_and_modes() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let lines: Lines = Arc::new(Mutex::new(Vec::new()));
+    {
+        let lines = lines.clone();
+        tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            server_ctcp_script(
+                stream,
+                lines,
+                &[
+                    ":irc.test 353 kircuser = #chan :@alice +bob carol",
+                    ":dave!d@h JOIN #chan",
+                    ":bob!b@h PART #chan :leaving",
+                    ":carol!c@h QUIT :gone",
+                    ":alice!a@h NICK alice2",
+                    ":irc.test MODE #chan +o dave",
+                    ":irc.test MODE #chan -o alice2",
+                    ":irc.test MODE #chan +b+o *!*@evil alice2",
+                    ":alice2!a@h KICK #chan dave :bye",
+                    ":irc.test 366 kircuser #chan :End of NAMES",
+                ],
+            )
+            .await;
+        });
+    }
+
+    let (etx, mut erx) = mpsc::channel::<IrcEvent>(64);
+    let (ctx, crx) = mpsc::channel::<ClientCommand>(16);
+    let handle = tokio::spawn(run_session(base_config(port, None), etx, crx));
+
+    let events = collect_events(&mut erx, Duration::from_secs(10), |evs| {
+        evs.iter().any(|e| matches!(e, IrcEvent::Names { channel, .. } if channel == "#chan"))
+    })
+    .await;
+
+    let names: Vec<&IrcEvent> = events
+        .iter()
+        .filter(|e| matches!(e, IrcEvent::Names { channel, .. } if channel == "#chan"))
+        .collect();
+    assert_eq!(names.len(), 1, "one Names flush per 366: {names:?}");
+    assert!(
+        matches!(&names[0], IrcEvent::Names { nicks, .. } if nicks == &vec!["@alice2".to_string()]),
+        "interleaved changes lost from the snapshot: {names:?}"
+    );
+
+    // Folding never swallows the events themselves.
+    assert!(
+        events.iter().any(|e| matches!(e, IrcEvent::Join { channel, nick, .. }
+            if channel == "#chan" && nick == "dave")),
+        "JOIN event missing: {events:?}"
+    );
+    assert!(
+        events.iter().any(|e| matches!(e, IrcEvent::Part { channel, nick }
+            if channel == "#chan" && nick == "bob")),
+        "PART event missing: {events:?}"
+    );
+    assert!(
+        events.iter().any(|e| matches!(e, IrcEvent::Quit { nick, .. } if nick == "carol")),
+        "QUIT event missing: {events:?}"
+    );
+    assert!(
+        events.iter().any(|e| matches!(e, IrcEvent::NickRename { old, new, is_self: false }
+            if old == "alice" && new == "alice2")),
+        "NICK rename missing: {events:?}"
+    );
+    assert!(
+        !events.iter().any(|e| matches!(e, IrcEvent::Quit { nick, .. } if nick == "alice")),
+        "a rename is never a quit: {events:?}"
+    );
+    assert!(
+        events.iter().any(|e| matches!(e, IrcEvent::Kick { channel, nick, .. }
+            if channel == "#chan" && nick == "dave")),
+        "KICK event missing: {events:?}"
+    );
+    for modes in ["+o dave", "-o alice2", "+b+o *!*@evil alice2"] {
+        assert!(
+            events.iter().any(|e| matches!(e, IrcEvent::Mode { target, modes: m }
+                if target == "#chan" && m == modes)),
+            "MODE {modes} event missing: {events:?}"
+        );
+    }
+
+    ctx.send(ClientCommand::Quit).await.ok();
+    let _ = tokio::time::timeout(Duration::from_secs(5), handle).await;
+}
+
+/// A server whose PREFIX differs from the default (op/voice only here)
+/// drives every fold: MODE applies the advertised prefixes, PART matches
+/// through them, and a char the server never advertised (`~`) stays part of
+/// the bare nick instead of being treated as a rank.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn names_honors_server_prefix_mapping() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let lines: Lines = Arc::new(Mutex::new(Vec::new()));
+    {
+        let lines = lines.clone();
+        tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            server_ctcp_script(
+                stream,
+                lines,
+                &[
+                    ":irc.test 005 kircuser PREFIX=(ov)@+ CHANTYPES=# :are supported by this server",
+                    ":irc.test 353 kircuser = #chan :@alice +bob ~carol",
+                    ":irc.test MODE #chan +o bob",
+                    ":bob!b@h PART #chan :leaving",
+                    ":irc.test 366 kircuser #chan :End of NAMES",
+                ],
+            )
+            .await;
+        });
+    }
+
+    let (etx, mut erx) = mpsc::channel::<IrcEvent>(64);
+    let (ctx, crx) = mpsc::channel::<ClientCommand>(16);
+    let handle = tokio::spawn(run_session(base_config(port, None), etx, crx));
+
+    let events = collect_events(&mut erx, Duration::from_secs(10), |evs| {
+        evs.iter().any(|e| matches!(e, IrcEvent::Names { channel, .. } if channel == "#chan"))
+    })
+    .await;
+
+    let flushed = events
+        .iter()
+        .find_map(|e| match e {
+            IrcEvent::Names { channel, nicks } if channel == "#chan" => Some(nicks.clone()),
+            _ => None,
+        })
+        .expect("Names flush missing");
+    assert_eq!(
+        flushed,
+        vec!["@alice".to_string(), "~carol".to_string()],
+        "custom PREFIX not honored: {flushed:?}"
+    );
+
+    ctx.send(ClientCommand::Quit).await.ok();
+    let _ = tokio::time::timeout(Duration::from_secs(5), handle).await;
+}
+
+/// A server-advertised CHANMODES list mode consumes its mask so the nick
+/// after it still lands on the right mode letter.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn names_honors_server_chanmodes_mapping() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let lines: Lines = Arc::new(Mutex::new(Vec::new()));
+    {
+        let lines = lines.clone();
+        tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            server_ctcp_script(
+                stream,
+                lines,
+                &[
+                    ":irc.test 005 kircuser CHANMODES=Z,,, :are supported by this server",
+                    ":irc.test 353 kircuser = #chan :alice",
+                    ":irc.test MODE #chan +Z+o some-mask alice",
+                    ":irc.test 366 kircuser #chan :End of NAMES",
+                ],
+            )
+            .await;
+        });
+    }
+
+    let (etx, mut erx) = mpsc::channel::<IrcEvent>(64);
+    let (ctx, crx) = mpsc::channel::<ClientCommand>(16);
+    let handle = tokio::spawn(run_session(base_config(port, None), etx, crx));
+
+    let events = collect_events(&mut erx, Duration::from_secs(10), |evs| {
+        evs.iter().any(|e| matches!(e, IrcEvent::Names { channel, .. } if channel == "#chan"))
+    })
+    .await;
+
+    let flushed = events
+        .iter()
+        .find_map(|e| match e {
+            IrcEvent::Names { channel, nicks } if channel == "#chan" => Some(nicks.clone()),
+            _ => None,
+        })
+        .expect("Names flush missing");
+    assert_eq!(
+        flushed,
+        vec!["@alice".to_string()],
+        "custom CHANMODES misaligned the mode args: {flushed:?}"
+    );
+
+    ctx.send(ClientCommand::Quit).await.ok();
+    let _ = tokio::time::timeout(Duration::from_secs(5), handle).await;
+}
+
+/// 324 establishes the server-confirmed flag set and incremental channel
+/// MODE keeps it current; status changes (+o) surface as MemberMode instead
+/// and never touch the flag set. A 324 for another channel is keyed to that
+/// channel, never the first one.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn channel_modes_tracks_324_and_incremental_mode() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let lines: Lines = Arc::new(Mutex::new(Vec::new()));
+    {
+        let lines = lines.clone();
+        tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            server_ctcp_script(
+                stream,
+                lines,
+                &[
+                    ":irc.test 324 kircuser #chan +imn",
+                    ":irc.test MODE #chan +t",
+                    ":irc.test MODE #chan -n",
+                    ":irc.test MODE #chan +o alice",
+                    ":irc.test MODE #chan +b *!*@evil",
+                    ":irc.test MODE #chan -b *!*@evil",
+                    ":irc.test 324 kircuser #other +i",
+                ],
+            )
+            .await;
+        });
+    }
+
+    let (etx, mut erx) = mpsc::channel::<IrcEvent>(64);
+    let (ctx, crx) = mpsc::channel::<ClientCommand>(16);
+    let handle = tokio::spawn(run_session(base_config(port, None), etx, crx));
+
+    let events = collect_events(&mut erx, Duration::from_secs(10), |evs| {
+        evs.iter().any(|e| {
+            matches!(e, IrcEvent::ChannelModes { channel, .. } if channel == "#other")
+        })
+    })
+    .await;
+
+    let chan_modes: Vec<String> = events
+        .iter()
+        .filter_map(|e| match e {
+            IrcEvent::ChannelModes { channel, modes } if channel == "#chan" => Some(modes.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        chan_modes,
+        vec!["imn", "imnt", "imt", "bimt", "imt"],
+        "flag set did not track 324 + incremental MODE: {chan_modes:?}"
+    );
+
+    let other: Vec<String> = events
+        .iter()
+        .filter_map(|e| match e {
+            IrcEvent::ChannelModes { channel, modes } if channel == "#other" => {
+                Some(modes.clone())
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(other, vec!["i"], "324 for #other leaked: {other:?}");
+
+    assert!(
+        events.iter().any(|e| matches!(
+            e, IrcEvent::MemberMode { channel, nick, add: true, prefix: '@' }
+            if channel == "#chan" && nick == "alice"
+        )),
+        "status change missing as MemberMode: {events:?}"
+    );
+
+    // The channel MODE lines still render as before.
+    assert!(
+        events.iter().any(|e| matches!(e, IrcEvent::Mode { target, modes }
+            if target == "#chan" && modes == "+o alice")),
+        "MODE channel line missing: {events:?}"
+    );
+
+    ctx.send(ClientCommand::Quit).await.ok();
+    let _ = tokio::time::timeout(Duration::from_secs(5), handle).await;
+}
+
+/// A status change is reported with the server's own prefix letter: with
+/// PREFIX=(ov)@+ a +o maps to '@', and a mode the server never advertised
+/// as a status never becomes a MemberMode.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn member_mode_carries_negotiated_prefix() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let lines: Lines = Arc::new(Mutex::new(Vec::new()));
+    {
+        let lines = lines.clone();
+        tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            server_ctcp_script(
+                stream,
+                lines,
+                &[
+                    ":irc.test 005 kircuser PREFIX=(ov)@+ CHANTYPES=# :are supported by this server",
+                    ":irc.test MODE #chan +o-v alice bob",
+                    ":irc.test MODE #chan +q alice",
+                ],
+            )
+            .await;
+        });
+    }
+
+    let (etx, mut erx) = mpsc::channel::<IrcEvent>(64);
+    let (ctx, crx) = mpsc::channel::<ClientCommand>(16);
+    let handle = tokio::spawn(run_session(base_config(port, None), etx, crx));
+
+    let events = collect_events(&mut erx, Duration::from_secs(10), |evs| {
+        evs.iter()
+            .any(|e| matches!(e, IrcEvent::Mode { target, .. } if target == "#chan"))
+            && evs
+                .iter()
+                .filter(|e| matches!(e, IrcEvent::Mode { .. }))
+                .count()
+                >= 2
+    })
+    .await;
+
+    assert!(
+        events.iter().any(|e| matches!(
+            e, IrcEvent::MemberMode { channel, nick, add: true, prefix: '@' }
+            if channel == "#chan" && nick == "alice"
+        )),
+        "+o under custom PREFIX missing: {events:?}"
+    );
+    assert!(
+        events.iter().any(|e| matches!(
+            e, IrcEvent::MemberMode { channel, nick, add: false, prefix: '+' }
+            if channel == "#chan" && nick == "bob"
+        )),
+        "-v under custom PREFIX missing: {events:?}"
+    );
+    assert!(
+        !events.iter().any(|e| matches!(e, IrcEvent::MemberMode { nick, .. } if nick == "alice" && !matches!(e, IrcEvent::MemberMode { prefix: '@', .. }))),
+        "unadvertised +q became a MemberMode: {events:?}"
+    );
+
+    ctx.send(ClientCommand::Quit).await.ok();
+    let _ = tokio::time::timeout(Duration::from_secs(5), handle).await;
+}
